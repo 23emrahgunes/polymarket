@@ -1,0 +1,11 @@
+ccxt
+py-clob-client
+pandas
+scipy
+numpy
+pytest
+pytest-asyncio
+aiosqlite
+python-dotenv
+backoff
+aiofiles
