@@ -47,13 +47,12 @@ class MarketScanner:
         Fetches BTC-related prediction markets from Polymarket.
         """
         try:
-            # Polymarket API search/filtering is complex.
-            # In a real environment, we'd search for markets tagged with "Bitcoin".
-            # For v1.0, we'll implement a helper that filters markets by "BTC" in the question.
-            markets = self.polymarket.get_markets()
+            # Wrap blocking SDK call in to_thread
+            markets = await asyncio.to_thread(self.polymarket.get_markets)
             btc_markets = []
             for market in markets:
-                if "BTC" in market.get("question", "").upper() and "ABOVE" in market.get("question", "").upper():
+                question = market.get("question", "").upper()
+                if "BTC" in question and "ABOVE" in question:
                     btc_markets.append(market)
             return btc_markets
         except Exception as e:
@@ -65,7 +64,8 @@ class MarketScanner:
         Fetches the mid-price for a specific Polymarket token.
         """
         try:
-            orderbook = self.polymarket.get_orderbook(token_id)
+            # Wrap blocking SDK call in to_thread
+            orderbook = await asyncio.to_thread(self.polymarket.get_orderbook, token_id)
             if orderbook and orderbook.bids and orderbook.asks:
                 best_bid = float(orderbook.bids[0].price)
                 best_ask = float(orderbook.asks[0].price)

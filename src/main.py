@@ -1,13 +1,13 @@
 import asyncio
 import logging
-import signal
 from src.scanner import MarketScanner
 from src.database import Database
 from src.logic import calculate_black_scholes_prob, calculate_edge, calculate_annualized_volatility, calculate_rsi
 from src.brain import Brain
 from src.trading import PaperTrader
+from src.parser import parse_polymarket_question
 import pandas as pd
-import numpy as np
+from datetime import datetime, timezone
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -49,31 +49,37 @@ async def run_bot():
 
             # For each market, calculate edge
             for market in markets:
-                # Basic market data
-                # For v1.0, we'll extract the strike price and expiry from the question string
-                # Question: "Will Bitcoin be above $70,000 at March 31, 2024?"
-                # (Actual parsing requires a more robust regex; for v1.0, we'll demonstrate on the first found market)
+                question = market.get("question")
+                if not question: continue
 
-                # Mocking a market strike price and expiry based on the question
-                # In production, we'd use market['tags'] or more robust parsing
-                strike_price = current_price + 500
-                expiry_time_hours = 4
+                # Extract strike and expiry
+                strike_price, expiry_dt = parse_polymarket_question(question)
+                if not strike_price or not expiry_dt: continue
+
+                # Check expiry timeframe (< 24h)
+                now = datetime.now(timezone.utc)
+                time_to_expiry_seconds = (expiry_dt - now).total_seconds()
+                if time_to_expiry_seconds <= 0 or time_to_expiry_seconds > 86400:
+                    continue # Ignore if already expired or too far out
 
                 # Get actual token price
-                token_id = market.get("tokens", [{}])[0].get("token_id")
+                tokens = market.get("tokens", [])
+                if not tokens: continue
+                token_id = tokens[0].get("token_id")
                 if not token_id: continue
 
                 polymarket_yes_price = await scanner.get_token_price(token_id)
                 if not polymarket_yes_price: continue
 
                 # 3. Logic - Black-Scholes for Implied Probability
-                T = expiry_time_hours / (24 * 365) # T in years
+                T = time_to_expiry_seconds / (24 * 365 * 3600) # T in years
                 implied_prob = calculate_black_scholes_prob(current_price, strike_price, T, volatility)
 
                 edge = calculate_edge(polymarket_yes_price, implied_prob)
 
-                logger.info(f"Binance Price: ${current_price:.2f} | Polymarket Yes Price: ${polymarket_yes_price:.2f}")
-                logger.info(f"Implied Prob: {implied_prob:.2%} | Edge: {edge:.2%}")
+                logger.info(f"Market: {question}")
+                logger.info(f"Binance Price: ${current_price:.2f} | Strike: ${strike_price:.2f}")
+                logger.info(f"Implied Prob: {implied_prob:.2%} | Polymarket YES: ${polymarket_yes_price:.2f} | Edge: {edge:.2%}")
 
                 # 4. Signal and Brain Check
                 if edge > 0.05:
@@ -86,14 +92,11 @@ async def run_bot():
                         success, msg = await trader.execute_trade(market.get("market_id"), "YES", trade_size, polymarket_yes_price, edge, confidence)
                         logger.info(msg)
 
-                # For demo purposes, we only check the first market
-                break
-
             # 5. Check for resolutions
             await trader.check_resolutions(scanner)
 
-            # Wait before next scan
-            await asyncio.sleep(10)
+            # Wait before next scan (15 seconds to be efficient but responsive)
+            await asyncio.sleep(15)
 
     except asyncio.CancelledError:
         logger.info("Bot task cancelled.")

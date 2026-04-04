@@ -45,15 +45,12 @@ class PaperTrader:
 
             try:
                 # Actual Polymarket resolution check via SDK would go here:
-                # status = scanner.polymarket.get_market_status(market_id)
-                # For v1.0, we'll mock the resolution logic to show P&L flow
-                # (Actual polling requires matching market_id to on-chain state)
-
-                # Mock resolution logic (for simulation/testing)
-                # In a real environment, we'd poll the Polymarket API/graph
-                is_resolved = random.choice([True, False, False, False]) # 25% chance per scan for demo
+                # status = await asyncio.to_thread(scanner.polymarket.get_market_status, market_id)
+                # (For v1.0, we'll continue with the mock logic but now integration-ready)
+                is_resolved = random.choice([True, False, False, False, False, False, False]) # lower probability per check
                 if is_resolved:
-                    outcome = random.choice(["YES", "NO"]) # Random outcome for demo
+                    # In a real bot, we'd fetch the actual result
+                    outcome = random.choice(["YES", "NO"])
                     shares = size / entry_price
                     payout = shares if outcome == side else 0
 
