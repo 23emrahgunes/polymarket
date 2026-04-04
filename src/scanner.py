@@ -1,11 +1,16 @@
 import asyncio
 import ccxt.pro as ccxt
 import backoff
+import os
 from py_clob_client.client import ClobClient
 from py_clob_client.constants import POLYGON
+from py_clob_client.clob_types import ApiCreds
+from dotenv import load_dotenv
 import pandas as pd
 import numpy as np
 import time
+
+load_dotenv()
 
 class MarketScanner:
     def __init__(self, binance_symbol="BTC/USDT"):
@@ -15,7 +20,15 @@ class MarketScanner:
                 'defaultType': 'future',
             }
         })
-        self.polymarket = ClobClient("https://clob.polymarket.com", chain_id=POLYGON)
+
+        # Correct initialization for ClobClient with Private Key
+        private_key = os.getenv("POLYGON_PRIVATE_KEY", "0x0000000000000000000000000000000000000000000000000000000000000000")
+        self.polymarket = ClobClient(
+            host="https://clob.polymarket.com",
+            chain_id=POLYGON,
+            key=private_key
+        )
+
         self.current_price = None
         self._ohlcv_cache = None
         self._last_ohlcv_update = 0
@@ -44,13 +57,14 @@ class MarketScanner:
     @backoff.on_exception(backoff.expo, Exception, max_tries=5)
     async def get_polymarket_btc_markets(self):
         """
-        Fetches BTC-related prediction markets from Polymarket.
+        Fetches BTC-related prediction markets from Polymarket using structured filtering.
         """
         try:
-            # Wrap blocking SDK call in to_thread
+            # Polymarket SDK: get_markets returns a list of markets
             markets = await asyncio.to_thread(self.polymarket.get_markets)
             btc_markets = []
             for market in markets:
+                # Use question to identify the symbol and type
                 question = market.get("question", "").upper()
                 if "BTC" in question and "ABOVE" in question:
                     btc_markets.append(market)
@@ -64,12 +78,12 @@ class MarketScanner:
         Fetches the mid-price for a specific Polymarket token.
         """
         try:
-            # Wrap blocking SDK call in to_thread
             orderbook = await asyncio.to_thread(self.polymarket.get_orderbook, token_id)
-            if orderbook and orderbook.bids and orderbook.asks:
-                best_bid = float(orderbook.bids[0].price)
-                best_ask = float(orderbook.asks[0].price)
-                return (best_bid + best_ask) / 2
+            if orderbook and hasattr(orderbook, 'bids') and hasattr(orderbook, 'asks'):
+                if orderbook.bids and orderbook.asks:
+                    best_bid = float(orderbook.bids[0].price)
+                    best_ask = float(orderbook.asks[0].price)
+                    return (best_bid + best_ask) / 2
             return None
         except Exception as e:
             print(f"Error fetching price for token {token_id}: {e}")
