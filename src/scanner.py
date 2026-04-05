@@ -118,19 +118,26 @@ class MarketScanner:
                         self.poly_price_cache[token_id] = (now, mid_price)
                         return mid_price
 
-            # If no orderbook data found but no exception thrown
-            logger.debug(f"No orderbook exists for {token_id}")
+            # Auto-Blacklist invalid price data or missing orderbooks for 24h
+            self.negative_cache[token_id] = now + (24 * 3600)
+            logger.debug(f"Invalid or missing price for {token_id}. Blacklisting for 24h.")
             return None
 
         except Exception as e:
             # Handle 404 (PolyApiException or generic HTTP error)
             error_msg = str(e)
-            if "404" in error_msg or "not found" in error_msg.lower():
-                # Add to negative cache for 2 hours
-                self.negative_cache[token_id] = now + (2 * 3600)
-                logger.debug(f"Orderbook for {token_id} not found. Blacklisting for 2h. Error: {e}")
+            status_code = getattr(e, 'status', 0)
+
+            if "404" in error_msg or "not found" in error_msg.lower() or status_code == 404:
+                # Silent Catch: Auto-Blacklist 404s for 24 hours
+                self.negative_cache[token_id] = now + (24 * 3600)
+                logger.debug(f"Orderbook for {token_id} not found. Blacklisting for 24h.")
+            elif status_code >= 500 or "timeout" in error_msg.lower():
+                # Only log ERROR for 5xx Server Errors or timeouts
+                logger.error(f"Server Error (5xx) or Timeout for {token_id}: {e}")
             else:
-                logger.error(f"Error fetching price for token {token_id}: {e}")
+                # Mute individual market 404s/Warnings
+                logger.debug(f"Muted fetch error for {token_id}: {e}")
             return None
 
     async def close(self):
