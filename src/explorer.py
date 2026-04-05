@@ -25,7 +25,7 @@ class MarketExplorer:
             elif isinstance(raw_response, dict):
                 markets = raw_response.get("data", raw_response.get("markets", []))
             else:
-                logger.warning(f"Unexpected response type: {type(raw_response)}")
+                logger.debug(f"Unexpected response type: {type(raw_response)}")
                 return []
 
             filtered_markets = []

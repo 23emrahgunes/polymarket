@@ -48,7 +48,7 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker):
     try:
         while True:
             start_time = time.time()
-            logger.info("Ghost Intelligence: Discovering markets...")
+            logger.debug("Ghost Intelligence: Discovering markets...")
             active_markets = await explorer.fetch_active_markets()
 
             # Extract symbols for crypto monitoring
@@ -99,14 +99,17 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker):
                                 implied_prob = calculate_black_scholes_prob(current_binance_price, strike_price, time_to_expiry_years, volatility)
                                 edge = calculate_edge(current_poly_price, implied_prob)
 
-                                status = "ACTIVE" if abs(edge) > 0.05 else "IDLE"
-                                logger.info(f"[CRYPTO] [{question[:30]}] | Price: ${current_poly_price:.2f} | 24h Vol: ${volume_24h:.0f} | SIGNAL: {status}")
-
                                 if edge > 0.05:
                                     rsi = calculate_rsi(df['close']).iloc[-1]
                                     confidence = await brain.get_confidence(edge, rsi, volume_24h, 0.0)
+
+                                    # [SIGNAL] Highly visible log
+                                    logger.info(f"[!!! SIGNAL !!!] [CRYPTO] [{question[:30]}] | Price: ${current_poly_price:.2f} | Edge: {edge:.2%} | Confidence: {confidence:.2f}")
+
                                     if confidence > 0.7:
                                         await trader.execute_trade(market_id, "YES", 50.0, current_poly_price, edge, confidence)
+                                else:
+                                    logger.debug(f"[CRYPTO] [{question[:30]}] | Price: ${current_poly_price:.2f} | Edge: {edge:.2%} | SIGNAL: IDLE")
 
                     # [POLITICS/FINANCE/OTHER] Volatility-based "Breaking News" detection
                     else:
@@ -117,11 +120,12 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker):
 
                         if len(PRICE_HISTORY[market_id]) > 2:
                             price_swing = (PRICE_HISTORY[market_id][-1][1] - PRICE_HISTORY[market_id][0][1]) / PRICE_HISTORY[market_id][0][1]
-                            status = "ACTIVE" if abs(price_swing) > NEWS_SWING_THRESHOLD else "IDLE"
-                            logger.info(f"[{category}] [{question[:30]}] | Price: ${current_poly_price:.2f} | 24h Vol: ${volume_24h:.0f} | SIGNAL: {status}")
 
-                            if status == "ACTIVE":
-                                logger.info(f"Ghost Intelligence Alert: Breaking News detected in {category}! Price swing of {price_swing:.2%}")
+                            if abs(price_swing) > NEWS_SWING_THRESHOLD:
+                                # [SIGNAL] Breaking News log
+                                logger.info(f"[!!! SIGNAL !!!] [{category}] [{question[:30]}] | Breaking News! Price Swing: {price_swing:.2%}")
+                            else:
+                                logger.debug(f"[{category}] [{question[:30]}] | Price: ${current_poly_price:.2f} | Swing: {price_swing:.2%} | SIGNAL: IDLE")
 
                 except Exception as e:
                     logger.debug(f"Error processing market: {e}") # Use debug to keep logs clean

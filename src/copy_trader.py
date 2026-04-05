@@ -34,22 +34,23 @@ class CopyTrader:
 
             # 1. Liquidity Guard: 24h Volume > $10,000
             if market_volume_24h < 10000:
-                logger.info(f"[WHALE_ACTION] Wallet: {whale[:10]}... | Action: {action} {market_id} | Price: ${current_market_price:.2f} | SIGNAL: INSUFFICIENT_LIQUIDITY")
+                logger.debug(f"[WHALE_ACTION] Wallet: {whale[:10]}... | Action: {action} {market_id} | Price: ${current_market_price:.2f} | SIGNAL: INSUFFICIENT_LIQUIDITY")
                 return False
 
             # 2. Price Guard: Within 1.5% of whale's entry price
             price_diff_pct = abs(current_market_price - whale_entry_price) / whale_entry_price
             if price_diff_pct > 0.015:
-                logger.info(f"[WHALE_ACTION] Wallet: {whale[:10]}... | Action: {action} {market_id} | Price: ${current_market_price:.2f} | SIGNAL: SPREAD_TOO_HIGH ({price_diff_pct:.2%})")
+                logger.debug(f"[WHALE_ACTION] Wallet: {whale[:10]}... | Action: {action} {market_id} | Price: ${current_market_price:.2f} | SIGNAL: SPREAD_TOO_HIGH ({price_diff_pct:.2%})")
                 return False
 
             # 3. All Guards Passed -> CopySignal Match
-            logger.info(f"[WHALE_ACTION] Wallet: {whale[:10]}... | Action: {action} {market_id} | Price: ${current_market_price:.2f} | SIGNAL: COPY_MATCH")
+            # [WHALE_ACTION] Highly visible log
+            logger.info(f"[!!! WHALE_ACTION !!!] Wallet: {whale[:10]}... | Action: {action} {market_id} | Price: ${current_market_price:.2f} | SIGNAL: COPY_MATCH")
 
             # Execute Paper Copy Trade
             success, msg = await self.trader.execute_trade(market_id, "YES", 50.0, current_market_price, edge=0.0, confidence=1.0)
             if success:
-                logger.info(f"Ghost Intelligence Alert: Whale copy-trade executed! {msg}")
+                logger.info(f"[!!! SIGNAL !!!] Whale copy-trade executed! {msg}")
 
             return True
         except Exception as e:
