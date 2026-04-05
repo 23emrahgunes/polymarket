@@ -23,14 +23,14 @@ class CopyTrader:
 
         try:
             # 1. Fetch market info for volume and current price
-            # Robust data check: handle string/null responses as requested
             current_market_price = await self.scanner.get_token_price(market_id)
             if not current_market_price:
-                logger.warning(f"CopyTrader: Invalid price data for {market_id}")
+                logger.debug(f"CopyTrader: Invalid price data for {market_id}")
                 return False
 
-            # Simulated data for CopySignal demonstration
-            market_volume_24h = 15000.0 # $15,000 for demonstration
+            # In production: market_info = await asyncio.to_thread(self.scanner.polymarket.get_market, market_id)
+            # market_volume_24h = float(market_info.get("volume_24h", 0))
+            market_volume_24h = 15000.0 # Placeholder for v3.0 demo
 
             # 1. Liquidity Guard: 24h Volume > $10,000
             if market_volume_24h < 10000:
@@ -44,11 +44,13 @@ class CopyTrader:
                 return False
 
             # 3. All Guards Passed -> CopySignal Match
-            # [WHALE_ACTION] Highly visible log
             logger.info(f"[!!! WHALE_ACTION !!!] Wallet: {whale[:10]}... | Action: {action} {market_id} | Price: ${current_market_price:.2f} | SIGNAL: COPY_MATCH")
 
-            # Execute Paper Copy Trade
-            success, msg = await self.trader.execute_trade(market_id, "YES", 50.0, current_market_price, edge=0.0, confidence=1.0)
+            # Execute Paper Copy Trade - Pass whale_address for analytics
+            success, msg = await self.trader.execute_trade(
+                market_id, "YES", 50.0, current_market_price,
+                edge=0.0, confidence=1.0, whale_address=whale
+            )
             if success:
                 logger.info(f"[!!! SIGNAL !!!] Whale copy-trade executed! {msg}")
 

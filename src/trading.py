@@ -22,7 +22,7 @@ class PaperTrader:
                 key=private_key
             )
 
-    async def execute_trade(self, market_id, side, size, price, edge, confidence):
+    async def execute_trade(self, market_id, side, size, price, edge, confidence, whale_address=None):
         """
         Executes a paper trade with double-spending prevention.
         """
@@ -37,13 +37,14 @@ class PaperTrader:
             await self.db.update_balance(new_balance)
 
             # Record trade
-            await self.db.add_trade(market_id, side, size, price, edge, confidence, status="OPEN")
+            await self.db.add_trade(market_id, side, size, price, edge, confidence, status="OPEN", whale_address=whale_address)
 
             return True, f"Trade executed: Spent ${size} on {market_id} (Side: {side}) at {price}"
 
     async def check_resolutions(self, scanner):
         """
         Polls for the resolved status of open trades using the Polymarket API.
+        Updated: Record P&L and update whale analytics.
         """
         if not self.polymarket:
             return
@@ -55,6 +56,7 @@ class PaperTrader:
             side = trade["side"]
             size = trade["size"]
             entry_price = trade["price"]
+            whale_address = trade["whale_address"]
 
             try:
                 market_info = await asyncio.to_thread(self.polymarket.get_market, market_id)
@@ -62,14 +64,25 @@ class PaperTrader:
                     outcome = market_info.get("outcome")
                     if outcome:
                         shares = size / entry_price
+                        # Payout is $1 per share if correct, $0 otherwise
                         payout = shares if outcome == side else 0
+                        pnl = payout - size
 
                         async with self.lock:
                             current_balance = await self.db.get_balance()
                             await self.db.update_balance(current_balance + payout)
-                            status = "CLOSED_WIN" if payout > 0 else "CLOSED_LOSS"
-                            await self.db.update_trade_status(trade_id, status)
-                            logger.info(f"Trade {trade_id} (Market: {market_id}) resolved! Outcome: {outcome}. Payout: ${payout:.2f}. Status: {status}")
+
+                            # Log detailed performance
+                            status = "CLOSED_WIN" if pnl > 0 else "CLOSED_LOSS"
+                            await self.db.update_trade_resolution(trade_id, status, pnl)
+
+                            # Update Whale accuracy if it was a copy trade
+                            if whale_address:
+                                await self.db.update_whale_stats(whale_address, pnl)
+                                from src.analytics import log_whale_score
+                                await log_whale_score(self.db, whale_address)
+
+                            logger.info(f"Trade {trade_id} (Market: {market_id}) resolved! Outcome: {outcome}. P&L: ${pnl:.2f}. Status: {status}")
             except Exception as e:
                 logger.error(f"Error resolving trade {trade_id}: {e}")
 

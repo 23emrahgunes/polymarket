@@ -18,6 +18,7 @@ from src.logic import calculate_black_scholes_prob, calculate_edge, calculate_an
 from src.brain import Brain
 from src.trading import PaperTrader
 from src.parser import parse_polymarket_question
+from src.analytics import log_bot_performance
 import pandas as pd
 from datetime import datetime, timezone
 
@@ -35,23 +36,24 @@ CRYPTO_MAPPING = {
     "BNB": "BNB/USDT"
 }
 
-# Breaking News detection: price swing > 5% in 15 mins
+# Breaking News detection
 NEWS_SWING_THRESHOLD = 0.05
-PRICE_HISTORY = {} # {market_id: [(timestamp, price)]}
+PRICE_HISTORY = {}
 
-async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker):
+async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db):
     """
     Ghost Intelligence v2.0 logic: discover, filter, and monitor markets.
-    Includes periodic status logging every 5 minutes.
     """
     last_status_log = time.time()
+    last_re_rank = time.time()
+
     try:
         while True:
             start_time = time.time()
             logger.debug("Ghost Intelligence: Discovering markets...")
             active_markets = await explorer.fetch_active_markets()
 
-            # Extract symbols for crypto monitoring
+            # 1. Update monitored symbols
             crypto_symbols = set()
             for market in active_markets:
                 if market.get("category") == "CRYPTO":
@@ -59,11 +61,9 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker):
                     for base, pair in CRYPTO_MAPPING.items():
                         if base in question:
                             crypto_symbols.add(pair)
-
-            # Start/Update WebSocket ticker task
             await scanner.update_monitored_symbols(list(crypto_symbols))
 
-            # 2. Main Processing Loop for discovered markets
+            # 2. Main Processing Loop
             for market in active_markets:
                 try:
                     category = market.get("category", "OTHER")
@@ -71,22 +71,19 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker):
                     market_id = market.get("market_id")
                     volume_24h = float(market.get("volume_24h", 0))
 
-                    # Fetch YES/NO token IDs
                     tokens = market.get("tokens", [])
                     if not tokens: continue
-                    token_id = tokens[0].get("token_id") # YES token
+                    token_id = tokens[0].get("token_id")
 
                     current_poly_price = await scanner.get_token_price(token_id)
                     if not current_poly_price: continue
 
-                    # [CRYPTO] Parity Arbitrage vs Binance
                     if category == "CRYPTO":
                         for base, symbol in CRYPTO_MAPPING.items():
                             if base in question.upper():
                                 current_binance_price = scanner.current_prices.get(symbol)
                                 if not current_binance_price: continue
 
-                                # Edge Calculation using Black-Scholes
                                 df = await scanner.get_historical_data(symbol)
                                 volatility = calculate_annualized_volatility(df['close'])
                                 strike_price, expiry_dt = parse_polymarket_question(question)
@@ -102,8 +99,6 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker):
                                 if edge > 0.05:
                                     rsi = calculate_rsi(df['close']).iloc[-1]
                                     confidence = await brain.get_confidence(edge, rsi, volume_24h, 0.0)
-
-                                    # [SIGNAL] Highly visible log
                                     logger.info(f"[!!! SIGNAL !!!] [CRYPTO] [{question[:30]}] | Price: ${current_poly_price:.2f} | Edge: {edge:.2%} | Confidence: {confidence:.2f}")
 
                                     if confidence > 0.7:
@@ -111,7 +106,6 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker):
                                 else:
                                     logger.debug(f"[CRYPTO] [{question[:30]}] | Price: ${current_poly_price:.2f} | Edge: {edge:.2%} | SIGNAL: IDLE")
 
-                    # [POLITICS/FINANCE/OTHER] Volatility-based "Breaking News" detection
                     else:
                         if market_id not in PRICE_HISTORY:
                             PRICE_HISTORY[market_id] = []
@@ -120,26 +114,30 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker):
 
                         if len(PRICE_HISTORY[market_id]) > 2:
                             price_swing = (PRICE_HISTORY[market_id][-1][1] - PRICE_HISTORY[market_id][0][1]) / PRICE_HISTORY[market_id][0][1]
-
                             if abs(price_swing) > NEWS_SWING_THRESHOLD:
-                                # [SIGNAL] Breaking News log
                                 logger.info(f"[!!! SIGNAL !!!] [{category}] [{question[:30]}] | Breaking News! Price Swing: {price_swing:.2%}")
                             else:
                                 logger.debug(f"[{category}] [{question[:30]}] | Price: ${current_poly_price:.2f} | Swing: {price_swing:.2%} | SIGNAL: IDLE")
 
                 except Exception as e:
-                    logger.debug(f"Error processing market: {e}") # Use debug to keep logs clean
+                    logger.debug(f"Error processing market: {e}")
                     continue
 
             await trader.check_resolutions(scanner)
 
-            # Periodic Status Logging: Every 5 minutes
-            scan_time = time.time() - start_time
+            # Periodic Status Logging & Analytics
             if time.time() - last_status_log > 300:
-                logger.info(f"[STATUS] Monitoring {len(active_markets)} Active Markets | Tracked {len(whale_tracker.top_whales)} Elite Wallets | Last Scan Time: {scan_time:.2f}s")
+                total, wins, win_rate, total_pnl = await db.get_bot_performance()
+                scan_time = time.time() - start_time
+                logger.info(f"[STATUS] Monitoring {len(active_markets)} Active Markets | Tracked {len(whale_tracker.top_whales)} Elite Wallets | Last Scan Time: {scan_time:.2f}s | Bot Win-Rate: {win_rate:.1f}%")
+                await log_bot_performance(db)
                 last_status_log = time.time()
 
-            # Faster discovery interval: 5-10 seconds with jitter
+            # 24h Automatic Whale Re-Ranking
+            if time.time() - last_re_rank > 86400:
+                await whale_tracker.re_rank_whales(limit=20)
+                last_re_rank = time.time()
+
             jitter = random.uniform(5, 10)
             await asyncio.sleep(jitter)
     except asyncio.CancelledError:
@@ -148,26 +146,20 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker):
         logger.error(f"Critical error in discovery loop: {e}", exc_info=True)
 
 async def run_whale_tracker_loop(whale_tracker, copy_trader):
-    """
-    Ghost Intelligence v3.0 logic: monitor top whales and copy trades.
-    """
     try:
         logger.info("Ghost Intelligence v3.0: Whale Tracker active.")
         async for whale_action in whale_tracker.monitor_whale_activity():
             if not isinstance(whale_action, dict):
-                logger.warning("WhaleTracker: Invalid action data.")
                 continue
             await copy_trader.evaluate_signal(whale_action)
-
     except asyncio.CancelledError:
         logger.info("Whale tracker loop task cancelled.")
     except Exception as e:
         logger.error(f"Critical error in whale tracker loop: {e}", exc_info=True)
 
 async def main():
-    logger.info("Starting Ghost Intelligence v3.0 - The Final Deployment...")
+    logger.info("Starting Ghost Intelligence v3.0 - Performance Analytics Deployment...")
 
-    # Initialize components
     scanner = MarketScanner()
     db = Database("data/ghost_trader.db")
     await db.connect()
@@ -176,12 +168,11 @@ async def main():
     brain = Brain(model="claude-3-5-sonnet")
     trader = PaperTrader(db)
 
-    whale_tracker = WhaleTracker(scanner.polymarket)
+    whale_tracker = WhaleTracker(scanner.polymarket, db=db)
     copy_trader = CopyTrader(trader, scanner)
 
-    # Concurrency
     tasks = [
-        run_discovery_loop(explorer, scanner, brain, trader, whale_tracker),
+        run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db),
         run_whale_tracker_loop(whale_tracker, copy_trader)
     ]
 
