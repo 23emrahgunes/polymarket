@@ -13,6 +13,7 @@ class MarketExplorer:
     async def fetch_active_markets(self):
         """
         Fetches all active markets from Polymarket CLOB and filters them.
+        Refined: Only process markets that are explicitly marked as active.
         """
         try:
             # Wrap blocking SDK call in to_thread
@@ -30,6 +31,11 @@ class MarketExplorer:
             filtered_markets = []
             for market in markets:
                 if not isinstance(market, dict): continue
+
+                # Refined: Check for active status
+                # Polymarket API usually provides 'active' (bool) or 'closed' (bool)
+                if market.get("closed") is True or market.get("active") is False:
+                    continue
 
                 # Liquid Filter: Volume > $10,000
                 volume_24h = float(market.get("volume_24h", 0))
@@ -63,10 +69,8 @@ class MarketExplorer:
     async def get_spread(self, token_id):
         """
         Calculates the spread for a given token with robust method call.
-        Fixed method: Using get_order_book() instead of get_orderbook().
         """
         try:
-            # Fixed method call: get_order_book
             orderbook = await asyncio.to_thread(self.polymarket.get_order_book, token_id)
             if hasattr(orderbook, 'bids') and hasattr(orderbook, 'asks'):
                 if orderbook.bids and orderbook.asks:
@@ -84,5 +88,10 @@ class MarketExplorer:
                         return (best_ask - best_bid) / best_ask
             return 1.0 # High spread if no data
         except Exception as e:
-            logger.error(f"Error calculating spread for {token_id}: {e}")
+            # Mute 404/Missing orderbook errors here as well
+            error_msg = str(e)
+            if "404" in error_msg or "not found" in error_msg.lower():
+                logger.debug(f"No orderbook found for spread calculation of {token_id}")
+            else:
+                logger.warning(f"Error calculating spread for {token_id}: {e}")
             return 1.0

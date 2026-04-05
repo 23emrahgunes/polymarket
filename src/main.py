@@ -6,7 +6,6 @@ import time
 import random
 
 # Zero-Failure Technical Architecture: absolute path handling
-# Implement sys.path.append so the bot can be run from any directory
 ABS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ABS_ROOT)
 
@@ -40,12 +39,15 @@ CRYPTO_MAPPING = {
 NEWS_SWING_THRESHOLD = 0.05
 PRICE_HISTORY = {} # {market_id: [(timestamp, price)]}
 
-async def run_discovery_loop(explorer, scanner, brain, trader):
+async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker):
     """
     Ghost Intelligence v2.0 logic: discover, filter, and monitor markets.
+    Includes periodic status logging every 5 minutes.
     """
+    last_status_log = time.time()
     try:
         while True:
+            start_time = time.time()
             logger.info("Ghost Intelligence: Discovering markets...")
             active_markets = await explorer.fetch_active_markets()
 
@@ -101,7 +103,6 @@ async def run_discovery_loop(explorer, scanner, brain, trader):
                                 logger.info(f"[CRYPTO] [{question[:30]}] | Price: ${current_poly_price:.2f} | 24h Vol: ${volume_24h:.0f} | SIGNAL: {status}")
 
                                 if edge > 0.05:
-                                    # Signal confirmation with Brain
                                     rsi = calculate_rsi(df['close']).iloc[-1]
                                     confidence = await brain.get_confidence(edge, rsi, volume_24h, 0.0)
                                     if confidence > 0.7:
@@ -109,15 +110,11 @@ async def run_discovery_loop(explorer, scanner, brain, trader):
 
                     # [POLITICS/FINANCE/OTHER] Volatility-based "Breaking News" detection
                     else:
-                        # Price history for news detection
                         if market_id not in PRICE_HISTORY:
                             PRICE_HISTORY[market_id] = []
                         PRICE_HISTORY[market_id].append((time.time(), current_poly_price))
-
-                        # Cleanup old history (> 15 mins)
                         PRICE_HISTORY[market_id] = [(t, p) for t, p in PRICE_HISTORY[market_id] if time.time() - t < 900]
 
-                        # Check price swing
                         if len(PRICE_HISTORY[market_id]) > 2:
                             price_swing = (PRICE_HISTORY[market_id][-1][1] - PRICE_HISTORY[market_id][0][1]) / PRICE_HISTORY[market_id][0][1]
                             status = "ACTIVE" if abs(price_swing) > NEWS_SWING_THRESHOLD else "IDLE"
@@ -127,10 +124,16 @@ async def run_discovery_loop(explorer, scanner, brain, trader):
                                 logger.info(f"Ghost Intelligence Alert: Breaking News detected in {category}! Price swing of {price_swing:.2%}")
 
                 except Exception as e:
-                    logger.error(f"Error processing market: {e}")
+                    logger.debug(f"Error processing market: {e}") # Use debug to keep logs clean
                     continue
 
             await trader.check_resolutions(scanner)
+
+            # Periodic Status Logging: Every 5 minutes
+            scan_time = time.time() - start_time
+            if time.time() - last_status_log > 300:
+                logger.info(f"[STATUS] Monitoring {len(active_markets)} Active Markets | Tracked {len(whale_tracker.top_whales)} Elite Wallets | Last Scan Time: {scan_time:.2f}s")
+                last_status_log = time.time()
 
             # Faster discovery interval: 5-10 seconds with jitter
             jitter = random.uniform(5, 10)
@@ -147,12 +150,9 @@ async def run_whale_tracker_loop(whale_tracker, copy_trader):
     try:
         logger.info("Ghost Intelligence v3.0: Whale Tracker active.")
         async for whale_action in whale_tracker.monitor_whale_activity():
-            # Robust data check: handle string/null responses as requested
             if not isinstance(whale_action, dict):
                 logger.warning("WhaleTracker: Invalid action data.")
                 continue
-
-            # Evaluate CopySignal with guards
             await copy_trader.evaluate_signal(whale_action)
 
     except asyncio.CancelledError:
@@ -175,10 +175,9 @@ async def main():
     whale_tracker = WhaleTracker(scanner.polymarket)
     copy_trader = CopyTrader(trader, scanner)
 
-    # Concurrency: Use asyncio to run the MarketExplorer and WhaleTracker simultaneously
-    # Use a TaskGroup or gather to ensure one failure doesn't crash the other
+    # Concurrency
     tasks = [
-        run_discovery_loop(explorer, scanner, brain, trader),
+        run_discovery_loop(explorer, scanner, brain, trader, whale_tracker),
         run_whale_tracker_loop(whale_tracker, copy_trader)
     ]
 
