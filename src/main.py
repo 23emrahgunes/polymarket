@@ -4,11 +4,15 @@ import asyncio
 import logging
 import time
 
-# Zero-Manual-Setup: Handle path issues internally
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Zero-Failure Technical Architecture: absolute path handling
+# Implement sys.path.append so the bot can be run from any directory
+ABS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(ABS_ROOT)
 
 from src.scanner import MarketScanner
 from src.explorer import MarketExplorer
+from src.whale_tracker import WhaleTracker
+from src.copy_trader import CopyTrader
 from src.database import Database
 from src.logic import calculate_black_scholes_prob, calculate_edge, calculate_annualized_volatility, calculate_rsi
 from src.brain import Brain
@@ -35,21 +39,12 @@ CRYPTO_MAPPING = {
 NEWS_SWING_THRESHOLD = 0.05
 PRICE_HISTORY = {} # {market_id: [(timestamp, price)]}
 
-async def run_bot():
-    logger.info("Starting Ghost Intelligence v2.0 - Universal Market Monitoring...")
-
-    # Initialize components
-    scanner = MarketScanner()
-    db = Database("data/ghost_trader.db")
-    await db.connect()
-
-    explorer = MarketExplorer(scanner.polymarket)
-    brain = Brain(model="claude-3-5-sonnet")
-    trader = PaperTrader(db)
-
+async def run_discovery_loop(explorer, scanner, brain, trader):
+    """
+    Ghost Intelligence v2.0 logic: discover, filter, and monitor markets.
+    """
     try:
         while True:
-            # 1. Market Explorer: Discover and filter active markets
             logger.info("Ghost Intelligence: Discovering markets...")
             active_markets = await explorer.fetch_active_markets()
 
@@ -136,17 +131,63 @@ async def run_bot():
 
             await trader.check_resolutions(scanner)
             await asyncio.sleep(60) # Discovery loop interval
+    except asyncio.CancelledError:
+        logger.info("Discovery loop task cancelled.")
+    except Exception as e:
+        logger.error(f"Critical error in discovery loop: {e}", exc_info=True)
+
+async def run_whale_tracker_loop(whale_tracker, copy_trader):
+    """
+    Ghost Intelligence v3.0 logic: monitor top whales and copy trades.
+    """
+    try:
+        logger.info("Ghost Intelligence v3.0: Whale Tracker active.")
+        async for whale_action in whale_tracker.monitor_whale_activity():
+            # Robust data check: handle string/null responses as requested
+            if not isinstance(whale_action, dict):
+                logger.warning("WhaleTracker: Invalid action data.")
+                continue
+
+            # Evaluate CopySignal with guards
+            await copy_trader.evaluate_signal(whale_action)
 
     except asyncio.CancelledError:
-        logger.info("Bot task cancelled.")
+        logger.info("Whale tracker loop task cancelled.")
     except Exception as e:
-        logger.error(f"Critical error in main global loop: {e}", exc_info=True)
+        logger.error(f"Critical error in whale tracker loop: {e}", exc_info=True)
+
+async def main():
+    logger.info("Starting Ghost Intelligence v3.0 - The Final Deployment...")
+
+    # Initialize components
+    scanner = MarketScanner()
+    db = Database("data/ghost_trader.db")
+    await db.connect()
+
+    explorer = MarketExplorer(scanner.polymarket)
+    brain = Brain(model="claude-3-5-sonnet")
+    trader = PaperTrader(db)
+
+    whale_tracker = WhaleTracker(scanner.polymarket)
+    copy_trader = CopyTrader(trader, scanner)
+
+    # Concurrency: Use asyncio to run the MarketExplorer and WhaleTracker simultaneously
+    # Use a TaskGroup or gather to ensure one failure doesn't crash the other
+    tasks = [
+        run_discovery_loop(explorer, scanner, brain, trader),
+        run_whale_tracker_loop(whale_tracker, copy_trader)
+    ]
+
+    try:
+        await asyncio.gather(*tasks)
+    except Exception as e:
+        logger.error(f"Critical failure in bot core: {e}", exc_info=True)
     finally:
         await scanner.close()
         await db.close()
 
 if __name__ == "__main__":
     try:
-        asyncio.run(run_bot())
+        asyncio.run(main())
     except KeyboardInterrupt:
         pass
