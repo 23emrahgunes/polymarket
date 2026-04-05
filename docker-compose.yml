@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  ghost-bot:
+    build: .
+    container_name: ghost-intelligence-v2
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    restart: always

@@ -17,5 +17,8 @@ COPY data/ ./data/
 # Create the data directory if it doesn't exist
 RUN mkdir -p data
 
+# Ensure PYTHONPATH handles src module correctly
+ENV PYTHONPATH="${PYTHONPATH}:/app"
+
 # Run the bot when the container launches
-CMD ["python", "src/main.py"]
+CMD ["python3", "-m", "src.main"]

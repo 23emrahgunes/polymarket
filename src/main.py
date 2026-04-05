@@ -1,6 +1,14 @@
+import os
+import sys
 import asyncio
 import logging
+import time
+
+# Zero-Manual-Setup: Handle path issues internally
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.scanner import MarketScanner
+from src.explorer import MarketExplorer
 from src.database import Database
 from src.logic import calculate_black_scholes_prob, calculate_edge, calculate_annualized_volatility, calculate_rsi
 from src.brain import Brain
@@ -13,119 +21,127 @@ from datetime import datetime, timezone
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Multi-Pair Support Architecture
-WATCH_LIST = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT", "BNB/USDT"]
+# Category-specific Symbols
+CRYPTO_MAPPING = {
+    "BTC": "BTC/USDT",
+    "ETH": "ETH/USDT",
+    "SOL": "SOL/USDT",
+    "XRP": "XRP/USDT",
+    "DOGE": "DOGE/USDT",
+    "BNB": "BNB/USDT"
+}
+
+# Breaking News detection: price swing > 5% in 15 mins
+NEWS_SWING_THRESHOLD = 0.05
+PRICE_HISTORY = {} # {market_id: [(timestamp, price)]}
 
 async def run_bot():
-    logger.info("Starting Ghost Trader v1.0 - Multi-Crypto Monitoring Mode...")
+    logger.info("Starting Ghost Intelligence v2.0 - Universal Market Monitoring...")
 
     # Initialize components
     scanner = MarketScanner()
     db = Database("data/ghost_trader.db")
     await db.connect()
 
+    explorer = MarketExplorer(scanner.polymarket)
     brain = Brain(model="claude-3-5-sonnet")
     trader = PaperTrader(db)
 
-    # Start WebSocket ticker task for all symbols
-    ticker_task = asyncio.create_task(scanner.watch_tickers(WATCH_LIST))
-
     try:
         while True:
-            # Iterative Scanning: Scan through each pair in WATCH_LIST
-            for symbol in WATCH_LIST:
+            # 1. Market Explorer: Discover and filter active markets
+            logger.info("Ghost Intelligence: Discovering markets...")
+            active_markets = await explorer.fetch_active_markets()
+
+            # Extract symbols for crypto monitoring
+            crypto_symbols = set()
+            for market in active_markets:
+                if market.get("category") == "CRYPTO":
+                    question = market.get("question", "").upper()
+                    for base, pair in CRYPTO_MAPPING.items():
+                        if base in question:
+                            crypto_symbols.add(pair)
+
+            # Start/Update WebSocket ticker task
+            await scanner.update_monitored_symbols(list(crypto_symbols))
+
+            # 2. Main Processing Loop for discovered markets
+            for market in active_markets:
                 try:
-                    # Ticker-specific logging
-                    logger.info(f"[{symbol}] Scanning...")
+                    category = market.get("category", "OTHER")
+                    question = market.get("question", "")
+                    market_id = market.get("market_id")
+                    volume_24h = float(market.get("volume_24h", 0))
 
-                    # 1. Fetch historical data for volatility and RSI
-                    # Ensure parameters match scanner.py: (symbol, timeframe, limit)
-                    df = await scanner.get_historical_data(symbol, timeframe='1m', limit=1440)
+                    # Fetch YES/NO token IDs
+                    tokens = market.get("tokens", [])
+                    if not tokens: continue
+                    token_id = tokens[0].get("token_id") # YES token
 
-                    volatility = calculate_annualized_volatility(df['close'], sampling_period_minutes=1)
-                    rsi = calculate_rsi(df['close']).iloc[-1]
-                    volume_24h = df['volume'].sum()
-                    price_delta_5m = (df['close'].iloc[-1] - df['close'].iloc[-5]) / df['close'].iloc[-5]
+                    current_poly_price = await scanner.get_token_price(token_id)
+                    if not current_poly_price: continue
 
-                    # Wait for WS to get the current price for this symbol
-                    current_price = scanner.current_prices.get(symbol)
-                    if current_price is None:
-                        logger.warning(f"[{symbol}] Waiting for real-time price from WebSocket...")
-                        continue
+                    # [CRYPTO] Parity Arbitrage vs Binance
+                    if category == "CRYPTO":
+                        for base, symbol in CRYPTO_MAPPING.items():
+                            if base in question.upper():
+                                current_binance_price = scanner.current_prices.get(symbol)
+                                if not current_binance_price: continue
 
-                    # 2. Polymarket Data - Search for related markets
-                    base_currency = symbol.split('/')[0]
-                    markets = await scanner.get_polymarket_markets_for_symbol(base_currency)
+                                # Edge Calculation using Black-Scholes
+                                df = await scanner.get_historical_data(symbol)
+                                volatility = calculate_annualized_volatility(df['close'])
+                                strike_price, expiry_dt = parse_polymarket_question(question)
+                                if not strike_price or not expiry_dt: continue
 
-                    # For each market, calculate edge
-                    for market in markets:
-                        # Before parsing, check type safety
-                        if not isinstance(market, dict):
-                            continue
+                                now = datetime.now(timezone.utc)
+                                time_to_expiry_years = (expiry_dt - now).total_seconds() / (24 * 365 * 3600)
+                                if time_to_expiry_years <= 0: continue
 
-                        question = market.get("question")
-                        if not question: continue
+                                implied_prob = calculate_black_scholes_prob(current_binance_price, strike_price, time_to_expiry_years, volatility)
+                                edge = calculate_edge(current_poly_price, implied_prob)
 
-                        # Extract strike and expiry
-                        strike_price, expiry_dt = parse_polymarket_question(question)
-                        if not strike_price or not expiry_dt: continue
+                                status = "ACTIVE" if abs(edge) > 0.05 else "IDLE"
+                                logger.info(f"[CRYPTO] [{question[:30]}] | Price: ${current_poly_price:.2f} | 24h Vol: ${volume_24h:.0f} | SIGNAL: {status}")
 
-                        # Check expiry timeframe (< 24h)
-                        now = datetime.now(timezone.utc)
-                        time_to_expiry_seconds = (expiry_dt - now).total_seconds()
-                        if time_to_expiry_seconds <= 0 or time_to_expiry_seconds > 86400:
-                            continue # Ignore if already expired or too far out
+                                if edge > 0.05:
+                                    # Signal confirmation with Brain
+                                    rsi = calculate_rsi(df['close']).iloc[-1]
+                                    confidence = await brain.get_confidence(edge, rsi, volume_24h, 0.0)
+                                    if confidence > 0.7:
+                                        await trader.execute_trade(market_id, "YES", 50.0, current_poly_price, edge, confidence)
 
-                        # Get actual token price
-                        tokens = market.get("tokens", [])
-                        if not tokens or not isinstance(tokens, list): continue
+                    # [POLITICS/FINANCE/OTHER] Volatility-based "Breaking News" detection
+                    else:
+                        # Price history for news detection
+                        if market_id not in PRICE_HISTORY:
+                            PRICE_HISTORY[market_id] = []
+                        PRICE_HISTORY[market_id].append((time.time(), current_poly_price))
 
-                        token_id = tokens[0].get("token_id")
-                        if not token_id: continue
+                        # Cleanup old history (> 15 mins)
+                        PRICE_HISTORY[market_id] = [(t, p) for t, p in PRICE_HISTORY[market_id] if time.time() - t < 900]
 
-                        polymarket_yes_price = await scanner.get_token_price(token_id)
-                        if not polymarket_yes_price: continue
+                        # Check price swing
+                        if len(PRICE_HISTORY[market_id]) > 2:
+                            price_swing = (PRICE_HISTORY[market_id][-1][1] - PRICE_HISTORY[market_id][0][1]) / PRICE_HISTORY[market_id][0][1]
+                            status = "ACTIVE" if abs(price_swing) > NEWS_SWING_THRESHOLD else "IDLE"
+                            logger.info(f"[{category}] [{question[:30]}] | Price: ${current_poly_price:.2f} | 24h Vol: ${volume_24h:.0f} | SIGNAL: {status}")
 
-                        # 3. Logic - Black-Scholes for Implied Probability
-                        T = time_to_expiry_seconds / (24 * 365 * 3600) # T in years
-                        implied_prob = calculate_black_scholes_prob(current_price, strike_price, T, volatility)
-
-                        edge = calculate_edge(polymarket_yes_price, implied_prob)
-
-                        logger.info(f"[{symbol}] Market: {question}")
-                        logger.info(f"[{symbol}] Binance Price: ${current_price:.2f} | Strike: ${strike_price:.2f}")
-                        logger.info(f"[{symbol}] Implied Prob: {implied_prob:.2%} | Polymarket YES: ${polymarket_yes_price:.2f} | Edge: {edge:.2%}")
-
-                        # 4. Signal and Brain Check
-                        if edge > 0.05:
-                            confidence = await brain.get_confidence(edge, rsi, volume_24h, price_delta_5m)
-                            logger.info(f"[{symbol}] Edge detected! Claude Confidence: {confidence:.2f}")
-
-                            if confidence > 0.7:
-                                # Execute Paper Trade
-                                trade_size = 50.0 # Fixed Fractional $50
-                                success, msg = await trader.execute_trade(market.get("market_id"), "YES", trade_size, polymarket_yes_price, edge, confidence)
-                                logger.info(f"[{symbol}] {msg}")
+                            if status == "ACTIVE":
+                                logger.info(f"Ghost Intelligence Alert: Breaking News detected in {category}! Price swing of {price_swing:.2%}")
 
                 except Exception as e:
-                    # Global Try-Except per Pair: Ensure one pair failure doesn't stop the bot
-                    logger.error(f"[{symbol}] Critical error in scanning cycle: {e}", exc_info=True)
+                    logger.error(f"Error processing market: {e}")
                     continue
 
-            # 5. Check for resolutions (Once per global loop)
             await trader.check_resolutions(scanner)
-
-            # Wait before next scan (15 seconds to be efficient but responsive)
-            await asyncio.sleep(15)
+            await asyncio.sleep(60) # Discovery loop interval
 
     except asyncio.CancelledError:
         logger.info("Bot task cancelled.")
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user.")
     except Exception as e:
         logger.error(f"Critical error in main global loop: {e}", exc_info=True)
     finally:
-        ticker_task.cancel()
         await scanner.close()
         await db.close()
 
