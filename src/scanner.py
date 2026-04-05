@@ -16,8 +16,6 @@ logger = logging.getLogger(__name__)
 
 class MarketScanner:
     def __init__(self):
-        # Restore Binance Futures Integration as requested
-        # Futures lead the spot market and are more sensitive to short-term shifts.
         self.exchange = ccxt.binance({
             'options': {
                 'defaultType': 'future',
@@ -75,6 +73,10 @@ class MarketScanner:
         return self._ohlcv_cache[symbol]
 
     async def get_token_price(self, token_id):
+        """
+        Fetches the mid-price for a specific Polymarket token with robust data parsing.
+        Fixed method: Using get_order_book() instead of get_orderbook().
+        """
         now = time.time()
         if token_id in self.poly_price_cache:
             ts, price = self.poly_price_cache[token_id]
@@ -83,23 +85,30 @@ class MarketScanner:
 
         try:
             await asyncio.sleep(random.uniform(0.1, 0.3))
-            orderbook = await asyncio.to_thread(self.polymarket.get_orderbook, token_id)
+            # Fixed: ClobClient uses get_order_book(token_id)
+            orderbook = await asyncio.to_thread(self.polymarket.get_order_book, token_id)
+
+            # Robust parsing of the orderbook data structure
+            # It can be an object with .bids/.asks or a dict with "bids"/"asks" keys
             if hasattr(orderbook, 'bids') and hasattr(orderbook, 'asks'):
                 if orderbook.bids and orderbook.asks:
-                    best_bid = float(orderbook.bids[0].price)
-                    best_ask = float(orderbook.asks[0].price)
-                    mid_price = (best_bid + best_ask) / 2
-                    self.poly_price_cache[token_id] = (now, mid_price)
-                    return mid_price
+                    # In some SDK versions, bids[0] is an object with .price
+                    best_bid = float(getattr(orderbook.bids[0], 'price', orderbook.bids[0].get('price', 0)))
+                    best_ask = float(getattr(orderbook.asks[0], 'price', orderbook.asks[0].get('price', 0)))
+                    if best_bid > 0 and best_ask > 0:
+                        mid_price = (best_bid + best_ask) / 2
+                        self.poly_price_cache[token_id] = (now, mid_price)
+                        return mid_price
             elif isinstance(orderbook, dict):
                 bids = orderbook.get("bids", [])
                 asks = orderbook.get("asks", [])
                 if bids and asks:
                     best_bid = float(bids[0].get("price", 0))
                     best_ask = float(asks[0].get("price", 0))
-                    mid_price = (best_bid + best_ask) / 2
-                    self.poly_price_cache[token_id] = (now, mid_price)
-                    return mid_price
+                    if best_bid > 0 and best_ask > 0:
+                        mid_price = (best_bid + best_ask) / 2
+                        self.poly_price_cache[token_id] = (now, mid_price)
+                        return mid_price
             return None
         except Exception as e:
             logger.error(f"Error fetching price for token {token_id}: {e}")

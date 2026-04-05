@@ -31,7 +31,7 @@ class MarketExplorer:
             for market in markets:
                 if not isinstance(market, dict): continue
 
-                # Liquid Filter: Volume > $10,000 and Spread < 2%
+                # Liquid Filter: Volume > $10,000
                 volume_24h = float(market.get("volume_24h", 0))
                 if volume_24h < 10000:
                     continue
@@ -62,17 +62,18 @@ class MarketExplorer:
 
     async def get_spread(self, token_id):
         """
-        Calculates the spread for a given token.
+        Calculates the spread for a given token with robust method call.
+        Fixed method: Using get_order_book() instead of get_orderbook().
         """
         try:
-            orderbook = await asyncio.to_thread(self.polymarket.get_orderbook, token_id)
+            # Fixed method call: get_order_book
+            orderbook = await asyncio.to_thread(self.polymarket.get_order_book, token_id)
             if hasattr(orderbook, 'bids') and hasattr(orderbook, 'asks'):
                 if orderbook.bids and orderbook.asks:
-                    best_bid = float(orderbook.bids[0].price)
-                    best_ask = float(orderbook.asks[0].price)
+                    best_bid = float(getattr(orderbook.bids[0], 'price', orderbook.bids[0].get('price', 0)))
+                    best_ask = float(getattr(orderbook.asks[0], 'price', orderbook.asks[0].get('price', 0)))
                     if best_ask > 0:
-                        spread = (best_ask - best_bid) / best_ask
-                        return spread
+                        return (best_ask - best_bid) / best_ask
             elif isinstance(orderbook, dict):
                 bids = orderbook.get("bids", [])
                 asks = orderbook.get("asks", [])
