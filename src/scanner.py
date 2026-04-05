@@ -9,15 +9,18 @@ from dotenv import load_dotenv
 import pandas as pd
 import numpy as np
 import time
+import random
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 class MarketScanner:
     def __init__(self):
-        # Switch to Coinbase for general market monitoring as Binance is restricted in this location
-        self.exchange = ccxt.coinbase({
+        # Restore Binance Futures Integration as requested
+        # Futures lead the spot market and are more sensitive to short-term shifts.
+        self.exchange = ccxt.binance({
             'options': {
+                'defaultType': 'future',
                 'adjustForTimeDifference': True,
             }
         })
@@ -34,12 +37,9 @@ class MarketScanner:
         self._last_ohlcv_update = {}
         self.monitored_symbols = set()
         self.ticker_task = None
+        self.poly_price_cache = {}
 
     async def update_monitored_symbols(self, symbols):
-        """
-        Dynamically updates the set of symbols to monitor.
-        If a new symbol is added, it restarts the WebSocket task.
-        """
         new_symbols = set(symbols)
         if new_symbols != self.monitored_symbols:
             self.monitored_symbols = new_symbols
@@ -48,9 +48,6 @@ class MarketScanner:
             self.ticker_task = asyncio.create_task(self.watch_tickers(list(self.monitored_symbols)))
 
     async def watch_tickers(self, symbols):
-        """
-        Uses WebSockets to watch ticker updates from the exchange for multiple symbols.
-        """
         if not symbols: return
         while True:
             try:
@@ -78,23 +75,31 @@ class MarketScanner:
         return self._ohlcv_cache[symbol]
 
     async def get_token_price(self, token_id):
-        """
-        Fetches the mid-price for a specific Polymarket token.
-        """
+        now = time.time()
+        if token_id in self.poly_price_cache:
+            ts, price = self.poly_price_cache[token_id]
+            if now - ts < 2:
+                return price
+
         try:
+            await asyncio.sleep(random.uniform(0.1, 0.3))
             orderbook = await asyncio.to_thread(self.polymarket.get_orderbook, token_id)
             if hasattr(orderbook, 'bids') and hasattr(orderbook, 'asks'):
                 if orderbook.bids and orderbook.asks:
                     best_bid = float(orderbook.bids[0].price)
                     best_ask = float(orderbook.asks[0].price)
-                    return (best_bid + best_ask) / 2
+                    mid_price = (best_bid + best_ask) / 2
+                    self.poly_price_cache[token_id] = (now, mid_price)
+                    return mid_price
             elif isinstance(orderbook, dict):
                 bids = orderbook.get("bids", [])
                 asks = orderbook.get("asks", [])
                 if bids and asks:
                     best_bid = float(bids[0].get("price", 0))
                     best_ask = float(asks[0].get("price", 0))
-                    return (best_bid + best_ask) / 2
+                    mid_price = (best_bid + best_ask) / 2
+                    self.poly_price_cache[token_id] = (now, mid_price)
+                    return mid_price
             return None
         except Exception as e:
             logger.error(f"Error fetching price for token {token_id}: {e}")

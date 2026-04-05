@@ -3,6 +3,7 @@ import sys
 import asyncio
 import logging
 import time
+import random
 
 # Zero-Failure Technical Architecture: absolute path handling
 # Implement sys.path.append so the bot can be run from any directory
@@ -130,7 +131,10 @@ async def run_discovery_loop(explorer, scanner, brain, trader):
                     continue
 
             await trader.check_resolutions(scanner)
-            await asyncio.sleep(60) # Discovery loop interval
+
+            # Faster discovery interval: 5-10 seconds with jitter
+            jitter = random.uniform(5, 10)
+            await asyncio.sleep(jitter)
     except asyncio.CancelledError:
         logger.info("Discovery loop task cancelled.")
     except Exception as e:
