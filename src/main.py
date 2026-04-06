@@ -12,6 +12,7 @@ sys.path.append(ABS_ROOT)
 from src.scanner import MarketScanner
 from src.explorer import MarketExplorer
 from src.whale_tracker import WhaleTracker
+from src.scrapers.activity import ActivityHunter
 from src.copy_trader import CopyTrader
 from src.database import Database
 from src.logic import calculate_black_scholes_prob, calculate_edge, calculate_annualized_volatility, calculate_rsi
@@ -26,7 +27,7 @@ from datetime import datetime, timezone
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Category-specific Symbols
+# Mapping logic remains standard
 CRYPTO_MAPPING = {
     "BTC": "BTC/USDT",
     "ETH": "ETH/USDT",
@@ -36,24 +37,18 @@ CRYPTO_MAPPING = {
     "BNB": "BNB/USDT"
 }
 
-# Breaking News detection
 NEWS_SWING_THRESHOLD = 0.05
 PRICE_HISTORY = {}
 
 async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db):
-    """
-    Ghost Intelligence v2.0 logic: discover, filter, and monitor markets.
-    """
     last_status_log = time.time()
     last_re_rank = time.time()
-
     try:
         while True:
             start_time = time.time()
             logger.debug("Ghost Intelligence: Discovering markets...")
             active_markets = await explorer.fetch_active_markets()
 
-            # 1. Update monitored symbols
             crypto_symbols = set()
             for market in active_markets:
                 if market.get("category") == "CRYPTO":
@@ -63,14 +58,12 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
                             crypto_symbols.add(pair)
             await scanner.update_monitored_symbols(list(crypto_symbols))
 
-            # 2. Main Processing Loop
             for market in active_markets:
                 try:
                     category = market.get("category", "OTHER")
                     question = market.get("question", "")
                     market_id = market.get("market_id")
                     volume_24h = float(market.get("volume_24h", 0))
-
                     tokens = market.get("tokens", [])
                     if not tokens: continue
                     token_id = tokens[0].get("token_id")
@@ -100,87 +93,86 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
                                     rsi = calculate_rsi(df['close']).iloc[-1]
                                     confidence = await brain.get_confidence(edge, rsi, volume_24h, 0.0)
                                     logger.info(f"[!!! SIGNAL !!!] [CRYPTO] [{question[:30]}] | Price: ${current_poly_price:.2f} | Edge: {edge:.2%} | Confidence: {confidence:.2f}")
-
                                     if confidence > 0.7:
                                         await trader.execute_trade(market_id, "YES", 50.0, current_poly_price, edge, confidence)
                                 else:
                                     logger.debug(f"[CRYPTO] [{question[:30]}] | Price: ${current_poly_price:.2f} | Edge: {edge:.2%} | SIGNAL: IDLE")
-
                     else:
                         if market_id not in PRICE_HISTORY:
                             PRICE_HISTORY[market_id] = []
                         PRICE_HISTORY[market_id].append((time.time(), current_poly_price))
                         PRICE_HISTORY[market_id] = [(t, p) for t, p in PRICE_HISTORY[market_id] if time.time() - t < 900]
-
                         if len(PRICE_HISTORY[market_id]) > 2:
                             price_swing = (PRICE_HISTORY[market_id][-1][1] - PRICE_HISTORY[market_id][0][1]) / PRICE_HISTORY[market_id][0][1]
                             if abs(price_swing) > NEWS_SWING_THRESHOLD:
                                 logger.info(f"[!!! SIGNAL !!!] [{category}] [{question[:30]}] | Breaking News! Price Swing: {price_swing:.2%}")
                             else:
                                 logger.debug(f"[{category}] [{question[:30]}] | Price: ${current_poly_price:.2f} | Swing: {price_swing:.2%} | SIGNAL: IDLE")
-
                 except Exception as e:
                     logger.debug(f"Error processing market: {e}")
                     continue
 
             await trader.check_resolutions(scanner)
 
-            # Periodic Status Logging & Analytics
             if time.time() - last_status_log > 300:
                 total, wins, win_rate, total_pnl = await db.get_bot_performance()
                 scan_time = time.time() - start_time
-                logger.info(f"[STATUS] Monitoring {len(active_markets)} Active Markets | Tracked {len(whale_tracker.top_whales)} Elite Wallets | Last Scan Time: {scan_time:.2f}s | Bot Win-Rate: {win_rate:.1f}%")
-                await log_bot_performance(db)
+                logger.info(f"[STATUS] Monitoring {len(active_markets)} Active Markets | Tracked {len(whale_tracker.top_whales)} Elite Wallets | Win-Rate: {win_rate:.1f}%")
                 last_status_log = time.time()
-
-            # 24h Automatic Whale Re-Ranking
             if time.time() - last_re_rank > 86400:
                 await whale_tracker.re_rank_whales(limit=20)
                 last_re_rank = time.time()
-
-            jitter = random.uniform(5, 10)
-            await asyncio.sleep(jitter)
+            await asyncio.sleep(random.uniform(5, 10))
     except asyncio.CancelledError:
-        logger.info("Discovery loop task cancelled.")
+        logger.info("Discovery loop cancelled.")
     except Exception as e:
-        logger.error(f"Critical error in discovery loop: {e}", exc_info=True)
+        logger.error(f"Discovery loop error: {e}", exc_info=True)
+
+async def run_activity_hunter_loop(hunter, copy_trader):
+    try:
+        logger.info("Ghost Intelligence v4.0: Activity Hunter active.")
+        async for event in hunter.monitor_stream():
+            if not isinstance(event, dict): continue
+            await copy_trader.evaluate_activity_event(event)
+    except asyncio.CancelledError:
+        logger.info("Activity Hunter loop cancelled.")
+    except Exception as e:
+        logger.error(f"Activity Hunter loop error: {e}")
 
 async def run_whale_tracker_loop(whale_tracker, copy_trader):
     try:
         logger.info("Ghost Intelligence v3.0: Whale Tracker active.")
         async for whale_action in whale_tracker.monitor_whale_activity():
-            if not isinstance(whale_action, dict):
-                continue
+            if not isinstance(whale_action, dict): continue
             await copy_trader.evaluate_signal(whale_action)
     except asyncio.CancelledError:
-        logger.info("Whale tracker loop task cancelled.")
+        logger.info("Whale tracker loop cancelled.")
     except Exception as e:
-        logger.error(f"Critical error in whale tracker loop: {e}", exc_info=True)
+        logger.error(f"Whale tracker loop error: {e}")
 
 async def main():
-    logger.info("Starting Ghost Intelligence v3.0 - Performance Analytics Deployment...")
-
+    logger.info("Starting Ghost Intelligence v4.0 - The Activity Hunter...")
     scanner = MarketScanner()
     db = Database("data/ghost_trader.db")
     await db.connect()
-
     explorer = MarketExplorer(scanner.polymarket)
     brain = Brain(model="claude-3-5-sonnet")
     trader = PaperTrader(db)
-
     whale_tracker = WhaleTracker(scanner.polymarket, db=db)
+    activity_hunter = ActivityHunter()
     copy_trader = CopyTrader(trader, scanner)
 
     tasks = [
-        run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db),
-        run_whale_tracker_loop(whale_tracker, copy_trader)
+        asyncio.create_task(run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db)),
+        asyncio.create_task(run_whale_tracker_loop(whale_tracker, copy_trader)),
+        asyncio.create_task(run_activity_hunter_loop(activity_hunter, copy_trader))
     ]
-
     try:
         await asyncio.gather(*tasks)
     except Exception as e:
-        logger.error(f"Critical failure in bot core: {e}", exc_info=True)
+        logger.error(f"Critical failure: {e}", exc_info=True)
     finally:
+        for t in tasks: t.cancel()
         await scanner.close()
         await db.close()
 

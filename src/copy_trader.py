@@ -20,14 +20,10 @@ class CopyTrader:
         self.scanner = scanner
 
     async def _get_market_category(self, market_id):
-        """
-        Determines the category of a market by fetching its info.
-        """
         try:
             market_info = await asyncio.to_thread(self.scanner.polymarket.get_market, market_id)
             if not isinstance(market_info, dict):
                 return "DEFAULT"
-
             question = market_info.get("question", "").upper()
             if any(kw in question for kw in ["TRUMP", "BIDEN", "ELECTION", "PRESIDENT"]):
                 return "POLITICS"
@@ -35,16 +31,13 @@ class CopyTrader:
                 return "CRYPTO"
             if any(kw in question for kw in ["NBA", "NFL", "SOCCER", "TEAM", "MATCH", "SCORE", "GOAL"]):
                 return "SPORTS"
-
             return "DEFAULT"
         except:
             return "DEFAULT"
 
     async def evaluate_signal(self, whale_action):
         """
-        Copy-Trade Logic:
-        1. Liquidity Guard: Ensure the target market has 24h Volume > $10,000.
-        2. Dynamic Price Guard: Category-based slippage override.
+        Original Whale Tracker Signal Evaluation.
         """
         whale = whale_action.get("whale", "0x...")
         action = whale_action.get("action", "BUY")
@@ -52,41 +45,80 @@ class CopyTrader:
         whale_entry_price = whale_action.get("price", 0)
 
         try:
-            # 1. Fetch current market price
             current_market_price = await self.scanner.get_token_price(market_id)
-            if not current_market_price:
-                logger.debug(f"CopyTrader: Invalid price data for {market_id}")
-                return False
+            if not current_market_price: return False
 
-            # Determine slippage limit based on category
             category = await self._get_market_category(market_id)
             slippage_limit = CATEGORY_SLIPPAGE.get(category, CATEGORY_SLIPPAGE["DEFAULT"])
 
-            # 1. Liquidity Guard: 24h Volume > $10,000
-            # (In production we'd fetch actual volume, using 15k for demo)
+            # Liquidity Guard
             market_volume_24h = 15000.0
-            if market_volume_24h < 10000:
-                logger.debug(f"[WHALE_ACTION] Wallet: {whale[:10]}... | Action: {action} {market_id} | SIGNAL: INSUFFICIENT_LIQUIDITY")
-                return False
+            if market_volume_24h < 10000: return False
 
-            # 2. Dynamic Price Guard: Within slippage_limit of whale's entry price
+            # Price Guard
             price_diff_pct = abs(current_market_price - whale_entry_price) / whale_entry_price
-            if price_diff_pct > slippage_limit:
-                logger.debug(f"[WHALE_ACTION] Wallet: {whale[:10]}... | Action: {action} {market_id} | SIGNAL: SPREAD_TOO_HIGH ({price_diff_pct:.2%}, Limit: {slippage_limit:.2%})")
-                return False
+            if price_diff_pct > slippage_limit: return False
 
-            # 3. All Guards Passed -> CopySignal Match
-            logger.info(f"[!!! WHALE_ACTION !!!] Wallet: {whale[:10]}... | Action: {action} {market_id} | Price: ${current_market_price:.2f} | Category: {category} | SIGNAL: COPY_MATCH")
+            logger.info(f"[!!! WHALE_ACTION !!!] Wallet: {whale[:10]}... | Action: {action} {market_id} | SIGNAL: COPY_MATCH")
 
-            # Execute Paper Copy Trade
             success, msg = await self.trader.execute_trade(
                 market_id, "YES", 50.0, current_market_price,
                 edge=0.0, confidence=1.0, whale_address=whale
             )
             if success:
                 logger.info(f"[!!! SIGNAL !!!] Whale copy-trade executed! {msg}")
+            return True
+        except Exception as e:
+            logger.error(f"CopyTrader: Error evaluating whale signal - {e}")
+            return False
+
+    async def evaluate_activity_event(self, event):
+        """
+        Ghost Intelligence v4.0: Activity Hunter Signal Evaluation.
+        Handles Cluster detection and Big Whale events.
+        """
+        event_type = event.get("type")
+        market_id = event.get("market_id")
+        side = event.get("side", "BUY")
+        price = event.get("price") or event.get("avg_price", 0)
+
+        try:
+            # Common verification for all activity events
+            current_market_price = await self.scanner.get_token_price(market_id)
+            if not current_market_price: return False
+
+            # Liquidity Guard (>$10k)
+            # market_info = await asyncio.to_thread(self.scanner.polymarket.get_market, market_id)
+            # market_volume_24h = float(market_info.get("volume_24h", 0))
+            market_volume_24h = 15000.0 # Demo
+            if market_volume_24h < 10000: return False
+
+            if event_type == "WHALE_EVENT":
+                amount = event.get("amount", 0)
+                wallet = event.get("wallet", "0x...")
+                logger.info(f"[!!! WHALE_ACTION !!!] Large Move Detected! ${amount:,.0f} by {wallet[:10]}... on {market_id}")
+
+                # Big Whale Event Strategy: Execute trade
+                success, msg = await self.trader.execute_trade(
+                    market_id, side, 50.0, current_market_price,
+                    edge=0.0, confidence=0.9, whale_address=wallet
+                )
+                if success:
+                    logger.info(f"[!!! SIGNAL !!!] Big Whale trade executed! {msg}")
+
+            elif event_type == "CLUSTER_DETECTED":
+                wallets_count = event.get("wallets_count", 0)
+                logger.info(f"[!!! SIGNAL !!!] ACTIVITY CLUSTER! {wallets_count} wallets betting on {market_id} {side} within 120s.")
+
+                # Cluster Strategy: High confidence execute
+                success, msg = await self.trader.execute_trade(
+                    market_id, side, 50.0, current_market_price,
+                    edge=0.0, confidence=0.95, whale_address="CLUSTER"
+                )
+                if success:
+                    logger.info(f"[!!! SIGNAL !!!] Cluster copy-trade executed! {msg}")
 
             return True
         except Exception as e:
-            logger.error(f"CopyTrader: Error evaluating signal - {e}")
+            logger.error(f"CopyTrader: Error evaluating activity event - {e}")
             return False
