@@ -11,18 +11,17 @@ class MarketExplorer:
         self.polymarket = polymarket_client
         self.gamma_api_base = "https://gamma-api.polymarket.com"
 
-        # High-volume Fallback Token IDs (US Election, BTC, etc.)
+        # High-volume Fallback Token IDs
         self.fallback_token_ids = [
-            "21742416952778735398292850937877549041280327668630713028308365920042456453676", # Example
-            "10000000000000000000000000000000000000000000000000000000000000000000000000001"  # Mock
+            "21742416952778735398292850937877549041280327668630713028308365920042456453676"
         ]
 
-    async def fetch_active_markets(self, limit=50):
+    async def fetch_active_markets(self, limit=200):
         """
-        Fetches active markets from Gamma API and extracts correct clobTokenIds.
+        Fetches active markets from Gamma API with robust field mapping.
         """
         try:
-            # Use Gamma API for reliable active markets discovery
+            # Fetch all active, open markets
             url = f"{self.gamma_api_base}/markets?active=true&closed=false&limit={limit}"
             response = await asyncio.to_thread(requests.get, url, timeout=10)
 
@@ -32,30 +31,36 @@ class MarketExplorer:
 
             markets_data = response.json()
             if not isinstance(markets_data, list):
+                logger.error("Explorer: Gamma API returned non-list data.")
                 return self._get_fallback_markets()
 
             discovered_markets = []
             for m in markets_data:
-                # Reliability Fix: Extract all clobTokenIds and map them back to the market
-                clob_token_ids = m.get("clobTokenIds")
-                if not clob_token_ids: continue
+                if not isinstance(m, dict): continue
+
+                # Extract correct clobTokenIds (list of strings)
+                raw_token_ids = m.get("clobTokenIds")
+                if not raw_token_ids: continue
 
                 try:
                     import json
-                    if isinstance(clob_token_ids, str):
-                        token_ids = json.loads(clob_token_ids)
+                    if isinstance(raw_token_ids, str):
+                        token_ids = json.loads(raw_token_ids)
                     else:
-                        token_ids = clob_token_ids
+                        token_ids = raw_token_ids
 
-                    if not token_ids: continue
+                    if not token_ids or not isinstance(token_ids, list): continue
 
-                    # Store as multiple tokens to handle different IDs in activity feed
+                    # Map fields robustly
+                    # market_id -> conditionId is the most stable unique identifier
+                    market_id = m.get("conditionId") or str(m.get("id"))
+
                     market = {
-                        "market_id": m.get("id"),
-                        "question": m.get("question"),
-                        "token_ids": token_ids, # All associated tokens
-                        "token_id": token_ids[0], # Primary token (YES)
-                        "volume_24h": float(m.get("volume24h", 0)),
+                        "market_id": market_id,
+                        "question": m.get("question", "Unknown"),
+                        "token_ids": token_ids, # All associated clobTokenIds
+                        "token_id": token_ids[0], # YES clobTokenId
+                        "volume_24h": float(m.get("volume24hr") or m.get("volume24h") or m.get("volume") or 0),
                         "active": True
                     }
 
@@ -72,12 +77,13 @@ class MarketExplorer:
 
                     discovered_markets.append(market)
                 except Exception as e:
-                    logger.debug(f"Error parsing token IDs for market {m.get('id')}: {e}")
+                    logger.debug(f"Error parsing market data: {e}")
                     continue
 
             if not discovered_markets:
                 return self._get_fallback_markets()
 
+            # Sort by volume and return top candidates
             discovered_markets.sort(key=lambda x: x.get("volume_24h", 0), reverse=True)
             return discovered_markets[:limit]
 
@@ -86,6 +92,9 @@ class MarketExplorer:
             return self._get_fallback_markets()
 
     def _get_fallback_markets(self):
+        """
+        Safety net with high-volume tokens.
+        """
         logger.warning("Explorer: Using hardcoded fallback markets.")
         return [
             {
@@ -94,25 +103,7 @@ class MarketExplorer:
                 "token_id": "21742416952778735398292850937877549041280327668630713028308365920042456453676",
                 "token_ids": ["21742416952778735398292850937877549041280327668630713028308365920042456453676"],
                 "category": "CRYPTO",
-                "volume_24h": 100000,
+                "volume_24h": 1000000,
                 "active": True
             }
         ]
-
-    async def get_spread(self, token_id):
-        try:
-            orderbook = await asyncio.to_thread(self.polymarket.get_order_book, token_id)
-            if hasattr(orderbook, 'bids') and hasattr(orderbook, 'asks'):
-                if orderbook.bids and orderbook.asks:
-                    best_bid = float(getattr(orderbook.bids[0], 'price', orderbook.bids[0].get('price', 0)))
-                    best_ask = float(getattr(orderbook.asks[0], 'price', orderbook.asks[0].get('price', 0)))
-                    if best_ask > 0:
-                        return (best_ask - best_bid) / best_ask
-            return 1.0
-        except Exception as e:
-            error_msg = str(e)
-            if "404" in error_msg or "not found" in error_msg.lower():
-                logger.debug(f"No orderbook found for spread calculation of {token_id}")
-            else:
-                logger.warning(f"Error calculating spread for {token_id}: {e}")
-            return 1.0
