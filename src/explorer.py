@@ -36,14 +36,12 @@ class MarketExplorer:
 
             discovered_markets = []
             for m in markets_data:
-                # Extract clobTokenIds
+                # Reliability Fix: Extract all clobTokenIds and map them back to the market
                 clob_token_ids = m.get("clobTokenIds")
                 if not clob_token_ids: continue
 
-                # Use the first token ID (typically YES)
                 try:
                     import json
-                    # clobTokenIds is usually a JSON string in some API responses or a list
                     if isinstance(clob_token_ids, str):
                         token_ids = json.loads(clob_token_ids)
                     else:
@@ -51,9 +49,11 @@ class MarketExplorer:
 
                     if not token_ids: continue
 
+                    # Store as multiple tokens to handle different IDs in activity feed
                     market = {
                         "market_id": m.get("id"),
                         "question": m.get("question"),
+                        "token_ids": token_ids, # All associated tokens
                         "token_id": token_ids[0], # Primary token (YES)
                         "volume_24h": float(m.get("volume24h", 0)),
                         "active": True
@@ -65,7 +65,7 @@ class MarketExplorer:
                         market["category"] = "CRYPTO"
                     elif any(kw in q for kw in ["TRUMP", "BIDEN", "ELECTION", "PRESIDENT"]):
                         market["category"] = "POLITICS"
-                    elif any(kw in q for kw in ["NBA", "NFL", "SOCCER", "MATCH"]):
+                    elif any(kw in q for kw in ["NBA", "NFL", "SOCCER", "MATCH", "SCORE", "GOAL"]):
                         market["category"] = "SPORTS"
                     else:
                         market["category"] = "OTHER"
@@ -78,7 +78,6 @@ class MarketExplorer:
             if not discovered_markets:
                 return self._get_fallback_markets()
 
-            # Sort by volume
             discovered_markets.sort(key=lambda x: x.get("volume_24h", 0), reverse=True)
             return discovered_markets[:limit]
 
@@ -87,15 +86,13 @@ class MarketExplorer:
             return self._get_fallback_markets()
 
     def _get_fallback_markets(self):
-        """
-        Safety net: returns hardcoded high-volume markets if API fails.
-        """
         logger.warning("Explorer: Using hardcoded fallback markets.")
         return [
             {
                 "market_id": "fallback_btc",
                 "question": "Will BTC be above $70k?",
                 "token_id": "21742416952778735398292850937877549041280327668630713028308365920042456453676",
+                "token_ids": ["21742416952778735398292850937877549041280327668630713028308365920042456453676"],
                 "category": "CRYPTO",
                 "volume_24h": 100000,
                 "active": True
@@ -113,5 +110,9 @@ class MarketExplorer:
                         return (best_ask - best_bid) / best_ask
             return 1.0
         except Exception as e:
-            logger.debug(f"No orderbook found for spread calculation of {token_id}")
+            error_msg = str(e)
+            if "404" in error_msg or "not found" in error_msg.lower():
+                logger.debug(f"No orderbook found for spread calculation of {token_id}")
+            else:
+                logger.warning(f"Error calculating spread for {token_id}: {e}")
             return 1.0

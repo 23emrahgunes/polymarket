@@ -27,8 +27,15 @@ from datetime import datetime, timezone
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Mute noisy HTTP and SDK logs in production
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("py_clob_client").setLevel(logging.WARNING)
+logging.getLogger("ccxt").setLevel(logging.WARNING)
+
 # Shared state for discovery
 ACTIVE_MARKET_CONTEXT = {} # {market_id: market_data}
+TOKEN_TO_MARKET_MAP = {}   # {token_id: market_id}
 
 # Mapping logic remains standard
 CRYPTO_MAPPING = {
@@ -51,12 +58,18 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
             start_time = time.time()
             logger.debug("Ghost Intelligence: Discovering markets...")
 
-            # Fetch top 50 high-volume active markets
-            active_markets = await explorer.fetch_active_markets(limit=50)
+            # Fetch top 200 high-volume active markets
+            active_markets = await explorer.fetch_active_markets(limit=200)
 
             # Update Global Market Context for Activity Sync
-            global ACTIVE_MARKET_CONTEXT
+            global ACTIVE_MARKET_CONTEXT, TOKEN_TO_MARKET_MAP
             ACTIVE_MARKET_CONTEXT = {m.get("market_id"): m for m in active_markets}
+
+            # Map every token_id to its parent market_id for reliable activity matching
+            TOKEN_TO_MARKET_MAP = {}
+            for m in active_markets:
+                for tid in m.get("token_ids", []):
+                    TOKEN_TO_MARKET_MAP[tid] = m.get("market_id")
 
             # 1. Update monitored symbols for crypto
             crypto_symbols = set()
@@ -147,14 +160,21 @@ async def run_activity_hunter_loop(hunter, copy_trader):
         async for event in hunter.monitor_stream():
             if not isinstance(event, dict): continue
 
+            # Reliability Fix: Resolve token_id from activity to market_id
+            token_id_from_activity = event.get("market_id") # Gamma API calls it market_id in activity
+            market_id = TOKEN_TO_MARKET_MAP.get(token_id_from_activity, token_id_from_activity)
+
             # Sync ActivityHunter with Global Market Context
-            market_id = event.get("market_id")
             if market_id in ACTIVE_MARKET_CONTEXT:
                 # Add category context if missing
+                event["market_id"] = market_id # Use resolved ID
                 event["category"] = ACTIVE_MARKET_CONTEXT[market_id].get("category")
                 await copy_trader.evaluate_activity_event(event)
             else:
-                # Still evaluate if high volume event or known whale
+                # Forced Debug: Skip and Log
+                logger.debug(f"Skipped Trade | Reason: Market Not Monitored | ID: {token_id_from_activity}")
+
+                # Still evaluate if high volume event
                 if event.get("type") == "WHALE_EVENT":
                     await copy_trader.evaluate_activity_event(event)
     except asyncio.CancelledError:

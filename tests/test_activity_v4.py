@@ -1,6 +1,13 @@
 import pytest
 import asyncio
 import time
+import os
+import sys
+
+# Handle path
+ABS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(ABS_ROOT)
+
 from src.scrapers.activity import ActivityHunter
 
 @pytest.mark.asyncio

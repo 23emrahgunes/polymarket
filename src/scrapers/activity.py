@@ -12,7 +12,7 @@ class ActivityHunter:
         # Cluster tracking: {(market_id, side): [timestamp1, timestamp2, ...]}
         self.activity_clusters = defaultdict(list)
         self.processed_transaction_ids = set()
-        self.whale_event_threshold = 2500.0 # $2,500
+        self.whale_event_threshold = 50.0 # TEMPORARY: $50 (increased sensitivity)
         self.cluster_time_window = 120 # 120 seconds
         self.cluster_min_wallets = 3
 
@@ -44,6 +44,11 @@ class ActivityHunter:
 
                 for act in activities:
                     if not isinstance(act, dict): continue
+
+                    # Forced Debug: Log every detected transaction
+                    raw_amount = float(act.get("size", 0)) * float(act.get("price", 0))
+                    raw_token_id = act.get("market_id")
+                    logger.debug(f"Raw Trade Detected | Size: ${raw_amount:,.2f} | TokenID: {raw_token_id}")
 
                     # Prevent duplicate processing
                     tx_id = act.get("id") or act.get("transaction_hash")
