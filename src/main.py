@@ -27,6 +27,9 @@ from datetime import datetime, timezone
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Shared state for discovery
+ACTIVE_MARKET_CONTEXT = {} # {market_id: market_data}
+
 # Mapping logic remains standard
 CRYPTO_MAPPING = {
     "BTC": "BTC/USDT",
@@ -47,8 +50,15 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
         while True:
             start_time = time.time()
             logger.debug("Ghost Intelligence: Discovering markets...")
-            active_markets = await explorer.fetch_active_markets()
 
+            # Fetch top 50 high-volume active markets
+            active_markets = await explorer.fetch_active_markets(limit=50)
+
+            # Update Global Market Context for Activity Sync
+            global ACTIVE_MARKET_CONTEXT
+            ACTIVE_MARKET_CONTEXT = {m.get("market_id"): m for m in active_markets}
+
+            # 1. Update monitored symbols for crypto
             crypto_symbols = set()
             for market in active_markets:
                 if market.get("category") == "CRYPTO":
@@ -58,6 +68,7 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
                             crypto_symbols.add(pair)
             await scanner.update_monitored_symbols(list(crypto_symbols))
 
+            # 2. Main Processing Loop
             for market in active_markets:
                 try:
                     category = market.get("category", "OTHER")
@@ -122,6 +133,8 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
             if time.time() - last_re_rank > 86400:
                 await whale_tracker.re_rank_whales(limit=20)
                 last_re_rank = time.time()
+
+            # Discovery cycle: 5-10 seconds
             await asyncio.sleep(random.uniform(5, 10))
     except asyncio.CancelledError:
         logger.info("Discovery loop cancelled.")
@@ -133,7 +146,17 @@ async def run_activity_hunter_loop(hunter, copy_trader):
         logger.info("Ghost Intelligence v4.0: Activity Hunter active.")
         async for event in hunter.monitor_stream():
             if not isinstance(event, dict): continue
-            await copy_trader.evaluate_activity_event(event)
+
+            # Sync ActivityHunter with Global Market Context
+            market_id = event.get("market_id")
+            if market_id in ACTIVE_MARKET_CONTEXT:
+                # Add category context if missing
+                event["category"] = ACTIVE_MARKET_CONTEXT[market_id].get("category")
+                await copy_trader.evaluate_activity_event(event)
+            else:
+                # Still evaluate if high volume event or known whale
+                if event.get("type") == "WHALE_EVENT":
+                    await copy_trader.evaluate_activity_event(event)
     except asyncio.CancelledError:
         logger.info("Activity Hunter loop cancelled.")
     except Exception as e:

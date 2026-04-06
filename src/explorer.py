@@ -10,13 +10,12 @@ class MarketExplorer:
     def __init__(self, polymarket_client: ClobClient):
         self.polymarket = polymarket_client
 
-    async def fetch_active_markets(self):
+    async def fetch_active_markets(self, limit=50):
         """
-        Fetches all active markets from Polymarket CLOB and filters them.
-        Refined: Only process markets that are explicitly marked as active.
+        Fetches the top X active, liquid markets from Polymarket CLOB.
         """
         try:
-            # Wrap blocking SDK call in to_thread
+            # Fetch all markets
             raw_response = await asyncio.to_thread(self.polymarket.get_markets)
 
             markets = []
@@ -28,40 +27,41 @@ class MarketExplorer:
                 logger.debug(f"Unexpected response type: {type(raw_response)}")
                 return []
 
-            filtered_markets = []
+            active_liquid_markets = []
             for market in markets:
                 if not isinstance(market, dict): continue
 
                 # Refined: Check for active status
-                # Polymarket API usually provides 'active' (bool) or 'closed' (bool)
                 if market.get("closed") is True or market.get("active") is False:
                     continue
 
-                # Liquid Filter: Volume > $10,000
+                # Ensure it has volume and tokens
                 volume_24h = float(market.get("volume_24h", 0))
-                if volume_24h < 10000:
-                    continue
-
-                # Fetch tokens for spread calculation
                 tokens = market.get("tokens", [])
-                if tokens:
-                    token_id = tokens[0].get("token_id")
-                    spread = await self.get_spread(token_id)
-                    if spread > 0.02:
-                        continue # Spread > 2% filter
+                if not tokens: continue
 
-                # Category Detection
+                # Add to candidates
+                market["volume_24h_float"] = volume_24h
+                active_liquid_markets.append(market)
+
+            # Sort by 24h Volume and take top limit (e.g., 50)
+            active_liquid_markets.sort(key=lambda x: x.get("volume_24h_float", 0), reverse=True)
+            top_markets = active_liquid_markets[:limit]
+
+            # Categorize only the top markets
+            for market in top_markets:
                 question = market.get("question", "").upper()
                 if any(sym in question for sym in ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB"]):
                     market["category"] = "CRYPTO"
                 elif any(kw in question for kw in ["TRUMP", "BIDEN", "ELECTION", "PRESIDENT"]):
                     market["category"] = "POLITICS"
+                elif any(kw in question for kw in ["NBA", "NFL", "SOCCER", "TEAM", "MATCH", "SCORE", "GOAL"]):
+                    market["category"] = "SPORTS"
                 else:
                     market["category"] = "OTHER"
 
-                filtered_markets.append(market)
-
-            return filtered_markets
+            logger.debug(f"Explorer: Found {len(top_markets)} active high-volume markets.")
+            return top_markets
         except Exception as e:
             logger.error(f"Error exploring markets: {e}")
             return []
@@ -86,9 +86,8 @@ class MarketExplorer:
                     best_ask = float(asks[0].get("price", 0))
                     if best_ask > 0:
                         return (best_ask - best_bid) / best_ask
-            return 1.0 # High spread if no data
+            return 1.0
         except Exception as e:
-            # Mute 404/Missing orderbook errors here as well
             error_msg = str(e)
             if "404" in error_msg or "not found" in error_msg.lower():
                 logger.debug(f"No orderbook found for spread calculation of {token_id}")
