@@ -36,7 +36,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # Shared State for Discovery & Mapping
 ACTIVE_MARKET_CONTEXT = {}
-CLOB_TOKEN_TO_MARKET_ID = {} # Standardized mapping: {clobTokenId: market_id}
+CLOB_TOKEN_TO_MARKET_ID = {}
 
 CRYPTO_MAPPING = {
     "BTC": "BTC/USDT",
@@ -65,14 +65,11 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
             global ACTIVE_MARKET_CONTEXT, CLOB_TOKEN_TO_MARKET_ID
             ACTIVE_MARKET_CONTEXT = {m.get("market_id"): m for m in active_markets}
 
-            # Standardize Mapping logic
             CLOB_TOKEN_TO_MARKET_ID = {}
             for m in active_markets:
                 mid = m.get("market_id")
-                # Add individual clobTokenId
                 tid = m.get("token_id")
                 if tid: CLOB_TOKEN_TO_MARKET_ID[tid] = mid
-                # Add all listed clobTokenIds for this market
                 for tid in m.get("token_ids", []):
                     CLOB_TOKEN_TO_MARKET_ID[tid] = mid
 
@@ -100,8 +97,8 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
                     if category == "CRYPTO":
                         for base, symbol in CRYPTO_MAPPING.items():
                             if base in question.upper():
-                                current_binance_price = scanner.current_prices.get(symbol)
-                                if not current_binance_price: continue
+                                current_exchange_price = scanner.current_prices.get(symbol)
+                                if not current_exchange_price: continue
 
                                 df = await scanner.get_historical_data(symbol)
                                 volatility = calculate_annualized_volatility(df['close'])
@@ -112,7 +109,7 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
                                 time_to_expiry_years = (expiry_dt - now).total_seconds() / (24 * 365 * 3600)
                                 if time_to_expiry_years <= 0: continue
 
-                                implied_prob = calculate_black_scholes_prob(current_binance_price, strike_price, time_to_expiry_years, volatility)
+                                implied_prob = calculate_black_scholes_prob(current_exchange_price, strike_price, time_to_expiry_years, volatility)
                                 edge = calculate_edge(current_poly_price, implied_prob)
 
                                 if edge > 0.05:
@@ -144,14 +141,13 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
                 total, wins, win_rate, total_pnl = await db.get_bot_performance()
                 scan_time = time.time() - start_time
                 logger.info(f"[STATUS] Monitoring {len(active_markets)} Active Markets | Tracked {len(whale_tracker.top_whales)} Elite Wallets | Win-Rate: {win_rate:.1f}%")
+                await log_bot_performance(db)
                 last_status_log = time.time()
             if time.time() - last_re_rank > 86400:
                 await whale_tracker.re_rank_whales(limit=20)
                 last_re_rank = time.time()
 
-            # [MARKET-SCAN] Summary Log: Every 60 seconds
             if time.time() - last_market_scan_log > 60:
-                # Top 3 most active markets by volume
                 top_3 = sorted(active_markets, key=lambda x: x.get("volume_24h", 0), reverse=True)[:3]
                 market_names = [f"{m.get('question')[:20]}... (${m.get('volume_24h', 0)/1000:.1f}k)" for m in top_3]
                 logger.info(f"[MARKET-SCAN] Active: {len(active_markets)} | Top 3: {', '.join(market_names)}")
@@ -159,7 +155,7 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
 
             await asyncio.sleep(random.uniform(5, 10))
     except Exception as e:
-        logger.error(f"Discovery loop error: {e}", exc_info=True)
+        logger.error(f"Critical error in discovery loop: {e}", exc_info=True)
 
 async def run_activity_hunter_loop(hunter, copy_trader):
     try:
@@ -167,14 +163,11 @@ async def run_activity_hunter_loop(hunter, copy_trader):
         async for event in hunter.monitor_stream():
             if not isinstance(event, dict): continue
 
-            # Use standardized Token-to-Market map
-            token_id = event.get("market_id") # Gamma API activity uses token_id as market_id
+            token_id = event.get("market_id")
             market_id = CLOB_TOKEN_TO_MARKET_ID.get(token_id)
 
             if market_id and market_id in ACTIVE_MARKET_CONTEXT:
                 market_data = ACTIVE_MARKET_CONTEXT[market_id]
-
-                # [DETECTED] Match Verification
                 amount = event.get("amount", 0)
                 logger.info(f"[DETECTED] Trade of ${amount:,.2f} on {market_data.get('question')[:40]}...")
 
@@ -187,7 +180,7 @@ async def run_activity_hunter_loop(hunter, copy_trader):
                 if event.get("type") == "WHALE_EVENT":
                     await copy_trader.evaluate_activity_event(event)
     except Exception as e:
-        logger.error(f"Activity Hunter loop error: {e}")
+        logger.error(f"Critical error in activity hunter loop: {e}", exc_info=True)
 
 async def run_whale_tracker_loop(whale_tracker, copy_trader):
     try:
@@ -199,17 +192,20 @@ async def run_whale_tracker_loop(whale_tracker, copy_trader):
                 whale_action["token_id"] = ACTIVE_MARKET_CONTEXT[mid].get("token_id")
             await copy_trader.evaluate_signal(whale_action)
     except Exception as e:
-        logger.error(f"Whale tracker loop error: {e}")
+        logger.error(f"Critical error in whale tracker loop: {e}", exc_info=True)
 
 async def main():
     logger.info("Starting Ghost Intelligence v4.0 - Synchronized Core Deployment...")
 
-    scanner = MarketScanner()
+    # Forced Use of Coinbase for testing in restricted environment
+    logger.info("Initializing scanner with Coinbase (to avoid Binance regional blocks)...")
+    scanner = MarketScanner(exchange_id='coinbase')
+
     db = Database("data/ghost_trader.db")
     await db.connect()
     explorer = MarketExplorer(scanner.polymarket)
     brain = Brain(model="claude-3-5-sonnet")
-    trader = TradeExecutor(db) # Use standardized TradeExecutor
+    trader = TradeExecutor(db)
 
     whale_tracker = WhaleTracker(scanner.polymarket, db=db)
     activity_hunter = ActivityHunter()
@@ -223,7 +219,7 @@ async def main():
     try:
         await asyncio.gather(*tasks)
     except Exception as e:
-        logger.error(f"Critical failure: {e}", exc_info=True)
+        logger.error(f"Critical failure in bot core: {e}", exc_info=True)
     finally:
         for t in tasks: t.cancel()
         await scanner.close()

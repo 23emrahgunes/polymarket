@@ -17,7 +17,7 @@ COPY src/ ./src/
 RUN mkdir -p /app/data
 
 # Ensure PYTHONPATH handles src module correctly
-ENV PYTHONPATH="${PYTHONPATH}:/app"
+ENV PYTHONPATH="/app"
 
 # Zero-Failure: Run the module correctly as an entrypoint
 CMD ["python3", "-m", "src.main"]

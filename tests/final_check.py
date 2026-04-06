@@ -37,7 +37,7 @@ async def test_polymarket_connection():
 def test_module_imports():
     logger.info("Test Case 2: Verifying module imports...")
     try:
-        from src.main import run_bot
+        from src.main import main
         from src.logic import calculate_black_scholes_prob
         from src.database import Database
         logger.info("SUCCESS: src module is importable without ModuleNotFoundError.")
@@ -51,7 +51,7 @@ def test_module_imports():
 
 async def test_exchange_websocket():
     logger.info("Test Case 3: Verifying Exchange WebSocket connection...")
-    scanner = MarketScanner()
+    scanner = MarketScanner(exchange_id='coinbase')
     try:
         # Test with BTC/USDT ticker
         symbols = ["BTC/USDT"]

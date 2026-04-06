@@ -66,14 +66,20 @@ cp .env.example .env
 ### Botu Başlatın
 Bot, piyasaları sürekli tarayan uzun ömürlü bir süreç olarak çalışır.
 ```bash
-python src/main.py
+python3 -m src.main
 ```
 
 ### Otomatik Testleri Çalıştırın
 Tüm çekirdek modüllerin birim testleri için `pytest` kullanıyoruz.
 ```bash
-pytest tests/
+pytest -q
 ```
+
+### Doğrulama Senaryoları (Verification Scripts)
+Botun API bağlantılarını ve veri akışını doğrulamak için yardımcı scriptler mevcuttur:
+- `python3 src/check_api.py`: Gamma ve CLOB API bağlantılarını test eder.
+- `python3 src/verify_stream.py`: Polymarket global işlem akışını terminale yazdırır.
+- `python3 tests/final_check_v3.py`: En son mimariyi (Whale Tracker vb.) doğrular.
 
 ---
 
@@ -114,6 +120,11 @@ sqlite3 data/ghost_trader.db "SELECT * FROM trades WHERE status = 'OPEN';"
 # Sanal cüzdan bakiyesini kontrol et
 sqlite3 data/ghost_trader.db "SELECT balance FROM wallet WHERE id = 1;"
 ```
+
+### Önemli Notlar (Production Reliability Notes)
+- **Paper Trading**: Bot varsayılan olarak PAPER (simülasyon) modunda çalışır. Gerçek işlem yapmaz.
+- **Exchange Fallback**: Binance'in kısıtlı olduğu bölgelerde bot otomatik olarak Coinbase'e geçiş yapar.
+- **Veri Kalıcılığı**: Docker kullanımında `data/` dizini volume olarak bağlanmalıdır.
 
 ---
 

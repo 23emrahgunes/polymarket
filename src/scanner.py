@@ -15,10 +15,12 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 class MarketScanner:
-    def __init__(self):
-        self.exchange = ccxt.binance({
+    def __init__(self, exchange_id='binance'):
+        # Allow switching exchanges if restricted (e.g., to 'coinbase')
+        exchange_class = getattr(ccxt, exchange_id)
+        self.exchange = exchange_class({
             'options': {
-                'defaultType': 'future',
+                'defaultType': 'future' if exchange_id == 'binance' else 'spot',
                 'adjustForTimeDifference': True,
             }
         })
