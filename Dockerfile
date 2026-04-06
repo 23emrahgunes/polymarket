@@ -12,10 +12,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code
 COPY src/ ./src/
-COPY data/ ./data/
 
-# Create the data directory if it doesn't exist
-RUN mkdir -p data
+# Zero-Manual-Setup: Ensure data directory exists internally
+RUN mkdir -p /app/data
 
 # Ensure PYTHONPATH handles src module correctly
 ENV PYTHONPATH="${PYTHONPATH}:/app"
