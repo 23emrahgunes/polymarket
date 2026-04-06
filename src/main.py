@@ -32,6 +32,7 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 logging.getLogger("py_clob_client").setLevel(logging.WARNING)
 logging.getLogger("ccxt").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # Shared State for Discovery & Mapping
 ACTIVE_MARKET_CONTEXT = {}
@@ -51,6 +52,7 @@ PRICE_HISTORY = {}
 
 async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db):
     last_status_log = time.time()
+    last_market_scan_log = time.time()
     last_re_rank = time.time()
     try:
         while True:
@@ -146,6 +148,15 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
             if time.time() - last_re_rank > 86400:
                 await whale_tracker.re_rank_whales(limit=20)
                 last_re_rank = time.time()
+
+            # [MARKET-SCAN] Summary Log: Every 60 seconds
+            if time.time() - last_market_scan_log > 60:
+                # Top 3 most active markets by volume
+                top_3 = sorted(active_markets, key=lambda x: x.get("volume_24h", 0), reverse=True)[:3]
+                market_names = [f"{m.get('question')[:20]}... (${m.get('volume_24h', 0)/1000:.1f}k)" for m in top_3]
+                logger.info(f"[MARKET-SCAN] Active: {len(active_markets)} | Top 3: {', '.join(market_names)}")
+                last_market_scan_log = time.time()
+
             await asyncio.sleep(random.uniform(5, 10))
     except Exception as e:
         logger.error(f"Discovery loop error: {e}", exc_info=True)
@@ -162,6 +173,11 @@ async def run_activity_hunter_loop(hunter, copy_trader):
 
             if market_id and market_id in ACTIVE_MARKET_CONTEXT:
                 market_data = ACTIVE_MARKET_CONTEXT[market_id]
+
+                # [DETECTED] Match Verification
+                amount = event.get("amount", 0)
+                logger.info(f"[DETECTED] Trade of ${amount:,.2f} on {market_data.get('question')[:40]}...")
+
                 event["market_id"] = market_id
                 event["token_id"] = market_data.get("token_id")
                 event["category"] = market_data.get("category")

@@ -12,7 +12,7 @@ class ActivityHunter:
         # Cluster tracking: {(market_id, side): [timestamp1, timestamp2, ...]}
         self.activity_clusters = defaultdict(list)
         self.processed_transaction_ids = set()
-        self.whale_event_threshold = 50.0 # TEMPORARY: $50 (increased sensitivity)
+        self.whale_event_threshold = 1000.0 # TEMPORARY: $1000 (Force signal verification)
         self.cluster_time_window = 120 # 120 seconds
         self.cluster_min_wallets = 3
 
