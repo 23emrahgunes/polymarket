@@ -92,6 +92,12 @@ Sistem yöneticileri için, Ghost Trader'ı stabilite ve veri kalıcılığı sa
      -v $(pwd)/data:/app/data \
      --env-file .env \
      ghost-trader
+
+### Konfigürasyon Güncelleme ve Yeniden Başlatma (Updating Config & Restarting)
+Yeni strateji ayarlarını (örneğin slippage limitleri) aktif etmek için konteyneri şu komutla yeniden başlatın:
+```bash
+docker restart ghost-bot
+```
    ```
 *`-v` bayrağı, konteyner silinse bile `ghost_trader.db` dosyasının ana makinenizde kalıcı (**Persistence**) olmasını sağlar.*
 
