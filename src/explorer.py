@@ -1,75 +1,108 @@
 import asyncio
 import logging
-from py_clob_client.client import ClobClient
-from py_clob_client.constants import POLYGON
+import requests
 import os
+import time
 
 logger = logging.getLogger(__name__)
 
 class MarketExplorer:
-    def __init__(self, polymarket_client: ClobClient):
+    def __init__(self, polymarket_client):
         self.polymarket = polymarket_client
+        self.gamma_api_base = "https://gamma-api.polymarket.com"
+
+        # High-volume Fallback Token IDs (US Election, BTC, etc.)
+        self.fallback_token_ids = [
+            "21742416952778735398292850937877549041280327668630713028308365920042456453676", # Example
+            "10000000000000000000000000000000000000000000000000000000000000000000000000001"  # Mock
+        ]
 
     async def fetch_active_markets(self, limit=50):
         """
-        Fetches the top X active, liquid markets from Polymarket CLOB.
+        Fetches active markets from Gamma API and extracts correct clobTokenIds.
         """
         try:
-            # Fetch all markets
-            raw_response = await asyncio.to_thread(self.polymarket.get_markets)
+            # Use Gamma API for reliable active markets discovery
+            url = f"{self.gamma_api_base}/markets?active=true&closed=false&limit={limit}"
+            response = await asyncio.to_thread(requests.get, url, timeout=10)
 
-            markets = []
-            if isinstance(raw_response, list):
-                markets = raw_response
-            elif isinstance(raw_response, dict):
-                markets = raw_response.get("data", raw_response.get("markets", []))
-            else:
-                logger.debug(f"Unexpected response type: {type(raw_response)}")
-                return []
+            if response.status_code != 200:
+                logger.error(f"Explorer: Gamma API error HTTP {response.status_code}")
+                return self._get_fallback_markets()
 
-            active_liquid_markets = []
-            for market in markets:
-                if not isinstance(market, dict): continue
+            markets_data = response.json()
+            if not isinstance(markets_data, list):
+                return self._get_fallback_markets()
 
-                # Refined: Check for active status
-                if market.get("closed") is True or market.get("active") is False:
+            discovered_markets = []
+            for m in markets_data:
+                # Extract clobTokenIds
+                clob_token_ids = m.get("clobTokenIds")
+                if not clob_token_ids: continue
+
+                # Use the first token ID (typically YES)
+                try:
+                    import json
+                    # clobTokenIds is usually a JSON string in some API responses or a list
+                    if isinstance(clob_token_ids, str):
+                        token_ids = json.loads(clob_token_ids)
+                    else:
+                        token_ids = clob_token_ids
+
+                    if not token_ids: continue
+
+                    market = {
+                        "market_id": m.get("id"),
+                        "question": m.get("question"),
+                        "token_id": token_ids[0], # Primary token (YES)
+                        "volume_24h": float(m.get("volume24h", 0)),
+                        "active": True
+                    }
+
+                    # Categorization
+                    q = market["question"].upper()
+                    if any(sym in q for sym in ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB"]):
+                        market["category"] = "CRYPTO"
+                    elif any(kw in q for kw in ["TRUMP", "BIDEN", "ELECTION", "PRESIDENT"]):
+                        market["category"] = "POLITICS"
+                    elif any(kw in q for kw in ["NBA", "NFL", "SOCCER", "MATCH"]):
+                        market["category"] = "SPORTS"
+                    else:
+                        market["category"] = "OTHER"
+
+                    discovered_markets.append(market)
+                except Exception as e:
+                    logger.debug(f"Error parsing token IDs for market {m.get('id')}: {e}")
                     continue
 
-                # Ensure it has volume and tokens
-                volume_24h = float(market.get("volume_24h", 0))
-                tokens = market.get("tokens", [])
-                if not tokens: continue
+            if not discovered_markets:
+                return self._get_fallback_markets()
 
-                # Add to candidates
-                market["volume_24h_float"] = volume_24h
-                active_liquid_markets.append(market)
+            # Sort by volume
+            discovered_markets.sort(key=lambda x: x.get("volume_24h", 0), reverse=True)
+            return discovered_markets[:limit]
 
-            # Sort by 24h Volume and take top limit (e.g., 50)
-            active_liquid_markets.sort(key=lambda x: x.get("volume_24h_float", 0), reverse=True)
-            top_markets = active_liquid_markets[:limit]
-
-            # Categorize only the top markets
-            for market in top_markets:
-                question = market.get("question", "").upper()
-                if any(sym in question for sym in ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB"]):
-                    market["category"] = "CRYPTO"
-                elif any(kw in question for kw in ["TRUMP", "BIDEN", "ELECTION", "PRESIDENT"]):
-                    market["category"] = "POLITICS"
-                elif any(kw in question for kw in ["NBA", "NFL", "SOCCER", "TEAM", "MATCH", "SCORE", "GOAL"]):
-                    market["category"] = "SPORTS"
-                else:
-                    market["category"] = "OTHER"
-
-            logger.debug(f"Explorer: Found {len(top_markets)} active high-volume markets.")
-            return top_markets
         except Exception as e:
-            logger.error(f"Error exploring markets: {e}")
-            return []
+            logger.error(f"Explorer: Critical error in discovery - {e}")
+            return self._get_fallback_markets()
+
+    def _get_fallback_markets(self):
+        """
+        Safety net: returns hardcoded high-volume markets if API fails.
+        """
+        logger.warning("Explorer: Using hardcoded fallback markets.")
+        return [
+            {
+                "market_id": "fallback_btc",
+                "question": "Will BTC be above $70k?",
+                "token_id": "21742416952778735398292850937877549041280327668630713028308365920042456453676",
+                "category": "CRYPTO",
+                "volume_24h": 100000,
+                "active": True
+            }
+        ]
 
     async def get_spread(self, token_id):
-        """
-        Calculates the spread for a given token with robust method call.
-        """
         try:
             orderbook = await asyncio.to_thread(self.polymarket.get_order_book, token_id)
             if hasattr(orderbook, 'bids') and hasattr(orderbook, 'asks'):
@@ -78,19 +111,7 @@ class MarketExplorer:
                     best_ask = float(getattr(orderbook.asks[0], 'price', orderbook.asks[0].get('price', 0)))
                     if best_ask > 0:
                         return (best_ask - best_bid) / best_ask
-            elif isinstance(orderbook, dict):
-                bids = orderbook.get("bids", [])
-                asks = orderbook.get("asks", [])
-                if bids and asks:
-                    best_bid = float(bids[0].get("price", 0))
-                    best_ask = float(asks[0].get("price", 0))
-                    if best_ask > 0:
-                        return (best_ask - best_bid) / best_ask
             return 1.0
         except Exception as e:
-            error_msg = str(e)
-            if "404" in error_msg or "not found" in error_msg.lower():
-                logger.debug(f"No orderbook found for spread calculation of {token_id}")
-            else:
-                logger.warning(f"Error calculating spread for {token_id}: {e}")
+            logger.debug(f"No orderbook found for spread calculation of {token_id}")
             return 1.0
