@@ -96,6 +96,10 @@ class MarketScanner:
                 return price
 
         try:
+            # Fallback URL Logging for Browser Testing
+            clob_url = f"https://clob.polymarket.com/book?token_id={token_id}"
+            logger.debug(f"Fetching Orderbook: {clob_url}")
+
             await asyncio.sleep(random.uniform(0.1, 0.3))
             orderbook = await asyncio.to_thread(self.polymarket.get_order_book, token_id)
 

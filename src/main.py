@@ -166,9 +166,10 @@ async def run_activity_hunter_loop(hunter, copy_trader):
 
             # Sync ActivityHunter with Global Market Context
             if market_id in ACTIVE_MARKET_CONTEXT:
-                # Add category context if missing
-                event["market_id"] = market_id # Use resolved ID
-                event["category"] = ACTIVE_MARKET_CONTEXT[market_id].get("category")
+                market_data = ACTIVE_MARKET_CONTEXT[market_id]
+                event["market_id"] = market_id
+                event["token_id"] = market_data.get("token_id") # Critical Fix: Pass clobTokenId
+                event["category"] = market_data.get("category")
                 await copy_trader.evaluate_activity_event(event)
             else:
                 # Forced Debug: Skip and Log
@@ -187,6 +188,12 @@ async def run_whale_tracker_loop(whale_tracker, copy_trader):
         logger.info("Ghost Intelligence v3.0: Whale Tracker active.")
         async for whale_action in whale_tracker.monitor_whale_activity():
             if not isinstance(whale_action, dict): continue
+
+            # Sync WhaleTracker with Global Market Context
+            mid = whale_action.get("market_id")
+            if mid in ACTIVE_MARKET_CONTEXT:
+                whale_action["token_id"] = ACTIVE_MARKET_CONTEXT[mid].get("token_id")
+
             await copy_trader.evaluate_signal(whale_action)
     except asyncio.CancelledError:
         logger.info("Whale tracker loop cancelled.")

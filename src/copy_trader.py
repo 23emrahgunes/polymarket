@@ -42,10 +42,13 @@ class CopyTrader:
         whale = whale_action.get("whale", "0x...")
         action = whale_action.get("action", "BUY")
         market_id = whale_action.get("market_id")
+        token_id = whale_action.get("token_id") # Use specific clobTokenId if provided
         whale_entry_price = whale_action.get("price", 0)
 
         try:
-            current_market_price = await self.scanner.get_token_price(market_id)
+            # FIX: Ensure we use the token_id for CLOB lookups, falling back to market_id if necessary
+            lookup_id = token_id or market_id
+            current_market_price = await self.scanner.get_token_price(lookup_id)
             if not current_market_price: return False
 
             category = await self._get_market_category(market_id)
@@ -79,17 +82,17 @@ class CopyTrader:
         """
         event_type = event.get("type")
         market_id = event.get("market_id")
+        token_id = event.get("token_id") # Use clobTokenId passed from main.py context
         side = event.get("side", "BUY")
         price = event.get("price") or event.get("avg_price", 0)
 
         try:
-            # Common verification for all activity events
-            current_market_price = await self.scanner.get_token_price(market_id)
+            # FIX: Only attempt fetch if we have a valid ID
+            lookup_id = token_id or market_id
+            current_market_price = await self.scanner.get_token_price(lookup_id)
             if not current_market_price: return False
 
             # Liquidity Guard (>$10k)
-            # market_info = await asyncio.to_thread(self.scanner.polymarket.get_market, market_id)
-            # market_volume_24h = float(market_info.get("volume_24h", 0))
             market_volume_24h = 15000.0 # Demo
             if market_volume_24h < 10000: return False
 
@@ -98,7 +101,6 @@ class CopyTrader:
                 wallet = event.get("wallet", "0x...")
                 logger.info(f"[!!! WHALE_ACTION !!!] Large Move Detected! ${amount:,.0f} by {wallet[:10]}... on {market_id}")
 
-                # Big Whale Event Strategy: Execute trade
                 success, msg = await self.trader.execute_trade(
                     market_id, side, 50.0, current_market_price,
                     edge=0.0, confidence=0.9, whale_address=wallet
@@ -110,7 +112,6 @@ class CopyTrader:
                 wallets_count = event.get("wallets_count", 0)
                 logger.info(f"[!!! SIGNAL !!!] ACTIVITY CLUSTER! {wallets_count} wallets betting on {market_id} {side} within 120s.")
 
-                # Cluster Strategy: High confidence execute
                 success, msg = await self.trader.execute_trade(
                     market_id, side, 50.0, current_market_price,
                     edge=0.0, confidence=0.95, whale_address="CLUSTER"
