@@ -45,24 +45,37 @@ class CopyTrader:
         token_id = whale_action.get("token_id") # Use specific clobTokenId if provided
         whale_entry_price = whale_action.get("price", 0)
 
+        debug_mode = os.getenv("DEBUG_SIGNAL_MODE", "false").lower() == "true"
+
         try:
             # FIX: Ensure we use the token_id for CLOB lookups, falling back to market_id if necessary
             lookup_id = token_id or market_id
             current_market_price = await self.scanner.get_token_price(lookup_id)
-            if not current_market_price: return False
+            if not current_market_price:
+                logger.info(f"[REJECT] Whale action {market_id}: Could not fetch current price.")
+                return False
 
             category = await self._get_market_category(market_id)
             slippage_limit = CATEGORY_SLIPPAGE.get(category, CATEGORY_SLIPPAGE["DEFAULT"])
 
             # Liquidity Guard
             market_volume_24h = 15000.0
-            if market_volume_24h < 10000: return False
+            if market_volume_24h < 10000 and not debug_mode:
+                logger.info(f"[REJECT] Whale action {market_id}: Low liquidity (${market_volume_24h:,.0f} < $10k)")
+                return False
 
             # Price Guard
-            price_diff_pct = abs(current_market_price - whale_entry_price) / whale_entry_price
-            if price_diff_pct > slippage_limit: return False
+            if whale_entry_price > 0:
+                price_diff_pct = abs(current_market_price - whale_entry_price) / whale_entry_price
+                if price_diff_pct > slippage_limit and not debug_mode:
+                    logger.info(f"[REJECT] Whale action {market_id}: Price drifted too far ({price_diff_pct:.2%} > {slippage_limit:.2%})")
+                    return False
+            elif not debug_mode:
+                logger.info(f"[REJECT] Whale action {market_id}: Invalid whale entry price ({whale_entry_price})")
+                return False
 
             logger.info(f"[!!! WHALE_ACTION !!!] Wallet: {whale[:10]}... | Action: {action} {market_id} | SIGNAL: COPY_MATCH")
+            if debug_mode: logger.info("[DEBUG_SIGNAL_MODE] Bypassing strict filters.")
 
             success, msg = await self.trader.execute_trade(
                 market_id, "YES", 50.0, current_market_price,
@@ -86,15 +99,21 @@ class CopyTrader:
         side = event.get("side", "BUY")
         price = event.get("price") or event.get("avg_price", 0)
 
+        debug_mode = os.getenv("DEBUG_SIGNAL_MODE", "false").lower() == "true"
+
         try:
             # FIX: Only attempt fetch if we have a valid ID
             lookup_id = token_id or market_id
             current_market_price = await self.scanner.get_token_price(lookup_id)
-            if not current_market_price: return False
+            if not current_market_price:
+                logger.info(f"[REJECT] Activity {event_type} on {market_id}: Could not fetch current price.")
+                return False
 
             # Liquidity Guard (>$10k)
             market_volume_24h = 15000.0 # Demo
-            if market_volume_24h < 10000: return False
+            if market_volume_24h < 10000 and not debug_mode:
+                logger.info(f"[REJECT] Activity {event_type} on {market_id}: Low liquidity (${market_volume_24h:,.0f} < $10k)")
+                return False
 
             if event_type == "WHALE_EVENT":
                 amount = event.get("amount", 0)

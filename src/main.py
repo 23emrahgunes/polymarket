@@ -132,14 +132,18 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
                                 implied_prob = calculate_black_scholes_prob(current_exchange_price, strike_price, time_to_expiry_years, volatility)
                                 edge = calculate_edge(current_poly_price, implied_prob)
 
-                                if edge > 0.05:
+                                debug_mode = os.getenv("DEBUG_SIGNAL_MODE", "false").lower() == "true"
+                                if edge > 0.05 or debug_mode:
                                     rsi = calculate_rsi(df['close']).iloc[-1]
                                     confidence = await brain.get_confidence(edge, rsi, volume_24h, 0.0)
                                     logger.info(f"[!!! SIGNAL !!!] [CRYPTO] [{question[:30]}] | Price: ${current_poly_price:.2f} | Edge: {edge:.2%} | Confidence: {confidence:.2f}")
-                                    if confidence > 0.7:
+                                    if confidence > 0.7 or debug_mode:
+                                        if debug_mode: logger.info("[DEBUG_SIGNAL_MODE] Bypassing confidence filter.")
                                         await trader.execute_trade(market_id, "YES", 50.0, current_poly_price, edge, confidence)
+                                    else:
+                                        logger.info(f"[REJECT] [CRYPTO] [{question[:30]}]: Low confidence ({confidence:.2f} < 0.7)")
                                 else:
-                                    logger.debug(f"[CRYPTO] [{question[:30]}] | Price: ${current_poly_price:.2f} | Edge: {edge:.2%} | SIGNAL: IDLE")
+                                    logger.info(f"[REJECT] [CRYPTO] [{question[:30]}]: Edge too low ({edge:.2%} < 5%)")
                     else:
                         if market_id not in PRICE_HISTORY:
                             PRICE_HISTORY[market_id] = []

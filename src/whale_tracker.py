@@ -46,9 +46,6 @@ class WhaleTracker:
                     "0x0287a149E699B52637D43a8566a707641eB40A5D",
                     "0x1fA2A350fD088E0799797072E639343B23847990"
                 ]
-                while len(self.top_whales) < limit:
-                    self.top_whales.append(f"0x{random.getrandbits(160):x}")
-
                 logger.info(f"WhaleTracker: Monitoring {len(self.top_whales)} wallets from elite fallback list.")
 
             return self.top_whales
@@ -124,15 +121,6 @@ class WhaleTracker:
             except:
                 pass
 
-            # Mock activity for v3.0 demo if API is dry
-            if random.random() < 0.05:
-                return {
-                    "whale": whale_address,
-                    "action": "BUY",
-                    "market_id": f"MARKET_{random.randint(100, 999)}",
-                    "price": round(random.uniform(0.3, 0.7), 2),
-                    "timestamp": time.time()
-                }
             return None
         except Exception as e:
             logger.error(f"WhaleTracker: Error checking whale {whale_address[:10]}... - {e}")

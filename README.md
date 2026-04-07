@@ -80,6 +80,7 @@ Botun API bağlantılarını ve veri akışını doğrulamak için yardımcı sc
 - `python3 src/check_api.py`: Gamma ve CLOB API bağlantılarını test eder.
 - `python3 src/verify_stream.py`: Polymarket global işlem akışını terminale yazdırır.
 - `python3 tests/final_check_v3.py`: En son mimariyi (Whale Tracker vb.) doğrular.
+- `python3 scripts/verify_runtime_trade.py`: Runtime sinyal yolunu ve veritabanı kaydını doğrular.
 
 ---
 
@@ -125,6 +126,8 @@ sqlite3 data/ghost_trader.db "SELECT balance FROM wallet WHERE id = 1;"
 - **Paper Trading**: Bot varsayılan olarak PAPER (simülasyon) modunda çalışır. Gerçek işlem yapmaz.
 - **Exchange Fallback**: Binance'in kısıtlı olduğu bölgelerde bot otomatik olarak Coinbase'e geçiş yapar.
 - **Veri Kalıcılığı**: Docker kullanımında `data/` dizini volume olarak bağlanmalıdır.
+- **DEBUG_SIGNAL_MODE**: `DEBUG_SIGNAL_MODE=true` ortam değişkeni ile sinyal filtrelerini baypas ederek runtime sinyal yolunu test edebilirsiniz.
+- **Market Sınırlamaları**: Bot, 'CRYPTO' ve 'SPORTS' kategorilerinde otomatik işlem yapar; 'POLITICS' gibi diğer kategoriler sadece analiz amaçlı loglanır.
 
 ---
 
