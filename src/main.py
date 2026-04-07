@@ -34,32 +34,45 @@ logging.getLogger("py_clob_client").setLevel(logging.WARNING)
 logging.getLogger("ccxt").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# Shared State for Discovery & Mapping
+# Shared State
 ACTIVE_MARKET_CONTEXT = {}
 CLOB_TOKEN_TO_MARKET_ID = {}
 
-CRYPTO_MAPPING = {
-    "BTC": "BTC/USDT",
-    "ETH": "ETH/USDT",
-    "SOL": "SOL/USDT",
-    "XRP": "XRP/USDT",
-    "DOGE": "DOGE/USDT",
-    "BNB": "BNB/USDT"
+# Exchange-Specific Symbol Mappings
+EXCHANGE_MAPPINGS = {
+    "binance": {
+        "BTC": "BTC/USDT",
+        "ETH": "ETH/USDT",
+        "SOL": "SOL/USDT",
+        "XRP": "XRP/USDT",
+        "DOGE": "DOGE/USDT",
+        "BNB": "BNB/USDT"
+    },
+    "coinbase": {
+        "BTC": "BTC/USD",
+        "ETH": "ETH/USD",
+        "SOL": "SOL/USD",
+        "XRP": "XRP/USD",
+        "DOGE": "DOGE/USD",
+        "BNB": "BNB/USD" # Placeholder if supported
+    }
 }
 
 NEWS_SWING_THRESHOLD = 0.05
 PRICE_HISTORY = {}
 
-async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db):
+async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db, exchange_id):
     last_status_log = time.time()
     last_market_scan_log = time.time()
     last_re_rank = time.time()
+
+    crypto_map = EXCHANGE_MAPPINGS.get(exchange_id, EXCHANGE_MAPPINGS["binance"])
+
     try:
         while True:
             start_time = time.time()
             logger.debug("Ghost Intelligence: Discovering markets...")
 
-            # Fetch top 200 high-volume markets
             active_markets = await explorer.fetch_active_markets(limit=200)
 
             global ACTIVE_MARKET_CONTEXT, CLOB_TOKEN_TO_MARKET_ID
@@ -73,14 +86,17 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
                 for tid in m.get("token_ids", []):
                     CLOB_TOKEN_TO_MARKET_ID[tid] = mid
 
-            crypto_symbols = set()
+            # Update monitored symbols with exchange-compatible ones
+            monitored_symbols = set()
             for m in active_markets:
                 if m.get("category") == "CRYPTO":
                     question = m.get("question", "").upper()
-                    for base, pair in CRYPTO_MAPPING.items():
+                    for base, symbol in crypto_map.items():
                         if base in question:
-                            crypto_symbols.add(pair)
-            await scanner.update_monitored_symbols(list(crypto_symbols))
+                            monitored_symbols.add(symbol)
+
+            if monitored_symbols:
+                await scanner.update_monitored_symbols(list(monitored_symbols))
 
             for market in active_markets:
                 try:
@@ -95,10 +111,14 @@ async def run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db
                     if not current_poly_price: continue
 
                     if category == "CRYPTO":
-                        for base, symbol in CRYPTO_MAPPING.items():
+                        for base, symbol in crypto_map.items():
                             if base in question.upper():
                                 current_exchange_price = scanner.current_prices.get(symbol)
-                                if not current_exchange_price: continue
+
+                                # Robust Price Fallback Check
+                                if not current_exchange_price:
+                                    logger.debug(f"Skipping {symbol}: Price unavailable from {exchange_id}")
+                                    continue
 
                                 df = await scanner.get_historical_data(symbol)
                                 volatility = calculate_annualized_volatility(df['close'])
@@ -162,15 +182,12 @@ async def run_activity_hunter_loop(hunter, copy_trader):
         logger.info("Ghost Intelligence v4.0: Activity Hunter active.")
         async for event in hunter.monitor_stream():
             if not isinstance(event, dict): continue
-
             token_id = event.get("market_id")
             market_id = CLOB_TOKEN_TO_MARKET_ID.get(token_id)
-
             if market_id and market_id in ACTIVE_MARKET_CONTEXT:
                 market_data = ACTIVE_MARKET_CONTEXT[market_id]
                 amount = event.get("amount", 0)
                 logger.info(f"[DETECTED] Trade of ${amount:,.2f} on {market_data.get('question')[:40]}...")
-
                 event["market_id"] = market_id
                 event["token_id"] = market_data.get("token_id")
                 event["category"] = market_data.get("category")
@@ -197,10 +214,15 @@ async def run_whale_tracker_loop(whale_tracker, copy_trader):
 async def main():
     logger.info("Starting Ghost Intelligence v4.0 - Synchronized Core Deployment...")
 
-    # Forced Use of Coinbase for testing in restricted environment
-    logger.info("Initializing scanner with Coinbase (to avoid Binance regional blocks)...")
-    scanner = MarketScanner(exchange_id='coinbase')
+    # Select exchange based on environment or availability
+    exchange_id = 'coinbase' # Defaulting to coinbase due to regional restrictions in dev environment
+    logger.info(f"Initializing scanner with {exchange_id.upper()}...")
 
+    # Startup Log: show active exchange and its symbols
+    active_symbols = list(EXCHANGE_MAPPINGS.get(exchange_id, {}).values())
+    logger.info(f"Monitored Exchange: {exchange_id.upper()} | Primary Symbols: {active_symbols}")
+
+    scanner = MarketScanner(exchange_id=exchange_id)
     db = Database("data/ghost_trader.db")
     await db.connect()
     explorer = MarketExplorer(scanner.polymarket)
@@ -212,7 +234,7 @@ async def main():
     copy_trader = CopyTrader(trader, scanner)
 
     tasks = [
-        asyncio.create_task(run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db)),
+        asyncio.create_task(run_discovery_loop(explorer, scanner, brain, trader, whale_tracker, db, exchange_id)),
         asyncio.create_task(run_whale_tracker_loop(whale_tracker, copy_trader)),
         asyncio.create_task(run_activity_hunter_loop(activity_hunter, copy_trader))
     ]
