@@ -77,6 +77,16 @@ class MarketScanner:
 
         return self._ohlcv_cache[symbol]
 
+    def _extract_price(self, entry):
+        """Safely extracts price from either a dict or an object."""
+        try:
+            if isinstance(entry, dict):
+                return float(entry.get("price", 0))
+            return float(getattr(entry, "price", 0))
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug(f"Price extraction failed for entry {entry}: {e}")
+            return 0
+
     async def get_token_price(self, token_id):
         """
         Fetches the mid-price for a specific Polymarket token with robust data parsing.
@@ -105,24 +115,23 @@ class MarketScanner:
             await asyncio.sleep(random.uniform(0.1, 0.3))
             orderbook = await asyncio.to_thread(self.polymarket.get_order_book, token_id)
 
+            bids, asks = [], []
             if hasattr(orderbook, 'bids') and hasattr(orderbook, 'asks'):
-                if orderbook.bids and orderbook.asks:
-                    best_bid = float(getattr(orderbook.bids[0], 'price', orderbook.bids[0].get('price', 0)))
-                    best_ask = float(getattr(orderbook.asks[0], 'price', orderbook.asks[0].get('price', 0)))
-                    if best_bid > 0 and best_ask > 0:
-                        mid_price = (best_bid + best_ask) / 2
-                        self.poly_price_cache[token_id] = (now, mid_price)
-                        return mid_price
+                bids, asks = orderbook.bids, orderbook.asks
             elif isinstance(orderbook, dict):
                 bids = orderbook.get("bids", [])
                 asks = orderbook.get("asks", [])
-                if bids and asks:
-                    best_bid = float(bids[0].get("price", 0))
-                    best_ask = float(asks[0].get("price", 0))
-                    if best_bid > 0 and best_ask > 0:
-                        mid_price = (best_bid + best_ask) / 2
-                        self.poly_price_cache[token_id] = (now, mid_price)
-                        return mid_price
+
+            if bids and asks:
+                best_bid = self._extract_price(bids[0])
+                best_ask = self._extract_price(asks[0])
+
+                if best_bid > 0 and best_ask > 0:
+                    mid_price = (best_bid + best_ask) / 2
+                    self.poly_price_cache[token_id] = (now, mid_price)
+                    return mid_price
+                else:
+                    logger.warning(f"Non-positive best bid/ask for {token_id}: bid={best_bid}, ask={best_ask}")
 
             # Auto-Blacklist invalid price data or missing orderbooks for 24h
             self.negative_cache[token_id] = now + (24 * 3600)
