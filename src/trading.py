@@ -1,67 +1,127 @@
-from src.database import Database
 import asyncio
+import inspect
 import logging
 import os
+from typing import Any, Awaitable, Callable, Dict, Optional
+
 from py_clob_client.client import ClobClient
 from py_clob_client.constants import POLYGON
 
+from src.env_utils import resolve_polygon_private_key
+
+
 logger = logging.getLogger(__name__)
+
+
+TradeInsertCallback = Callable[[Dict[str, Any]], Awaitable[None] | None]
+
 
 class TradeExecutor:
     """
     Unified Trade Executor for both Paper and Live Trading.
-    Defaulting to Paper mode for safety.
+    Defaults to PAPER mode for safety.
     """
-    def __init__(self, db, live_mode=False):
+
+    def __init__(self, db, live_mode: bool = False, trade_insert_callback: Optional[TradeInsertCallback] = None):
         self.db = db
         self.lock = asyncio.Lock()
         self.live_mode = live_mode
-        private_key = os.getenv("POLYGON_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        self.trade_insert_callback = trade_insert_callback
 
-        # Initialize CLOB client
+        private_key = resolve_polygon_private_key()
         self.polymarket = None
         if os.getenv("ENV") != "test":
             self.polymarket = ClobClient(
                 host="https://clob.polymarket.com",
                 chain_id=POLYGON,
-                key=private_key
+                key=private_key,
             )
 
-    async def execute_trade(self, market_id, side, size, price, edge, confidence, whale_address=None):
-        """
-        Executes a trade. In live mode, this will call the Polymarket API.
-        """
+    async def execute_trade(
+        self,
+        market_id,
+        side,
+        size,
+        price,
+        edge,
+        confidence,
+        whale_address=None,
+        source: str = "runtime",
+        category: str = "UNKNOWN",
+    ):
         async with self.lock:
-            # 1. Virtual Balance Check (Double-spending prevention)
             current_balance = await self.db.get_balance()
             if current_balance < size:
+                logger.info(
+                    "[REJECT] source=%s category=%s market=%s reasons=insufficient_balance inputs=%s",
+                    source,
+                    category,
+                    market_id,
+                    {"balance": current_balance, "trade_size": size},
+                )
                 return False, f"Insufficient balance: {current_balance} < {size}"
 
-            # 2. Live Execution (If enabled)
+            if await self.db.has_open_trade(market_id, side):
+                logger.info(
+                    "[REJECT] source=%s category=%s market=%s reasons=duplicate_open_trade inputs=%s",
+                    source,
+                    category,
+                    market_id,
+                    {"side": side, "trade_size": size},
+                )
+                return False, f"Open trade already exists for {market_id} {side}"
+
             if self.live_mode and self.polymarket:
                 try:
-                    # In production: result = await asyncio.to_thread(self.polymarket.create_order, ...)
-                    # For v4.0, we keep the infrastructure ready for real API calls
-                    logger.info(f"LIVE_MODE: Attempting real API trade on {market_id}")
-                    pass
-                except Exception as e:
-                    logger.error(f"Live API execution failed: {e}")
-                    return False, f"Live execution error: {e}"
+                    logger.info("LIVE_MODE: real API trade path would execute on %s", market_id)
+                except Exception as exc:
+                    logger.error("Live API execution failed: %s", exc)
+                    return False, f"Live execution error: {exc}"
 
-            # 3. Virtual Update (Paper Tracking)
             new_balance = current_balance - size
             await self.db.update_balance(new_balance)
-
-            # Record trade in DB
-            await self.db.add_trade(market_id, side, size, price, edge, confidence, status="OPEN", whale_address=whale_address)
+            trade_id = await self.db.add_trade(
+                market_id,
+                side,
+                size,
+                price,
+                edge,
+                confidence,
+                status="OPEN",
+                whale_address=whale_address,
+            )
 
             mode_prefix = "LIVE" if self.live_mode else "PAPER"
-            return True, f"[{mode_prefix}] Trade executed: Spent ${size} on {market_id} (Side: {side}) at {price}"
+            logger.info(
+                "[%s-TRADE-RUNTIME] inserted trade id=%s market=%s side=%s balance_before=%.2f balance_after=%.2f source=%s category=%s",
+                mode_prefix,
+                trade_id,
+                market_id,
+                side,
+                current_balance,
+                new_balance,
+                source,
+                category,
+            )
+
+            if self.trade_insert_callback is not None:
+                callback_result = self.trade_insert_callback(
+                    {
+                        "trade_id": trade_id,
+                        "market_id": market_id,
+                        "side": side,
+                        "balance_before": current_balance,
+                        "balance_after": new_balance,
+                        "source": source,
+                        "category": category,
+                    }
+                )
+                if inspect.isawaitable(callback_result):
+                    await callback_result
+
+            return True, f"[{mode_prefix}] Trade executed: id={trade_id} spent ${size} on {market_id}"
 
     async def check_resolutions(self, scanner):
-        """
-        Polls for the resolved status of open trades using the Polymarket API.
-        """
         if not self.polymarket:
             return
 
@@ -92,16 +152,20 @@ class TradeExecutor:
 
                             if whale_address:
                                 await self.db.update_whale_stats(whale_address, pnl)
-                                from src.analytics import log_whale_score
-                                await log_whale_score(self.db, whale_address)
 
-                            logger.info(f"Trade {trade_id} (Market: {market_id}) resolved! Outcome: {outcome}. P&L: ${pnl:.2f}. Status: {status}")
-            except Exception as e:
-                logger.error(f"Error resolving trade {trade_id}: {e}")
+                            logger.info(
+                                "Trade %s resolved. market=%s outcome=%s pnl=%.2f status=%s",
+                                trade_id,
+                                market_id,
+                                outcome,
+                                pnl,
+                                status,
+                            )
+            except Exception as exc:
+                logger.error("Error resolving trade %s: %s", trade_id, exc)
 
     async def get_total_value(self):
-        balance = await self.db.get_balance()
-        return balance
+        return await self.db.get_balance()
 
-# Compatibility for existing imports
+
 PaperTrader = TradeExecutor

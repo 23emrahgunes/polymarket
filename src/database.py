@@ -1,24 +1,31 @@
 import aiosqlite
 import os
+from typing import List, Optional
+
 
 class Database:
-    def __init__(self, db_path="data/ghost_trader.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str | None = None):
+        self.db_path = db_path or os.getenv("GHOST_TRADER_DB_PATH", "data/ghost_trader.db")
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        self.conn: aiosqlite.Connection | None = None
 
     async def connect(self):
         self.conn = await aiosqlite.connect(self.db_path)
+        self.conn.row_factory = aiosqlite.Row
         await self._create_tables()
         await self._migrate_tables()
 
     async def _create_tables(self):
-        await self.conn.execute("""
+        await self.conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS wallet (
                 id INTEGER PRIMARY KEY,
                 balance REAL NOT NULL
             )
-        """)
-        await self.conn.execute("""
+            """
+        )
+        await self.conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 market_id TEXT NOT NULL,
@@ -32,8 +39,10 @@ class Database:
                 whale_address TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        """)
-        await self.conn.execute("""
+            """
+        )
+        await self.conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS whale_stats (
                 address TEXT PRIMARY KEY,
                 total_trades INTEGER DEFAULT 0,
@@ -42,48 +51,76 @@ class Database:
                 trust_score REAL DEFAULT 0.5,
                 last_active DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        """)
-        # Initialize wallet with $1000 if empty
-        async with self.conn.execute("SELECT COUNT(*) FROM wallet") as cursor:
-            count = await cursor.fetchone()
-            if count[0] == 0:
-                await self.conn.execute("INSERT INTO wallet (id, balance) VALUES (1, 1000.0)")
+            """
+        )
+
+        async with self.conn.execute("SELECT COUNT(*) AS count FROM wallet") as cursor:
+            row = await cursor.fetchone()
+            if row["count"] == 0:
+                default_balance = float(os.getenv("VIRTUAL_BALANCE", "1000.0"))
+                await self.conn.execute("INSERT INTO wallet (id, balance) VALUES (1, ?)", (default_balance,))
         await self.conn.commit()
 
     async def _migrate_tables(self):
-        """
-        Handle schema updates for existing databases.
-        """
         try:
             await self.conn.execute("ALTER TABLE trades ADD COLUMN pnl REAL DEFAULT 0")
-        except:
-            pass # Column already exists
+        except Exception:
+            pass
 
         try:
             await self.conn.execute("ALTER TABLE trades ADD COLUMN whale_address TEXT")
-        except:
-            pass # Column already exists
+        except Exception:
+            pass
+        await self.conn.commit()
 
-    async def get_balance(self):
+    async def get_balance(self) -> float:
         async with self.conn.execute("SELECT balance FROM wallet WHERE id = 1") as cursor:
             row = await cursor.fetchone()
-            return row[0]
+            return float(row["balance"])
 
-    async def update_balance(self, new_balance):
+    async def update_balance(self, new_balance: float):
         await self.conn.execute("UPDATE wallet SET balance = ? WHERE id = 1", (new_balance,))
         await self.conn.commit()
 
-    async def add_trade(self, market_id, side, size, price, edge, confidence, status="OPEN", whale_address=None):
-        await self.conn.execute("""
+    async def add_trade(
+        self,
+        market_id,
+        side,
+        size,
+        price,
+        edge,
+        confidence,
+        status="OPEN",
+        whale_address=None,
+    ) -> int:
+        cursor = await self.conn.execute(
+            """
             INSERT INTO trades (market_id, side, size, price, edge, confidence, status, whale_address)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (market_id, side, size, price, edge, confidence, status, whale_address))
+            """,
+            (market_id, side, size, price, edge, confidence, status, whale_address),
+        )
         await self.conn.commit()
+        return int(cursor.lastrowid)
 
-    async def get_open_trades(self):
-        self.conn.row_factory = aiosqlite.Row
-        async with self.conn.execute("SELECT * FROM trades WHERE status = 'OPEN'") as cursor:
+    async def get_open_trades(self) -> List[aiosqlite.Row]:
+        async with self.conn.execute("SELECT * FROM trades WHERE status = 'OPEN' ORDER BY id ASC") as cursor:
             return await cursor.fetchall()
+
+    async def get_recent_trades(self, limit: int = 10) -> List[aiosqlite.Row]:
+        async with self.conn.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)) as cursor:
+            return await cursor.fetchall()
+
+    async def get_trade(self, trade_id: int) -> Optional[aiosqlite.Row]:
+        async with self.conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)) as cursor:
+            return await cursor.fetchone()
+
+    async def has_open_trade(self, market_id: str, side: str) -> bool:
+        async with self.conn.execute(
+            "SELECT 1 FROM trades WHERE market_id = ? AND side = ? AND status = 'OPEN' LIMIT 1",
+            (market_id, side),
+        ) as cursor:
+            return await cursor.fetchone() is not None
 
     async def update_trade_resolution(self, trade_id, status, pnl):
         await self.conn.execute("UPDATE trades SET status = ?, pnl = ? WHERE id = ?", (status, pnl, trade_id))
@@ -91,7 +128,8 @@ class Database:
 
     async def update_whale_stats(self, address, pnl):
         win = 1 if pnl > 0 else 0
-        await self.conn.execute("""
+        await self.conn.execute(
+            """
             INSERT INTO whale_stats (address, total_trades, wins, total_pnl, last_active)
             VALUES (?, 1, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(address) DO UPDATE SET
@@ -99,35 +137,43 @@ class Database:
                 wins = wins + ?,
                 total_pnl = total_pnl + ?,
                 last_active = CURRENT_TIMESTAMP
-        """, (address, win, pnl, win, pnl))
-        # Update trust score (win rate)
-        await self.conn.execute("""
+            """,
+            (address, win, pnl, win, pnl),
+        )
+        await self.conn.execute(
+            """
             UPDATE whale_stats SET trust_score = CAST(wins AS REAL) / total_trades
             WHERE address = ?
-        """, (address,))
+            """,
+            (address,),
+        )
         await self.conn.commit()
 
     async def get_whale_stats(self, address):
-        self.conn.row_factory = aiosqlite.Row
         async with self.conn.execute("SELECT * FROM whale_stats WHERE address = ?", (address,)) as cursor:
             return await cursor.fetchone()
 
     async def get_bot_performance(self):
-        async with self.conn.execute("""
-            SELECT COUNT(*), SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), SUM(pnl)
-            FROM trades WHERE status != 'OPEN'
-        """) as cursor:
+        async with self.conn.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                   SUM(pnl) AS total_pnl
+            FROM trades
+            WHERE status != 'OPEN'
+            """
+        ) as cursor:
             row = await cursor.fetchone()
-            total = row[0] or 0
-            wins = row[1] or 0
-            total_pnl = row[2] or 0.0
+            total = row["total"] or 0
+            wins = row["wins"] or 0
+            total_pnl = row["total_pnl"] or 0.0
             win_rate = (wins / total * 100) if total > 0 else 0.0
-            return total, wins, win_rate, total_pnl
+            return total, wins, win_rate, float(total_pnl)
 
     async def update_trade_status(self, trade_id, status):
-        # Kept for backward compatibility if needed, but update_trade_resolution is preferred
         await self.conn.execute("UPDATE trades SET status = ? WHERE id = ?", (status, trade_id))
         await self.conn.commit()
 
     async def close(self):
-        await self.conn.close()
+        if self.conn is not None:
+            await self.conn.close()

@@ -1,144 +1,162 @@
-import asyncio
 import logging
-import random
-import os
-from py_clob_client.client import ClobClient
+from typing import Dict, Optional
+
+from src.decision_engine import DecisionEngine, DecisionInputs, classify_market_category
+
 
 logger = logging.getLogger(__name__)
 
-# Category-based slippage configuration
-CATEGORY_SLIPPAGE = {
-    "POLITICS": 0.025, # 2.5%
-    "CRYPTO": 0.025,   # 2.5%
-    "SPORTS": 0.035,   # 3.5%
-    "DEFAULT": 0.025   # Global base limit 2.5%
-}
 
 class CopyTrader:
-    def __init__(self, trader, scanner):
+    def __init__(self, trader, scanner, db, decision_engine: DecisionEngine):
         self.trader = trader
         self.scanner = scanner
+        self.db = db
+        self.decision_engine = decision_engine
+        self.market_context_by_id: Dict[str, Dict] = {}
+        self.token_to_market_id: Dict[str, str] = {}
 
-    async def _get_market_category(self, market_id):
-        try:
-            market_info = await asyncio.to_thread(self.scanner.polymarket.get_market, market_id)
-            if not isinstance(market_info, dict):
-                return "DEFAULT"
-            question = market_info.get("question", "").upper()
-            if any(kw in question for kw in ["TRUMP", "BIDEN", "ELECTION", "PRESIDENT"]):
-                return "POLITICS"
-            if any(sym in question for sym in ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB"]):
-                return "CRYPTO"
-            if any(kw in question for kw in ["NBA", "NFL", "SOCCER", "TEAM", "MATCH", "SCORE", "GOAL"]):
-                return "SPORTS"
-            return "DEFAULT"
-        except:
-            return "DEFAULT"
+    def update_market_contexts(self, market_context_by_id: Dict[str, Dict], token_to_market_id: Dict[str, str]) -> None:
+        self.market_context_by_id = dict(market_context_by_id)
+        self.token_to_market_id = dict(token_to_market_id)
 
-    async def evaluate_signal(self, whale_action):
-        """
-        Original Whale Tracker Signal Evaluation.
-        """
-        whale = whale_action.get("whale", "0x...")
-        action = whale_action.get("action", "BUY")
-        market_id = whale_action.get("market_id")
-        token_id = whale_action.get("token_id") # Use specific clobTokenId if provided
-        whale_entry_price = whale_action.get("price", 0)
+    async def evaluate_signal(self, whale_action: Dict):
+        normalized_event = {
+            "type": "WHALE_EVENT",
+            "wallet": whale_action.get("whale"),
+            "market_id": whale_action.get("market_id"),
+            "token_id": whale_action.get("token_id"),
+            "side": str(whale_action.get("action", "BUY")).upper(),
+            "amount": float(whale_action.get("amount", 0.0) or 0.0),
+            "price": whale_action.get("price"),
+            "source": "whale_tracker",
+        }
+        return await self._evaluate_orderflow_event(normalized_event)
 
-        debug_mode = os.getenv("DEBUG_SIGNAL_MODE", "false").lower() == "true"
+    async def evaluate_activity_event(self, event: Dict):
+        normalized_event = dict(event)
+        normalized_event.setdefault("source", "activity")
+        return await self._evaluate_orderflow_event(normalized_event)
 
-        try:
-            # FIX: Ensure we use the token_id for CLOB lookups, falling back to market_id if necessary
-            lookup_id = token_id or market_id
-            current_market_price = await self.scanner.get_token_price(lookup_id)
-            if not current_market_price:
-                logger.info(f"[REJECT] Whale action {market_id}: Could not fetch current price.")
-                return False
-
-            category = await self._get_market_category(market_id)
-            slippage_limit = CATEGORY_SLIPPAGE.get(category, CATEGORY_SLIPPAGE["DEFAULT"])
-
-            # Liquidity Guard
-            market_volume_24h = 15000.0
-            if market_volume_24h < 10000 and not debug_mode:
-                logger.info(f"[REJECT] Whale action {market_id}: Low liquidity (${market_volume_24h:,.0f} < $10k)")
-                return False
-
-            # Price Guard
-            if whale_entry_price > 0:
-                price_diff_pct = abs(current_market_price - whale_entry_price) / whale_entry_price
-                if price_diff_pct > slippage_limit and not debug_mode:
-                    logger.info(f"[REJECT] Whale action {market_id}: Price drifted too far ({price_diff_pct:.2%} > {slippage_limit:.2%})")
-                    return False
-            elif not debug_mode:
-                logger.info(f"[REJECT] Whale action {market_id}: Invalid whale entry price ({whale_entry_price})")
-                return False
-
-            logger.info(f"[!!! WHALE_ACTION !!!] Wallet: {whale[:10]}... | Action: {action} {market_id} | SIGNAL: COPY_MATCH")
-            if debug_mode: logger.info("[DEBUG_SIGNAL_MODE] Bypassing strict filters.")
-
-            success, msg = await self.trader.execute_trade(
-                market_id, "YES", 50.0, current_market_price,
-                edge=0.0, confidence=1.0, whale_address=whale
-            )
-            if success:
-                logger.info(f"[!!! SIGNAL !!!] Whale copy-trade executed! {msg}")
-            return True
-        except Exception as e:
-            logger.error(f"CopyTrader: Error evaluating whale signal - {e}")
-            return False
-
-    async def evaluate_activity_event(self, event):
-        """
-        Ghost Intelligence v4.0: Activity Hunter Signal Evaluation.
-        Handles Cluster detection and Big Whale events.
-        """
-        event_type = event.get("type")
+    async def _evaluate_orderflow_event(self, event: Dict):
+        source = event.get("source", "activity")
+        side = str(event.get("side", "BUY")).upper()
+        wallet = event.get("wallet")
+        token_id = event.get("token_id")
         market_id = event.get("market_id")
-        token_id = event.get("token_id") # Use clobTokenId passed from main.py context
-        side = event.get("side", "BUY")
-        price = event.get("price") or event.get("avg_price", 0)
 
-        debug_mode = os.getenv("DEBUG_SIGNAL_MODE", "false").lower() == "true"
+        context = self._resolve_market_context(market_id=market_id, token_id=token_id)
+        category = context.get("category", "OTHER") if context else "OTHER"
+        question = context.get("question", "") if context else ""
+        resolved_market_id = context.get("market_id") if context else market_id
+        resolved_token_id = context.get("token_id") if context else token_id
 
-        try:
-            # FIX: Only attempt fetch if we have a valid ID
-            lookup_id = token_id or market_id
-            current_market_price = await self.scanner.get_token_price(lookup_id)
-            if not current_market_price:
-                logger.info(f"[REJECT] Activity {event_type} on {market_id}: Could not fetch current price.")
-                return False
+        base_inputs = DecisionInputs(
+            source=source,
+            category=category,
+            market_id=resolved_market_id or market_id or "",
+            token_id=resolved_token_id,
+            event_type=event.get("type"),
+            question=question,
+            volume_24h=float(context.get("volume_24h", 0.0) if context else 0.0),
+            event_amount=float(event.get("amount", 0.0) or 0.0),
+            wallets_count=int(event.get("wallets_count", 1) or 1),
+        )
 
-            # Liquidity Guard (>$10k)
-            market_volume_24h = 15000.0 # Demo
-            if market_volume_24h < 10000 and not debug_mode:
-                logger.info(f"[REJECT] Activity {event_type} on {market_id}: Low liquidity (${market_volume_24h:,.0f} < $10k)")
-                return False
-
-            if event_type == "WHALE_EVENT":
-                amount = event.get("amount", 0)
-                wallet = event.get("wallet", "0x...")
-                logger.info(f"[!!! WHALE_ACTION !!!] Large Move Detected! ${amount:,.0f} by {wallet[:10]}... on {market_id}")
-
-                success, msg = await self.trader.execute_trade(
-                    market_id, side, 50.0, current_market_price,
-                    edge=0.0, confidence=0.9, whale_address=wallet
-                )
-                if success:
-                    logger.info(f"[!!! SIGNAL !!!] Big Whale trade executed! {msg}")
-
-            elif event_type == "CLUSTER_DETECTED":
-                wallets_count = event.get("wallets_count", 0)
-                logger.info(f"[!!! SIGNAL !!!] ACTIVITY CLUSTER! {wallets_count} wallets betting on {market_id} {side} within 120s.")
-
-                success, msg = await self.trader.execute_trade(
-                    market_id, side, 50.0, current_market_price,
-                    edge=0.0, confidence=0.95, whale_address="CLUSTER"
-                )
-                if success:
-                    logger.info(f"[!!! SIGNAL !!!] Cluster copy-trade executed! {msg}")
-
-            return True
-        except Exception as e:
-            logger.error(f"CopyTrader: Error evaluating activity event - {e}")
+        if context is None:
+            decision = self.decision_engine.reject(base_inputs, "market_not_mapped")
+            self.decision_engine.log_result(decision, logger)
             return False
+
+        if side != "BUY":
+            decision = self.decision_engine.reject(base_inputs, "sell_side_not_supported")
+            self.decision_engine.log_result(decision, logger)
+            return False
+
+        if event.get("type") == "WHALE_EVENT" and not wallet:
+            decision = self.decision_engine.reject(base_inputs, "whale_source_unavailable")
+            self.decision_engine.log_result(decision, logger)
+            return False
+
+        snapshot = await self.scanner.get_orderbook_snapshot(resolved_token_id)
+        if not snapshot["is_valid"]:
+            decision = self.decision_engine.reject(
+                DecisionInputs(
+                    **{
+                        **base_inputs.__dict__,
+                        "mid_price": snapshot.get("mid_price"),
+                        "spread_pct": snapshot.get("spread_pct"),
+                    }
+                ),
+                snapshot.get("reason", "invalid_orderbook_data"),
+            )
+            self.decision_engine.log_result(decision, logger)
+            return False
+
+        reference_price = event.get("price") or event.get("avg_price") or snapshot["mid_price"]
+        price_drift_pct = 0.0
+        if reference_price:
+            price_drift_pct = abs(snapshot["mid_price"] - reference_price) / reference_price
+
+        whale_trust = 0.5
+        if wallet:
+            stats = await self.db.get_whale_stats(wallet)
+            whale_trust = float(stats["trust_score"]) if stats else 0.5
+
+        decision = self.decision_engine.score_orderflow(
+            DecisionInputs(
+                source=source,
+                category=category,
+                market_id=context["market_id"],
+                token_id=resolved_token_id,
+                event_type=event.get("type"),
+                question=question,
+                volume_24h=float(context.get("volume_24h", 0.0)),
+                mid_price=snapshot["mid_price"],
+                spread_pct=snapshot["spread_pct"],
+                event_amount=float(event.get("amount", 0.0) or 0.0),
+                wallets_count=int(event.get("wallets_count", 1) or 1),
+                whale_trust=whale_trust,
+                price_drift_pct=price_drift_pct,
+            )
+        )
+        self.decision_engine.log_result(decision, logger)
+
+        if not decision.should_trade:
+            return False
+
+        whale_address = wallet or ("CLUSTER" if event.get("type") == "CLUSTER_DETECTED" else None)
+        success, message = await self.trader.execute_trade(
+            context["market_id"],
+            "YES",
+            decision.trade_size,
+            snapshot["mid_price"],
+            edge=0.0,
+            confidence=decision.score,
+            whale_address=whale_address,
+            source=source,
+            category=category,
+        )
+        if success:
+            logger.info(
+                "[EXECUTED] source=%s category=%s market=%s detail=%s",
+                source,
+                category,
+                context["market_id"],
+                message,
+            )
+        return success
+
+    def _resolve_market_context(self, market_id: Optional[str], token_id: Optional[str]) -> Optional[Dict]:
+        if market_id and market_id in self.market_context_by_id:
+            return self.market_context_by_id[market_id]
+
+        if token_id and token_id in self.token_to_market_id:
+            resolved_market_id = self.token_to_market_id[token_id]
+            return self.market_context_by_id.get(resolved_market_id)
+
+        if market_id and token_id is None and market_id in self.token_to_market_id:
+            resolved_market_id = self.token_to_market_id[market_id]
+            return self.market_context_by_id.get(resolved_market_id)
+
+        return None

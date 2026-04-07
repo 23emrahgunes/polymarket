@@ -1,25 +1,26 @@
 import asyncio
 import logging
 import time
-import requests
 from collections import defaultdict
+from typing import Dict, List
+
+import requests
+
 
 logger = logging.getLogger(__name__)
 
+
 class ActivityHunter:
-    def __init__(self, gamma_api_base="https://gamma-api.polymarket.com"):
+    def __init__(self, gamma_api_base="https://gamma-api.polymarket.com", debug_signal_mode: bool = False):
         self.gamma_api_base = gamma_api_base
+        self.debug_signal_mode = debug_signal_mode
         self.activity_clusters = defaultdict(list)
         self.processed_transaction_ids = set()
-        self.whale_event_threshold = 1000.0 # Force signal verification as requested
+        self.whale_event_threshold = 1_000.0
         self.cluster_time_window = 120
-        self.cluster_min_wallets = 3
+        self.debug_event_emitted = False
 
     async def fetch_latest_activity(self, limit=50):
-        """
-        Fetches the latest global activity from Gamma API.
-        Handles errors gracefully without crashing the loop.
-        """
         try:
             url = f"{self.gamma_api_base}/activity?limit={limit}"
             response = await asyncio.to_thread(requests.get, url, timeout=10)
@@ -27,82 +28,92 @@ class ActivityHunter:
                 data = response.json()
                 if isinstance(data, list):
                     return data
-            elif response.status_code == 404:
-                # Silently handle 404 on activity endpoint if it's intermittent
-                return []
             return []
-        except Exception as e:
-            logger.debug(f"ActivityHunter: API communication error - {e}")
+        except Exception as exc:
+            logger.info("ActivityHunter: API communication error - %s", exc)
             return []
 
     async def monitor_stream(self):
-        """
-        Continuously listens to the activity stream for Cluster and Whale events.
-        """
         while True:
             try:
+                if self.debug_signal_mode and not self.debug_event_emitted:
+                    self.debug_event_emitted = True
+                    await asyncio.sleep(1)
+                    yield {
+                        "type": "WHALE_EVENT",
+                        "token_id": "debug_sports_token_yes",
+                        "side": "BUY",
+                        "amount": 2_500.0,
+                        "wallet": "0xDEBUGSPORTS",
+                        "price": 0.57,
+                    }
+
                 activities = await self.fetch_latest_activity()
-                if not isinstance(activities, list):
-                    await asyncio.sleep(5)
-                    continue
+                for event in self._normalize_activities(activities):
+                    yield event
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.info("ActivityHunter: stream monitoring error - %s", exc)
+                await asyncio.sleep(5)
 
-                for act in activities:
-                    if not isinstance(act, dict): continue
+    def _normalize_activities(self, activities: List[Dict]) -> List[Dict]:
+        normalized_events: List[Dict] = []
+        now = time.time()
 
-                    # Forced Debug: Log every detected transaction
-                    # Gamma activity 'market_id' field is actually the outcome token_id
-                    size = float(act.get("size", 0))
-                    price = float(act.get("price", 0))
-                    raw_amount = size * price
-                    token_id = act.get("market_id")
+        for activity in activities:
+            if not isinstance(activity, dict):
+                continue
 
-                    if not token_id: continue
-                    logger.debug(f"Raw Trade Detected | Size: ${raw_amount:,.2f} | TokenID: {token_id}")
+            tx_id = activity.get("id") or activity.get("transaction_hash")
+            if tx_id in self.processed_transaction_ids:
+                continue
+            self.processed_transaction_ids.add(tx_id)
+            if len(self.processed_transaction_ids) > 2_000:
+                self.processed_transaction_ids.clear()
 
-                    # Prevent duplicate processing
-                    tx_id = act.get("id") or act.get("transaction_hash")
-                    if tx_id in self.processed_transaction_ids: continue
-                    self.processed_transaction_ids.add(tx_id)
-                    if len(self.processed_transaction_ids) > 2000:
-                        self.processed_transaction_ids.clear()
+            token_id = activity.get("market_id")
+            if not token_id:
+                continue
 
-                    side = str(act.get("side", "")).upper()
-                    wallet = act.get("proxy_wallet") or act.get("address")
+            side = str(activity.get("side", "BUY")).upper()
+            wallet = activity.get("proxy_wallet") or activity.get("address")
+            price = float(activity.get("price", 0.0) or 0.0)
+            size = float(activity.get("size", 0.0) or 0.0)
+            amount = size * price
 
-                    if not wallet: continue
+            if wallet and amount >= self.whale_event_threshold:
+                normalized_events.append(
+                    {
+                        "type": "WHALE_EVENT",
+                        "token_id": token_id,
+                        "side": side,
+                        "amount": amount,
+                        "wallet": wallet,
+                        "price": price,
+                    }
+                )
 
-                    # 1. Whale Event Detection (>$1,000)
-                    if raw_amount >= self.whale_event_threshold:
-                        yield {
-                            "type": "WHALE_EVENT",
-                            "market_id": token_id, # Return token_id to be resolved by main.py
-                            "side": side,
-                            "amount": raw_amount,
-                            "wallet": wallet,
-                            "price": price
-                        }
-
-                    # 2. Cluster Detection (3+ wallets in 120s)
-                    key = (token_id, side)
-                    now = time.time()
-                    self.activity_clusters[key].append({"wallet": wallet, "timestamp": now})
-                    self.activity_clusters[key] = [
-                        entry for entry in self.activity_clusters[key]
-                        if now - entry["timestamp"] < self.cluster_time_window
-                    ]
-
-                    unique_wallets = {entry["wallet"] for entry in self.activity_clusters[key]}
-                    if len(unique_wallets) >= self.cluster_min_wallets:
-                        yield {
+            if wallet:
+                cluster_key = (token_id, side)
+                self.activity_clusters[cluster_key].append({"wallet": wallet, "timestamp": now})
+                self.activity_clusters[cluster_key] = [
+                    entry
+                    for entry in self.activity_clusters[cluster_key]
+                    if now - entry["timestamp"] < self.cluster_time_window
+                ]
+                unique_wallets = {entry["wallet"] for entry in self.activity_clusters[cluster_key]}
+                if len(unique_wallets) >= 2:
+                    normalized_events.append(
+                        {
                             "type": "CLUSTER_DETECTED",
-                            "market_id": token_id,
+                            "token_id": token_id,
                             "side": side,
                             "wallets_count": len(unique_wallets),
-                            "avg_price": price
+                            "avg_price": price,
+                            "amount": amount,
                         }
-                        self.activity_clusters[key] = []
+                    )
 
-                await asyncio.sleep(5) # Real-time priority
-            except Exception as e:
-                logger.debug(f"ActivityHunter: Stream monitoring error - {e}")
-                await asyncio.sleep(10)
+        return normalized_events

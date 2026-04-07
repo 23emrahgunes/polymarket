@@ -1,84 +1,80 @@
 import asyncio
 import logging
 import os
+import sqlite3
 import sys
+import time
 
-# absolute path handling
+
 ABS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ABS_ROOT)
 
 from src.database import Database
-from src.scanner import MarketScanner
-from src.trading import TradeExecutor
-from src.copy_trader import CopyTrader
-from unittest.mock import MagicMock, AsyncMock
+from src.runtime import GhostBotRuntime, RuntimeSettings
 
-# Force DEBUG_SIGNAL_MODE
-os.environ["DEBUG_SIGNAL_MODE"] = "true"
-os.environ["ENV"] = "test" # Bypasses real polymarket SDK initialization
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+DEFAULT_DB_PATH = os.path.join("data", "runtime_verification.db")
+
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+def resolve_db_path() -> str:
+    requested_path = os.getenv("RUNTIME_VERIFY_DB_PATH", DEFAULT_DB_PATH)
+    if not os.path.exists(requested_path):
+        return requested_path
+
+    try:
+        os.remove(requested_path)
+        return requested_path
+    except PermissionError:
+        timestamp = int(time.time())
+        return os.path.join("data", f"runtime_verification_{timestamp}.db")
+
 
 async def verify_runtime_trade():
-    db_path = "data/ghost_trader_runtime_test.db"
-    if os.path.exists(db_path): os.remove(db_path)
+    db_path = resolve_db_path()
+    os.environ["DEBUG_SIGNAL_MODE"] = "true"
+    os.environ["RUNTIME_VERIFY_ONCE"] = "true"
+    os.environ["GHOST_TRADER_DB_PATH"] = db_path
 
-    db = Database(db_path)
-    await db.connect()
+    database = Database(db_path)
+    await database.connect()
+    wallet_before = await database.get_balance()
+    await database.close()
 
-    scanner = MarketScanner(exchange_id='coinbase')
-    trader = TradeExecutor(db)
-    copy_trader = CopyTrader(trader, scanner)
+    runtime = GhostBotRuntime(RuntimeSettings.from_env())
+    await runtime.run()
 
-    # 1. Simulate a Whale Action Signal
-    market_id = "test_market_runtime"
-    token_id = "test_token_runtime"
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    cursor = connection.cursor()
 
-    # Mock scanner.get_token_price to return 0.5
-    scanner.get_token_price = AsyncMock(return_value=0.5)
+    wallet_after = cursor.execute("SELECT balance FROM wallet WHERE id = 1").fetchone()["balance"]
+    trades = cursor.execute(
+        """
+        SELECT id, market_id, side, size, price, confidence, whale_address, timestamp
+        FROM trades
+        ORDER BY id ASC
+        """
+    ).fetchall()
+    connection.close()
 
-    # Mock category lookup
-    copy_trader._get_market_category = AsyncMock(return_value="CRYPTO")
+    print("DB_PATH")
+    print(db_path)
+    print("WALLET_BEFORE")
+    print(wallet_before)
+    print("WALLET_AFTER")
+    print(wallet_after)
+    print("TRADES")
+    for trade in trades:
+        print(dict(trade))
 
-    whale_action = {
-        "whale": "0x1234567890abcdef",
-        "action": "BUY",
-        "market_id": market_id,
-        "token_id": token_id,
-        "price": 0.48
-    }
+    if not trades:
+        raise SystemExit("No runtime trade was inserted into SQLite.")
+    if wallet_after >= wallet_before:
+        raise SystemExit("Wallet balance did not decrease after runtime verification.")
 
-    logger.info("Injecting simulated whale action into CopyTrader...")
-    success = await copy_trader.evaluate_signal(whale_action)
-
-    if success:
-        logger.info("CopyTrader evaluation SUCCESS.")
-    else:
-        logger.error("CopyTrader evaluation FAILED.")
-        sys.exit(1)
-
-    # 2. Check Database for trade
-    trades = await db.get_open_trades()
-    if len(trades) > 0:
-        trade = dict(trades[0])
-        logger.info(f"[PAPER-TRADE-RUNTIME] inserted trade id={trade['id']} for market={trade['market_id']}")
-
-        balance = await db.get_balance()
-        logger.info(f"Updated Balance: {balance}")
-
-        if balance < 1000.0:
-            logger.info("RUNTIME INTEGRATION VERIFIED - TRADE CREATED AND BALANCE UPDATED")
-        else:
-            logger.error("Balance not updated correctly.")
-            sys.exit(1)
-    else:
-        logger.error("No trade found in SQLite.")
-        sys.exit(1)
-
-    await db.close()
-    await scanner.close()
-    if os.path.exists(db_path): os.remove(db_path)
 
 if __name__ == "__main__":
     asyncio.run(verify_runtime_trade())

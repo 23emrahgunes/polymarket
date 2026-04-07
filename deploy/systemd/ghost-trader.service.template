@@ -1,0 +1,19 @@
+[Unit]
+Description=Ghost Trader PAPER Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_GROUP__
+WorkingDirectory=__REPO_ROOT__
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=__ENV_FILE__
+ExecStart=__START_SCRIPT__
+Restart=always
+RestartSec=10
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

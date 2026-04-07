@@ -1,18 +1,30 @@
-import random
-import asyncio
+from src.decision_engine import DecisionEngine, DecisionInputs
+
 
 class Brain:
-    def __init__(self, model="claude-3-5-sonnet"):
+    def __init__(self, model: str = "deterministic-local", decision_engine: DecisionEngine | None = None):
         self.model = model
+        self.decision_engine = decision_engine or DecisionEngine()
 
-    async def get_confidence(self, edge, rsi, volume_24h, price_delta_5m):
-        # Mocking Claude API response as requested for v1.0
-        # In real-world use we'd construct a prompt and hit the API here
-        await asyncio.sleep(0.1) # Simulate API latency
-
-        # Simple rule: if edge is very high and RSI isn't overbought, slightly higher confidence
-        base_confidence = random.uniform(0.6, 0.9)
-        if edge > 0.1 and rsi < 70:
-            base_confidence = min(0.95, base_confidence + 0.05)
-
-        return base_confidence
+    async def get_confidence(
+        self,
+        edge,
+        rsi,
+        volume_24h,
+        price_delta_5m=0.0,
+        category: str = "CRYPTO",
+        spread_pct: float = 0.0,
+    ) -> float:
+        decision = self.decision_engine.score_discovery(
+            DecisionInputs(
+                source="brain",
+                category=category,
+                market_id="brain-evaluation",
+                volume_24h=volume_24h,
+                mid_price=0.5,
+                spread_pct=spread_pct,
+                edge=edge,
+                rsi=rsi,
+            )
+        )
+        return decision.score
