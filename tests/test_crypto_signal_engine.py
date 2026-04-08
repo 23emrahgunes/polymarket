@@ -85,8 +85,47 @@ def test_crypto_signal_engine_builds_venue_decisions():
 
     polymarket_decision = engine.build_polymarket_decision(shared_signal, venue_configs["polymarket"], discovery_decision)
     futures_decision = engine.build_binance_futures_decision(shared_signal, venue_configs["binance_futures"], [], 100.0)
+    spot_decision = engine.build_binance_spot_decision(shared_signal, venue_configs["binance_spot"], [], 100.0, has_open_position=False)
 
     assert polymarket_decision.should_trade is True
     assert polymarket_decision.venue == "polymarket"
     assert futures_decision.venue == "binance_futures"
     assert futures_decision.direction == "LONG"
+    assert spot_decision.venue == "binance_spot"
+    assert spot_decision.should_trade is True
+    assert spot_decision.inputs["action"] == "entry_long"
+
+
+def test_crypto_signal_engine_spot_short_without_position_is_exit_only_reject():
+    engine = CryptoSignalEngine()
+    shared_signal = engine.score(
+        CryptoSignalInputs(
+            market_id="pm-btc-100k",
+            token_id="token-btc-yes",
+            question="Will BTC be above $100,000 on December 31, 2026?",
+            volume_24h=200000.0,
+            polymarket_mid_price=0.80,
+            polymarket_spread_pct=0.02,
+            spot_price=102000.0,
+            futures_symbol="BTC/USDT:USDT",
+            futures_last_price=103200.0,
+            futures_mark_price=103100.0,
+            futures_spread_pct=0.001,
+            futures_volume_24h=250000.0,
+            funding_rate=0.0002,
+            open_interest=1800000.0,
+            volatility=0.55,
+            strike_price=100000.0,
+            expiry_dt=_future_expiry(),
+            orderflow_bias=-1.0,
+            orderflow_notional=3000.0,
+        )
+    )
+    venue_configs = build_default_venue_configs()
+
+    spot_decision = engine.build_binance_spot_decision(shared_signal, venue_configs["binance_spot"], [], 100.0, has_open_position=False)
+
+    assert shared_signal.direction == "SHORT"
+    assert spot_decision.should_trade is False
+    assert "spot_short_not_supported" in spot_decision.reasons
+    assert spot_decision.inputs["action"] == "no_action"

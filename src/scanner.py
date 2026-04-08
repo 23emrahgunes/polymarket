@@ -32,6 +32,15 @@ class MarketScanner:
                 },
             }
         )
+        self.binance_spot_exchange = ccxt.binance(
+            {
+                "enableRateLimit": True,
+                "options": {
+                    "defaultType": "spot",
+                    "adjustForTimeDifference": True,
+                },
+            }
+        )
         self.futures_exchange = ccxt.binanceusdm(
             {
                 "enableRateLimit": True,
@@ -56,6 +65,7 @@ class MarketScanner:
         self.ticker_task: Optional[asyncio.Task] = None
         self.negative_cache: Dict[str, float] = {}
         self.orderbook_cache: Dict[str, Dict] = {}
+        self.spot_snapshot_cache: Dict[str, Dict] = {}
         self.futures_snapshot_cache: Dict[str, Dict] = {}
         self.futures_ohlcv_cache: Dict[str, pd.DataFrame] = {}
         self._futures_last_ohlcv_update: Dict[str, float] = {}
@@ -64,6 +74,7 @@ class MarketScanner:
             "debug_sports_token_yes": {"best_bid": 0.575, "best_ask": 0.585},
             "debug_sports_token_no": {"best_bid": 0.415, "best_ask": 0.425},
             "debug_crypto_token_yes": {"best_bid": 0.447, "best_ask": 0.453},
+            "debug_crypto_long_token_yes": {"best_bid": 0.347, "best_ask": 0.353},
         }
         self._debug_tickers = {
             "BTC/USD": 102000.0,
@@ -381,6 +392,73 @@ class MarketScanner:
                 "fetched_at": now,
             }
 
+    async def get_spot_market_snapshot(self, symbol: str) -> Dict:
+        now = time.time()
+        cached = self.spot_snapshot_cache.get(symbol)
+        if cached and now - cached["fetched_at"] < 2:
+            return cached
+
+        if self.debug_signal_mode and symbol in self._debug_tickers:
+            last_price = self._debug_tickers[symbol]
+            best_bid = round(last_price * 0.9995, 6)
+            best_ask = round(last_price * 1.0005, 6)
+            mid_price = (best_bid + best_ask) / 2
+            snapshot = {
+                "symbol": symbol,
+                "last_price": last_price,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "spread_pct": (best_ask - best_bid) / mid_price if mid_price > 0 else 1.0,
+                "volume_24h": 220000.0,
+                "is_valid": True,
+                "reason": "debug_spot",
+                "fetched_at": now,
+            }
+            self.spot_snapshot_cache[symbol] = snapshot
+            return snapshot
+
+        try:
+            ticker = await self.binance_spot_exchange.fetch_ticker(symbol)
+            best_bid = float(ticker.get("bid") or ticker.get("last") or 0.0)
+            best_ask = float(ticker.get("ask") or ticker.get("last") or 0.0)
+            last_price = float(ticker.get("last") or 0.0)
+            volume_24h = float(ticker.get("quoteVolume") or 0.0)
+
+            if best_bid <= 0 or best_ask <= 0 or last_price <= 0:
+                return {
+                    "symbol": symbol,
+                    "is_valid": False,
+                    "reason": "exchange_filters_rejected",
+                    "fetched_at": now,
+                }
+
+            mid_price = (best_bid + best_ask) / 2
+            snapshot = {
+                "symbol": symbol,
+                "last_price": last_price,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "spread_pct": (best_ask - best_bid) / mid_price if mid_price > 0 else 1.0,
+                "volume_24h": volume_24h,
+                "is_valid": True,
+                "reason": "ok",
+                "fetched_at": now,
+            }
+            self.spot_snapshot_cache[symbol] = snapshot
+            return snapshot
+        except Exception as exc:
+            logger.info(
+                "[REJECT] source=spot category=CRYPTO market=%s reasons=exchange_filters_rejected inputs=%s",
+                symbol,
+                {"symbol": symbol, "error": str(exc)},
+            )
+            return {
+                "symbol": symbol,
+                "is_valid": False,
+                "reason": "exchange_filters_rejected",
+                "fetched_at": now,
+            }
+
     def _build_snapshot(self, token_id: str, best_bid: float, best_ask: float, reason: str = "ok") -> Dict:
         mid_price = (best_bid + best_ask) / 2
         spread_pct = (best_ask - best_bid) / mid_price if mid_price > 0 else 1.0
@@ -416,4 +494,5 @@ class MarketScanner:
             self.ticker_task.cancel()
             await asyncio.gather(self.ticker_task, return_exceptions=True)
         await self.exchange.close()
+        await self.binance_spot_exchange.close()
         await self.futures_exchange.close()

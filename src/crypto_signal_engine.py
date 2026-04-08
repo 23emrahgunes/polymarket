@@ -188,6 +188,40 @@ class CryptoSignalEngine:
             direction=signal.direction,
         )
 
+    def build_binance_spot_decision(
+        self,
+        signal: SharedCryptoSignal,
+        venue_config: VenueConfig,
+        risk_reasons: List[str],
+        trade_size: float,
+        has_open_position: bool,
+    ) -> DecisionResult:
+        reasons = list(signal.reasons)
+        reasons.extend(risk_reasons)
+        action = "entry_long"
+
+        if signal.direction == "SHORT":
+            action = "signal_exit" if has_open_position else "no_action"
+            if not has_open_position:
+                reasons.append("spot_short_not_supported")
+
+        if signal.score < venue_config.signal_threshold:
+            reasons.append("venue_signal_threshold_not_met")
+
+        return DecisionResult(
+            source="binance_spot_price_structure",
+            category="CRYPTO",
+            market_id=signal.symbol.replace(":USDT", ""),
+            score=signal.score,
+            threshold=venue_config.signal_threshold,
+            should_trade=not self._dedupe(reasons),
+            reasons=self._dedupe(reasons),
+            trade_size=trade_size,
+            inputs={**signal.inputs, "action": action},
+            venue="binance_spot",
+            direction=signal.direction,
+        )
+
     @staticmethod
     def _funding_alignment(direction: str, funding_rate: float) -> float:
         if direction == "LONG":

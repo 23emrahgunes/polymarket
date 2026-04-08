@@ -507,28 +507,344 @@ class BinanceFuturesPaperVenue(ExecutionVenue):
 
 
 class BinanceSpotVenue(ExecutionVenue):
-    def __init__(self, config: VenueConfig, db):
+    def __init__(self, config: VenueConfig, db, scanner, trade_insert_callback=None):
         super().__init__("binance_spot", config, db)
+        self.scanner = scanner
+        self.risk_manager = BinanceSpotRiskManager(config, db)
+        self.trade_insert_callback = trade_insert_callback
 
     async def sync_account_state(self, scanner=None) -> None:
-        return None
+        active_scanner = scanner or self.scanner
+        open_positions = await self.db.get_open_positions(venue="binance_spot")
+        for position in open_positions:
+            symbol = position["symbol_or_market_id"]
+            try:
+                snapshot = await active_scanner.get_spot_market_snapshot(symbol)
+            except Exception as exc:
+                logger.info(
+                    "[REJECT] venue=binance_spot source=sync category=CRYPTO market=%s reasons=position_sync_failed inputs=%s",
+                    symbol,
+                    {"error": str(exc)},
+                )
+                continue
+
+            if not snapshot.get("is_valid"):
+                logger.info(
+                    "[REJECT] venue=binance_spot source=sync category=CRYPTO market=%s reasons=position_sync_failed inputs=%s",
+                    symbol,
+                    snapshot,
+                )
+                continue
+
+            mark_price = float(snapshot["last_price"])
+            entry_price = float(position["entry_price"])
+            quantity = float(position["qty_or_shares"])
+            notional = float(position["notional_usd"])
+            unrealized_pnl = quantity * (mark_price - entry_price)
+
+            await self.db.update_position_mark(position["id"], mark_price, unrealized_pnl)
+
+            open_orders = await self.db.get_open_venue_orders("binance_spot", symbol_or_market_id=symbol)
+            stop_order = next((dict(order) for order in open_orders if order["order_type"] == "STOP_LOSS"), None)
+            tp_order = next((dict(order) for order in open_orders if order["order_type"] == "TAKE_PROFIT"), None)
+
+            if stop_order and mark_price <= float(stop_order["stop_price"]):
+                await self._close_position(position, mark_price, "STOP_LOSS", notional, stop_order["id"])
+                continue
+            if tp_order and mark_price >= float(tp_order["stop_price"]):
+                await self._close_position(position, mark_price, "TAKE_PROFIT", notional, tp_order["id"])
 
     async def get_open_positions(self, symbol_or_market_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        return []
+        rows = await self.db.get_open_positions(venue="binance_spot", symbol_or_market_id=symbol_or_market_id)
+        return [dict(row) for row in rows]
 
-    async def place_entry_order(self, **kwargs) -> Tuple[bool, str]:
-        logger.info(
-            "[REJECT] venue=binance_spot source=runtime category=CRYPTO market=%s reasons=spot_executor_not_enabled inputs=%s",
-            kwargs.get("symbol", "unknown"),
-            {"phase": "scaffold_only"},
-        )
-        return False, "spot_executor_not_enabled"
+    async def get_open_position(self, symbol_or_market_id: str) -> Optional[Dict[str, Any]]:
+        positions = await self.get_open_positions(symbol_or_market_id)
+        return positions[0] if positions else None
 
-    async def place_exit_order(self, **kwargs) -> Tuple[bool, str]:
-        return False, "spot_executor_not_enabled"
+    async def place_entry_order(
+        self,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        trade_size: float,
+        signal_score: float,
+        source: str,
+        source_signal: str,
+        spread_pct: float,
+        market_context: Dict[str, Any],
+    ) -> Tuple[bool, str]:
+        async with self.lock:
+            reasons = await self.risk_manager.validate_entry(
+                symbol=symbol,
+                side=side,
+                price=entry_price,
+                trade_size=trade_size,
+                spread_pct=spread_pct,
+                signal_score=signal_score,
+            )
+            if reasons:
+                logger.info(
+                    "[REJECT] venue=binance_spot source=%s category=CRYPTO market=%s reasons=%s inputs=%s",
+                    source,
+                    symbol,
+                    ",".join(reasons),
+                    {"side": side, "trade_size": trade_size, "entry_price": entry_price, "signal_score": signal_score},
+                )
+                return False, reasons[0]
+
+            existing = await self.get_open_position(symbol)
+            if existing is not None:
+                logger.info(
+                    "[REJECT] venue=binance_spot source=%s category=CRYPTO market=%s reasons=duplicate_open_trade inputs=%s",
+                    source,
+                    symbol,
+                    {"side": side, "existing_side": existing["side"]},
+                )
+                return False, "duplicate_open_trade"
+
+            try:
+                protection = await self.risk_manager.build_protection_orders(side=side, entry_price=entry_price)
+            except ValueError as exc:
+                reason = str(exc)
+                logger.info(
+                    "[REJECT] venue=binance_spot source=%s category=CRYPTO market=%s reasons=%s inputs=%s",
+                    source,
+                    symbol,
+                    reason,
+                    {"side": side, "entry_price": entry_price},
+                )
+                return False, reason
+
+            quantity = trade_size / entry_price
+            balance_before = await self.db.get_balance("binance_spot", self.config.mode)
+            balance_after = balance_before - trade_size
+            await self.db.update_balance(balance_after, "binance_spot", self.config.mode)
+
+            position_id = await self.db.create_venue_position(
+                venue="binance_spot",
+                execution_mode=self.config.mode,
+                instrument_type="spot",
+                symbol_or_market_id=symbol,
+                side="LONG",
+                qty_or_shares=quantity,
+                entry_price=entry_price,
+                notional_usd=trade_size,
+                leverage=1,
+                source_signal=source_signal,
+                linked_market_id=market_context.get("market_id"),
+            )
+            await self.db.add_venue_order(
+                venue="binance_spot",
+                execution_mode=self.config.mode,
+                position_id=position_id,
+                symbol_or_market_id=symbol,
+                order_type="STOP_LOSS",
+                side="SELL",
+                qty=quantity,
+                price=entry_price,
+                stop_price=protection.stop_loss_price,
+                reduce_only=True,
+                status="OPEN",
+            )
+            await self.db.add_venue_order(
+                venue="binance_spot",
+                execution_mode=self.config.mode,
+                position_id=position_id,
+                symbol_or_market_id=symbol,
+                order_type="TAKE_PROFIT",
+                side="SELL",
+                qty=quantity,
+                price=entry_price,
+                stop_price=protection.take_profit_price,
+                reduce_only=True,
+                status="OPEN",
+            )
+            trade_id = await self.db.add_trade(
+                symbol,
+                "LONG",
+                trade_size,
+                entry_price,
+                edge=0.0,
+                confidence=signal_score,
+                status="OPEN",
+                whale_address=None,
+                venue="binance_spot",
+                instrument_type="spot",
+                position_id=position_id,
+                source_signal=source_signal,
+                execution_mode=self.config.mode,
+            )
+            logger.info(
+                "[PAPER-TRADE-RUNTIME] venue=binance_spot inserted trade id=%s market=%s side=LONG balance_before=%.2f balance_after=%.2f source=%s protection=%s",
+                trade_id,
+                symbol,
+                balance_before,
+                balance_after,
+                source,
+                {"stop_loss": protection.stop_loss_price, "take_profit": protection.take_profit_price},
+            )
+            if self.trade_insert_callback is not None:
+                callback_result = self.trade_insert_callback(
+                    {
+                        "trade_id": trade_id,
+                        "market_id": symbol,
+                        "side": "LONG",
+                        "balance_before": balance_before,
+                        "balance_after": balance_after,
+                        "source": source,
+                        "category": "CRYPTO",
+                        "venue": "binance_spot",
+                        "instrument_type": "spot",
+                        "source_signal": source_signal,
+                        "execution_mode": self.config.mode,
+                    }
+                )
+                if inspect.isawaitable(callback_result):
+                    await callback_result
+            return True, f"[PAPER] Binance Spot LONG entry on {symbol}"
+
+    async def place_exit_order(
+        self,
+        symbol_or_market_id: str,
+        exit_price: float,
+        reason: str,
+        source: str = "signal_exit",
+    ) -> Tuple[bool, str]:
+        async with self.lock:
+            position = await self.get_open_position(symbol_or_market_id)
+            exit_reasons = await self.risk_manager.validate_exit(position)
+            if exit_reasons:
+                logger.info(
+                    "[REJECT] venue=binance_spot source=%s category=CRYPTO market=%s reasons=%s inputs=%s",
+                    source,
+                    symbol_or_market_id,
+                    ",".join(exit_reasons),
+                    {"reason": reason},
+                )
+                return False, exit_reasons[0]
+
+            await self._close_position(position, exit_price, reason, float(position["notional_usd"]), None)
+            return True, f"Spot position exited via {reason}"
 
     async def cancel_protection_orders(self, symbol_or_market_id: str) -> None:
-        return None
+        await self.db.cancel_open_venue_orders("binance_spot", symbol_or_market_id)
 
     async def refresh_order_status(self) -> None:
         return None
+
+    async def _close_position(
+        self,
+        position: Dict[str, Any],
+        exit_price: float,
+        reason: str,
+        notional_usd: float,
+        triggered_order_id: Optional[int],
+    ) -> None:
+        entry_price = float(position["entry_price"])
+        quantity = float(position["qty_or_shares"])
+        realized_pnl = quantity * (exit_price - entry_price)
+
+        balance_before = await self.db.get_balance("binance_spot", self.config.mode)
+        balance_after = balance_before + notional_usd + realized_pnl
+        await self.db.update_balance(balance_after, "binance_spot", self.config.mode)
+        await self.db.close_venue_position(position["id"], exit_price, realized_pnl, reason)
+        await self.cancel_protection_orders(position["symbol_or_market_id"])
+        if triggered_order_id is not None:
+            await self.db.update_venue_order_status(triggered_order_id, "FILLED")
+        logger.info(
+            "[POSITION-CLOSED] venue=binance_spot market=%s side=%s reason=%s exit_price=%.4f pnl=%.2f balance_before=%.2f balance_after=%.2f",
+            position["symbol_or_market_id"],
+            position["side"],
+            reason,
+            exit_price,
+            realized_pnl,
+            balance_before,
+            balance_after,
+        )
+
+
+class BinanceSpotRiskManager(VenueRiskManager):
+    def __init__(self, config: VenueConfig, db):
+        self.config = config
+        self.db = db
+
+    async def validate_entry(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        trade_size: float,
+        spread_pct: float,
+        signal_score: float,
+    ) -> List[str]:
+        reasons: List[str] = []
+        account = await self.db.get_venue_account("binance_spot", self.config.mode)
+        available_balance = float(account["available_balance"]) if account else 0.0
+
+        if not symbol:
+            reasons.append("missing_spot_symbol_mapping")
+        if side != "LONG":
+            reasons.append("spot_short_not_supported")
+        if signal_score < self.config.signal_threshold:
+            reasons.append("venue_signal_threshold_not_met")
+        if spread_pct * 10_000 > self.config.slippage_limit_bps:
+            reasons.append("exchange_filters_rejected")
+        if trade_size > self.config.max_order_usd:
+            reasons.append("max_position_exceeded")
+        if available_balance < trade_size:
+            reasons.append("insufficient_spot_balance")
+
+        open_positions = await self.db.get_open_positions(venue="binance_spot")
+        if len(open_positions) >= self.config.max_open_positions:
+            reasons.append("max_position_exceeded")
+
+        current_notional = sum(float(position["notional_usd"]) for position in open_positions)
+        if current_notional + trade_size > self.config.max_position_usd:
+            reasons.append("max_position_exceeded")
+
+        realized_pnl_today = await self.db.get_realized_pnl_since(
+            "binance_spot",
+            datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        if realized_pnl_today <= -abs(self.config.max_daily_loss_usd):
+            reasons.append("max_daily_loss_exceeded")
+        if price <= 0:
+            reasons.append("exchange_filters_rejected")
+
+        return self._dedupe(reasons)
+
+    async def build_protection_orders(self, side: str, entry_price: float) -> ProtectionOrders:
+        if side != "LONG":
+            raise ValueError("spot_short_not_supported")
+        if self.config.stop_loss_pct <= 0:
+            raise ValueError("stop_distance_invalid")
+        if self.config.take_profit_pct <= 0:
+            raise ValueError("tp_distance_invalid")
+
+        stop_loss_price = entry_price * (1 - self.config.stop_loss_pct)
+        take_profit_price = entry_price * (1 + self.config.take_profit_pct)
+        if stop_loss_price <= 0:
+            raise ValueError("stop_distance_invalid")
+        if take_profit_price <= 0:
+            raise ValueError("tp_distance_invalid")
+
+        return ProtectionOrders(
+            stop_loss_price=round(stop_loss_price, 6),
+            take_profit_price=round(take_profit_price, 6),
+        )
+
+    async def validate_exit(self, position: Optional[Dict[str, Any]]) -> List[str]:
+        if position is None:
+            return ["position_sync_failed"]
+        return []
+
+    @staticmethod
+    def _dedupe(values: List[str]) -> List[str]:
+        seen = set()
+        ordered: List[str] = []
+        for value in values:
+            if value not in seen:
+                seen.add(value)
+                ordered.append(value)
+        return ordered

@@ -8,7 +8,7 @@ Ghost Trader is a default-PAPER multi-venue bot that monitors all active Polymar
 - Venue model:
   - `polymarket`: active now, PAPER by default
   - `binance_futures`: futures-led crypto venue, PAPER by default, disabled by default
-  - `binance_spot`: scaffolded for phase 2, disabled by default
+  - `binance_spot`: long-only crypto PAPER venue, disabled by default
 - All Polymarket categories are monitored:
   - `CRYPTO`: tradable through Polymarket plus optional Binance Futures venue
   - `SPORTS`: tradable through whale/orderflow signals
@@ -18,6 +18,12 @@ Ghost Trader is a default-PAPER multi-venue bot that monitors all active Polymar
 - Runtime scoring is deterministic, explainable, reproducible, category-aware, and logged at `INFO`.
 - Normal runtime never fabricates whale/activity events. Synthetic verification inputs exist only when `DEBUG_SIGNAL_MODE=true`.
 - Crypto routing is independent by venue: the same signal may open a Polymarket position, a Binance Futures paper position, both, or neither depending on venue-specific thresholds and guards.
+- Whale source mode is now `hybrid_cache`:
+  - activity-discovered wallets persisted in SQLite are preferred
+  - live leaderboard results are merged when available
+  - `WHALE_LIST` acts as a manual seed source
+  - built-in static seeds are last resort bootstrap only
+  - leaderboard outages no longer force the runtime down to a 3-wallet-only mode
 
 ## Deterministic Scoring
 
@@ -62,6 +68,7 @@ Then venue-specific gating applies:
 
 - `polymarket`: existing binary-market liquidity, spread, expiry, and edge checks
 - `binance_futures`: isolated margin only, fixed `2x`, hard SL/TP, max position, max daily loss, slippage and exposure limits
+- `binance_spot`: long-only spot PAPER execution with hard SL/TP, max position, max daily loss, and slippage limits
 
 If both venues qualify, both can open independently.
 
@@ -110,12 +117,31 @@ Important variables:
 - `DEBUG_SIGNAL_PROFILE=sports`
 - `RUNTIME_VERIFY_ONCE=false`
 - `GHOST_TRADER_DB_PATH=data/ghost_trader.db`
+- `WHALE_TARGET_COUNT=50`
+- `WHALE_DISCOVERY_MIN_EVENT_USD=2500`
+- `WHALE_DISCOVERY_MIN_EVENTS=2`
+- `WHALE_DISCOVERY_SINGLE_EVENT_USD=10000`
+- `WHALE_CONNECT_TIMEOUT_SEC=3`
+- `WHALE_READ_TIMEOUT_SEC=6`
+- `WHALE_INSPECTION_CONCURRENCY=8`
+- `WHALE_LIST=` optional comma-separated manual seed wallets
 - `BINANCE_FUTURES_ENABLED=false`
 - `BINANCE_FUTURES_MODE=paper`
 - `BINANCE_FUTURES_LEVERAGE=2`
 - `BINANCE_FUTURES_MARGIN_MODE=isolated`
 - `BINANCE_FUTURES_STOP_LOSS_PCT=0.03`
 - `BINANCE_FUTURES_TAKE_PROFIT_PCT=0.06`
+- `BINANCE_SPOT_ENABLED=false`
+- `BINANCE_SPOT_MODE=paper`
+- `BINANCE_SPOT_MAX_ORDER_USD=100`
+- `BINANCE_SPOT_MAX_POSITION_USD=200`
+- `BINANCE_SPOT_MAX_DAILY_LOSS_USD=100`
+- `BINANCE_SPOT_MAX_OPEN_POSITIONS=3`
+- `BINANCE_SPOT_FEE_BPS=10`
+- `BINANCE_SPOT_SLIPPAGE_LIMIT_BPS=20`
+- `BINANCE_SPOT_SIGNAL_THRESHOLD=0.72`
+- `BINANCE_SPOT_STOP_LOSS_PCT=0.03`
+- `BINANCE_SPOT_TAKE_PROFIT_PCT=0.06`
 - verify-only helpers:
   - `VERIFY_REQUIRED_VENUES=polymarket`
   - `VERIFY_REQUIRED_CATEGORY=SPORTS`
@@ -146,6 +172,12 @@ Run deterministic dual-venue crypto verification:
 python scripts/verify_crypto_dual_venue.py
 ```
 
+Run deterministic triple-venue crypto verification:
+
+```bash
+python scripts/verify_crypto_triple_venue.py
+```
+
 ## DEBUG_SIGNAL_MODE
 
 `DEBUG_SIGNAL_MODE=true` is an opt-in verification mode.
@@ -155,6 +187,7 @@ When enabled:
 - runtime uses deterministic synthetic verification inputs
 - `DEBUG_SIGNAL_PROFILE=sports` injects one active `SPORTS` market and one matching orderflow event
 - `DEBUG_SIGNAL_PROFILE=crypto_dual` injects one active `CRYPTO` market plus one crypto orderflow hint used by the shared futures-led signal engine
+- `DEBUG_SIGNAL_PROFILE=crypto_triple_long` injects one active `CRYPTO` market that produces a deterministic `LONG` shared signal for Polymarket, Futures, and Spot
 - the decision engine evaluates the event normally
 - a PAPER trade is inserted into SQLite
 - wallet balance decreases
@@ -163,6 +196,37 @@ When disabled:
 
 - no synthetic whale/activity events are created
 - discovery and orderflow only use real upstream data
+
+## Whale Source Hardening
+
+Whale discovery is no longer "Gamma leaderboard or 3 static wallets". The runtime now keeps a persisted whale cache in SQLite.
+
+How the source works:
+
+- global activity is used to discover strong wallets across all categories
+- discovery candidates are persisted in `whale_wallets`
+- wallet ranking is deterministic and uses:
+  - recent event notional
+  - event frequency
+  - DB trust score
+  - recency of successful inspection
+  - timeout/failure penalties
+- if Gamma leaderboard is slow or unavailable, the runtime falls back to the learned cache before touching manual/static seeds
+
+Operationally this means:
+
+- `tracked_whales=3` is no longer the expected steady-state fallback
+- `STATUS` logs now include:
+  - `leaderboard_wallets`
+  - `activity_discovered_wallets`
+  - `persisted_wallets`
+  - `wallet_timeouts_last_cycle`
+  - `source_mode`
+- clear `INFO` logs explain degraded whale source states such as:
+  - `leaderboard_unavailable`
+  - `wallet_activity_timeout`
+  - `whale_source_unavailable`
+  - `seed_only_mode`
 
 ## Dual-Venue Crypto Verification
 
@@ -186,6 +250,39 @@ What it proves in one run:
 - both venues insert independent PAPER trades into SQLite
 - both venue balances decrease
 - `binance_futures` creates `STOP_LOSS` and `TAKE_PROFIT` protection orders
+
+## Binance Spot PAPER
+
+`binance_spot` is now a PAPER crypto venue with long-only semantics.
+
+Behavior:
+
+- `LONG` signal opens a spot PAPER long
+- `SHORT` signal closes an existing spot long via `signal_exit`
+- if no spot long exists, `SHORT` logs `spot_short_not_supported`
+- spot does not simulate synthetic shorts or margin
+- spot creates virtual `STOP_LOSS` and `TAKE_PROFIT` orders in SQLite
+
+## Triple-Venue Crypto Verification
+
+The triple-venue harness keeps normal defaults intact while enabling `binance_futures` and `binance_spot` only inside an isolated debug run.
+
+Command:
+
+```bash
+python scripts/verify_crypto_triple_venue.py
+```
+
+What it proves in one run:
+
+- one deterministic `CRYPTO` market is discovered by the real runtime
+- the shared futures-led crypto score is produced as a `LONG`
+- `polymarket`, `binance_futures`, and `binance_spot` each log their own `[DECISION]`
+- all three venues insert independent PAPER trades into SQLite
+- all three venue balances decrease
+- futures creates `STOP_LOSS` and `TAKE_PROFIT`
+- spot creates virtual `STOP_LOSS` and `TAKE_PROFIT`
+- futures and spot both leave one open PAPER position in SQLite
 
 Expected proof sections:
 
@@ -217,6 +314,12 @@ Dual-venue crypto verification SQLite path:
 data/runtime_crypto_dual_venue.db
 ```
 
+Triple-venue crypto verification SQLite path:
+
+```bash
+data/runtime_crypto_triple_venue.db
+```
+
 Example queries:
 
 ```bash
@@ -224,10 +327,16 @@ sqlite3 data/runtime_verification.db "SELECT balance FROM wallet WHERE id = 1;"
 sqlite3 data/runtime_verification.db "SELECT id, market_id, side, size, price, confidence, whale_address, timestamp FROM trades ORDER BY id ASC;"
 sqlite3 data/ghost_trader.db "SELECT venue, execution_mode, cash_balance, equity, available_balance FROM venue_accounts ORDER BY venue;"
 sqlite3 data/ghost_trader.db "SELECT venue, symbol_or_market_id, side, status, unrealized_pnl, realized_pnl FROM venue_positions ORDER BY id DESC;"
+sqlite3 data/ghost_trader.db "SELECT source_type, COUNT(*) FROM whale_wallets WHERE enabled = 1 GROUP BY source_type ORDER BY source_type;"
+sqlite3 data/ghost_trader.db "SELECT address, source_type, discovery_score, last_event_amount, event_count_24h, failure_streak FROM whale_wallets WHERE enabled = 1 ORDER BY discovery_score DESC LIMIT 10;"
 sqlite3 data/runtime_crypto_dual_venue.db "SELECT venue, execution_mode, cash_balance, equity, available_balance FROM venue_accounts ORDER BY venue;"
 sqlite3 data/runtime_crypto_dual_venue.db "SELECT venue, instrument_type, market_id, side, size, price, confidence, source_signal FROM trades ORDER BY id ASC;"
 sqlite3 data/runtime_crypto_dual_venue.db "SELECT venue, symbol_or_market_id, side, status, notional_usd FROM venue_positions ORDER BY id ASC;"
 sqlite3 data/runtime_crypto_dual_venue.db "SELECT venue, symbol_or_market_id, order_type, side, stop_price, status FROM venue_orders ORDER BY id ASC;"
+sqlite3 data/runtime_crypto_triple_venue.db "SELECT venue, execution_mode, cash_balance, equity, available_balance FROM venue_accounts ORDER BY venue;"
+sqlite3 data/runtime_crypto_triple_venue.db "SELECT venue, instrument_type, market_id, side, size, price, confidence, source_signal FROM trades ORDER BY id ASC;"
+sqlite3 data/runtime_crypto_triple_venue.db "SELECT venue, symbol_or_market_id, side, status, notional_usd FROM venue_positions ORDER BY id ASC;"
+sqlite3 data/runtime_crypto_triple_venue.db "SELECT venue, symbol_or_market_id, order_type, side, stop_price, status FROM venue_orders ORDER BY id ASC;"
 ```
 
 ## Docker
@@ -245,7 +354,9 @@ docker build -t ghost-trader .
 - Weak/noisy markets are filtered with category-specific liquidity, spread, drift, and scoring thresholds before a PAPER trade is opened.
 - Venue balances, positions, and PnL are tracked separately.
 - Binance Futures live execution is not active by default; v1 execution is PAPER-first.
+- Binance Spot is PAPER-only and long-only in v1; `SHORT` is interpreted as exit-only.
 - The dual-venue crypto proof harness enables `BINANCE_FUTURES_ENABLED=true` only inside the verification command, not in the normal daemon defaults.
+- The triple-venue crypto proof harness enables both `BINANCE_FUTURES_ENABLED=true` and `BINANCE_SPOT_ENABLED=true` only inside its verification command.
 - Service management on VPS:
 
 ```bash

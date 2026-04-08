@@ -244,3 +244,43 @@ async def test_runtime_verify_once_waits_for_dual_crypto_venues(tmp_path):
         for trade in trades
     )
     assert len(futures_positions) == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_verify_once_waits_for_triple_crypto_venues(tmp_path):
+    db_path = str(tmp_path / "test_crypto_triple_verify.db")
+    venue_configs = build_default_venue_configs()
+    venue_configs["binance_futures"] = venue_configs["binance_futures"].__class__(
+        **{**venue_configs["binance_futures"].__dict__, "enabled": True}
+    )
+    venue_configs["binance_spot"] = venue_configs["binance_spot"].__class__(
+        **{**venue_configs["binance_spot"].__dict__, "enabled": True}
+    )
+
+    runtime = GhostBotRuntime(
+        RuntimeSettings(
+            exchange_id="coinbase",
+            db_path=db_path,
+            debug_signal_mode=True,
+            debug_signal_profile="crypto_triple_long",
+            runtime_verify_once=True,
+            verify_required_venues=("polymarket", "binance_futures", "binance_spot"),
+            verify_required_category="CRYPTO",
+            venue_configs=venue_configs,
+        )
+    )
+    await asyncio.wait_for(runtime.run(), timeout=20)
+
+    db = Database(db_path)
+    await db.connect()
+    trades = await db.get_recent_trades(limit=10)
+    futures_positions = await db.get_open_positions(venue="binance_futures", symbol_or_market_id="BTC/USDT:USDT")
+    spot_positions = await db.get_open_positions(venue="binance_spot", symbol_or_market_id="BTC/USDT")
+    await db.close()
+
+    assert runtime.verify_completed_venues == {"polymarket", "binance_futures", "binance_spot"}
+    assert any(trade["venue"] == "polymarket" and trade["market_id"] == "debug-crypto-btc-95k-2026" for trade in trades)
+    assert any(trade["venue"] == "binance_futures" and trade["market_id"] == "BTC/USDT:USDT" for trade in trades)
+    assert any(trade["venue"] == "binance_spot" and trade["market_id"] == "BTC/USDT" and trade["instrument_type"] == "spot" for trade in trades)
+    assert len(futures_positions) == 1
+    assert len(spot_positions) == 1

@@ -16,6 +16,7 @@ from src.crypto_signal_engine import CryptoSignalEngine, CryptoSignalInputs
 from src.database import Database
 from src.decision_engine import DecisionEngine, DecisionInputs, classify_market_category
 from src.explorer import MarketExplorer
+from src.gamma_client import GammaApiClient
 from src.logic import calculate_annualized_volatility, calculate_black_scholes_prob, calculate_edge, calculate_rsi
 from src.market_config import BINANCE_FUTURES_MAPPINGS, EXCHANGE_MAPPINGS, resolve_binance_futures_symbol, resolve_crypto_symbol
 from src.parser import parse_polymarket_question
@@ -55,6 +56,13 @@ class RuntimeSettings:
     whale_interval_seconds: float = 15.0
     status_interval_seconds: float = 300.0
     market_scan_interval_seconds: float = 60.0
+    whale_target_count: int = 50
+    whale_discovery_min_event_usd: float = 2_500.0
+    whale_discovery_min_events: int = 2
+    whale_discovery_single_event_usd: float = 10_000.0
+    whale_connect_timeout_sec: float = 3.0
+    whale_read_timeout_sec: float = 6.0
+    whale_inspection_concurrency: int = 8
     venue_configs: Dict[str, VenueConfig] = field(default_factory=build_default_venue_configs)
 
     @classmethod
@@ -67,6 +75,13 @@ class RuntimeSettings:
             runtime_verify_once=_env_flag("RUNTIME_VERIFY_ONCE", False),
             verify_required_venues=_env_csv("VERIFY_REQUIRED_VENUES"),
             verify_required_category=(os.getenv("VERIFY_REQUIRED_CATEGORY", "").strip().upper() or None),
+            whale_target_count=max(int(os.getenv("WHALE_TARGET_COUNT", "50") or 50), 1),
+            whale_discovery_min_event_usd=float(os.getenv("WHALE_DISCOVERY_MIN_EVENT_USD", "2500") or 2500),
+            whale_discovery_min_events=max(int(os.getenv("WHALE_DISCOVERY_MIN_EVENTS", "2") or 2), 1),
+            whale_discovery_single_event_usd=float(os.getenv("WHALE_DISCOVERY_SINGLE_EVENT_USD", "10000") or 10000),
+            whale_connect_timeout_sec=float(os.getenv("WHALE_CONNECT_TIMEOUT_SEC", "3") or 3),
+            whale_read_timeout_sec=float(os.getenv("WHALE_READ_TIMEOUT_SEC", "6") or 6),
+            whale_inspection_concurrency=max(int(os.getenv("WHALE_INSPECTION_CONCURRENCY", "8") or 8), 1),
             venue_configs=build_default_venue_configs(),
         )
 
@@ -87,6 +102,7 @@ class GhostBotRuntime:
 
         self.scanner: Optional[MarketScanner] = None
         self.db: Optional[Database] = None
+        self.gamma_client: Optional[GammaApiClient] = None
         self.explorer: Optional[MarketExplorer] = None
         self.brain: Optional[Brain] = None
         self.trader: Optional[TradeExecutor] = None
@@ -98,6 +114,11 @@ class GhostBotRuntime:
         self.binance_spot_venue: Optional[BinanceSpotVenue] = None
 
     async def initialize(self) -> None:
+        self.gamma_client = GammaApiClient(
+            connect_timeout_sec=self.settings.whale_connect_timeout_sec,
+            read_timeout_sec=self.settings.whale_read_timeout_sec,
+            inspection_concurrency=self.settings.whale_inspection_concurrency,
+        )
         self.scanner = MarketScanner(
             exchange_id=self.settings.exchange_id,
             debug_signal_mode=self.settings.debug_signal_mode,
@@ -118,12 +139,21 @@ class GhostBotRuntime:
         self.whale_tracker = WhaleTracker(
             self.scanner.polymarket,
             db=self.db,
+            gamma_client=self.gamma_client,
             debug_signal_mode=self.settings.debug_signal_mode,
             poll_interval_seconds=self.settings.whale_interval_seconds,
+            target_wallet_count=self.settings.whale_target_count,
+            discovery_min_events=self.settings.whale_discovery_min_events,
+            discovery_single_event_usd=self.settings.whale_discovery_single_event_usd,
         )
         self.activity_hunter = ActivityHunter(
             debug_signal_mode=self.settings.debug_signal_mode,
             debug_signal_profile=self.settings.debug_signal_profile,
+            db=self.db,
+            gamma_client=self.gamma_client,
+            discovery_min_event_usd=self.settings.whale_discovery_min_event_usd,
+            discovery_min_events=self.settings.whale_discovery_min_events,
+            discovery_single_event_usd=self.settings.whale_discovery_single_event_usd,
         )
         self.copy_trader = CopyTrader(self.trader, self.scanner, self.db, self.decision_engine)
 
@@ -134,7 +164,12 @@ class GhostBotRuntime:
             self.scanner,
             trade_insert_callback=self.on_trade_inserted,
         )
-        self.binance_spot_venue = BinanceSpotVenue(self.settings.venue_configs["binance_spot"], self.db)
+        self.binance_spot_venue = BinanceSpotVenue(
+            self.settings.venue_configs["binance_spot"],
+            self.db,
+            self.scanner,
+            trade_insert_callback=self.on_trade_inserted,
+        )
 
     async def close(self) -> None:
         self.stop_event.set()
@@ -237,23 +272,7 @@ class GhostBotRuntime:
 
             now = time.time()
             if now - last_status_log >= self.settings.status_interval_seconds:
-                total, wins, win_rate, total_pnl = await self.db.get_bot_performance()
-                futures_realized, futures_unrealized = await self.db.get_venue_performance("binance_futures")
-                futures_balance = await self.db.get_balance("binance_futures", self.settings.venue_configs["binance_futures"].mode)
-                futures_open_positions = await self.db.get_open_positions(venue="binance_futures")
-                logger.info(
-                    "[STATUS] active_markets=%s tracked_whales=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s scan_time=%.2fs",
-                    len(active_markets),
-                    len(self.whale_tracker.top_whales if self.whale_tracker else []),
-                    total,
-                    win_rate,
-                    total_pnl,
-                    futures_balance,
-                    futures_realized,
-                    futures_unrealized,
-                    len(futures_open_positions),
-                    now - cycle_started,
-                )
+                await self.log_runtime_status(len(active_markets), now - cycle_started)
                 last_status_log = now
 
             if now - last_market_scan_log >= self.settings.market_scan_interval_seconds and active_markets:
@@ -270,6 +289,43 @@ class GhostBotRuntime:
     async def sync_venue_states(self) -> None:
         if self.binance_futures_venue is not None and self.settings.venue_configs["binance_futures"].enabled:
             await self.binance_futures_venue.sync_account_state(self.scanner)
+        if self.binance_spot_venue is not None and self.settings.venue_configs["binance_spot"].enabled:
+            await self.binance_spot_venue.sync_account_state(self.scanner)
+
+    async def log_runtime_status(self, active_markets_count: int, cycle_duration: float) -> None:
+        if self.db is None:
+            return
+
+        total, wins, win_rate, total_pnl = await self.db.get_bot_performance()
+        futures_realized, futures_unrealized = await self.db.get_venue_performance("binance_futures")
+        futures_balance = await self.db.get_balance("binance_futures", self.settings.venue_configs["binance_futures"].mode)
+        futures_open_positions = await self.db.get_open_positions(venue="binance_futures")
+        spot_realized, spot_unrealized = await self.db.get_venue_performance("binance_spot")
+        spot_balance = await self.db.get_balance("binance_spot", self.settings.venue_configs["binance_spot"].mode)
+        spot_open_positions = await self.db.get_open_positions(venue="binance_spot")
+        whale_tracker = self.whale_tracker
+        logger.info(
+            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s scan_time=%.2fs",
+            active_markets_count,
+            len(whale_tracker.top_whales if whale_tracker else []),
+            getattr(whale_tracker, "leaderboard_wallets_count", 0),
+            getattr(whale_tracker, "activity_discovered_wallets_count", 0),
+            getattr(whale_tracker, "persisted_wallets_count", 0),
+            getattr(whale_tracker, "wallet_timeouts_last_cycle", 0),
+            getattr(whale_tracker, "source_mode", "uninitialized"),
+            total,
+            win_rate,
+            total_pnl,
+            futures_balance,
+            futures_realized,
+            futures_unrealized,
+            len(futures_open_positions),
+            spot_balance,
+            spot_realized,
+            spot_unrealized,
+            len(spot_open_positions),
+            cycle_duration,
+        )
 
     async def run_activity_hunter_loop(self) -> None:
         if self.activity_hunter is None:
@@ -341,8 +397,9 @@ class GhostBotRuntime:
             return
 
         spot_symbol = resolve_crypto_symbol(question, self.settings.exchange_id)
+        venue_spot_symbol = resolve_crypto_symbol(question, "binance")
         futures_symbol = resolve_binance_futures_symbol(question)
-        if not spot_symbol or not futures_symbol:
+        if not spot_symbol or not futures_symbol or not venue_spot_symbol:
             self.decision_engine.log_result(self.decision_engine.reject(base_inputs, "market_not_mapped"), logger)
             return
 
@@ -385,6 +442,9 @@ class GhostBotRuntime:
             return
 
         spot_volatility = calculate_annualized_volatility(historical_data["close"])
+        # Keep the triple-venue proof deterministic by capping debug volatility.
+        if self.settings.debug_signal_mode and self.settings.debug_signal_profile == "crypto_triple_long":
+            spot_volatility = min(spot_volatility, 0.65)
         time_to_expiry_years = (expiry_dt - now).total_seconds() / (24 * 365 * 3600)
         implied_probability = calculate_black_scholes_prob(
             current_exchange_price,
@@ -435,6 +495,8 @@ class GhostBotRuntime:
         futures_history = await self.scanner.get_futures_historical_data(futures_symbol)
         volatility_source = futures_history["close"] if not futures_history.empty and "close" in futures_history else historical_data["close"]
         futures_volatility = calculate_annualized_volatility(volatility_source)
+        if self.settings.debug_signal_mode and self.settings.debug_signal_profile == "crypto_triple_long":
+            futures_volatility = min(futures_volatility, 0.65)
 
         orderflow_hint = self._get_crypto_orderflow_hint(futures_symbol)
         shared_signal = self.crypto_signal_engine.score(
@@ -531,6 +593,67 @@ class GhostBotRuntime:
                 spread_pct=float(futures_snapshot["spread_pct"]),
                 market_context=market,
             )
+
+        if not self.settings.venue_configs["binance_spot"].enabled or self.binance_spot_venue is None:
+            return
+
+        spot_snapshot = await self.scanner.get_spot_market_snapshot(venue_spot_symbol)
+        spot_trade_size = min(
+            self.settings.venue_configs["binance_spot"].max_order_usd,
+            self.settings.venue_configs["binance_spot"].max_position_usd,
+        )
+        open_spot_position = await self.binance_spot_venue.get_open_position(venue_spot_symbol)
+        spot_risk_reasons = []
+
+        if not spot_snapshot.get("is_valid"):
+            spot_risk_reasons.append(spot_snapshot.get("reason", "exchange_filters_rejected"))
+        elif shared_signal.direction == "LONG":
+            if open_spot_position is not None:
+                spot_risk_reasons.append("duplicate_open_trade")
+            else:
+                spot_risk_reasons = await self.binance_spot_venue.risk_manager.validate_entry(
+                    symbol=venue_spot_symbol,
+                    side="LONG",
+                    price=float(spot_snapshot["last_price"]),
+                    trade_size=spot_trade_size,
+                    spread_pct=float(spot_snapshot["spread_pct"]),
+                    signal_score=shared_signal.score,
+                )
+        elif open_spot_position is None:
+            spot_risk_reasons.append("spot_short_not_supported")
+
+        spot_decision = self.crypto_signal_engine.build_binance_spot_decision(
+            shared_signal,
+            self.settings.venue_configs["binance_spot"],
+            spot_risk_reasons,
+            trade_size=spot_trade_size,
+            has_open_position=open_spot_position is not None,
+        )
+        self.decision_engine.log_result(spot_decision, logger)
+
+        if not spot_decision.should_trade:
+            return
+
+        if shared_signal.direction == "LONG":
+            await self.binance_spot_venue.place_entry_order(
+                symbol=venue_spot_symbol,
+                side="LONG",
+                entry_price=float(spot_snapshot["last_price"]),
+                trade_size=spot_trade_size,
+                signal_score=spot_decision.score,
+                source="binance_spot_price_structure",
+                source_signal="binance_spot_price_structure",
+                spread_pct=float(spot_snapshot["spread_pct"]),
+                market_context=market,
+            )
+            return
+
+        await self.binance_spot_venue.place_exit_order(
+            venue_spot_symbol,
+            exit_price=float(spot_snapshot["last_price"]),
+            reason="signal_exit",
+            source="binance_spot_price_structure",
+        )
 
     async def handle_whale_action(self, action: Dict) -> None:
         if self.copy_trader is None:

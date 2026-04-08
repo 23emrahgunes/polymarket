@@ -48,6 +48,28 @@ def main() -> int:
         LIMIT 10
         """
     ).fetchall()
+    try:
+        whale_counts = cursor.execute(
+            """
+            SELECT source_type, COUNT(*) AS count
+            FROM whale_wallets
+            WHERE enabled = 1
+            GROUP BY source_type
+            ORDER BY source_type
+            """
+        ).fetchall()
+        whale_wallets = cursor.execute(
+            """
+            SELECT address, source_type, discovery_score, last_event_amount, event_count_24h, failure_streak
+            FROM whale_wallets
+            WHERE enabled = 1
+            ORDER BY discovery_score DESC, last_event_amount DESC
+            LIMIT 10
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        whale_counts = []
+        whale_wallets = []
     connection.close()
 
     print(f"DB_PATH={db_path}")
@@ -64,6 +86,12 @@ def main() -> int:
     print("OPEN_ORDERS")
     for order in orders:
         print(order)
+    print("WHALE_WALLET_COUNTS")
+    for count in whale_counts:
+        print(count)
+    print("TOP_WHALE_WALLETS")
+    for whale_wallet in whale_wallets:
+        print(whale_wallet)
     return 0
 
 

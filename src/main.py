@@ -21,6 +21,16 @@ async def main():
     logger.info("Mode: PAPER | exchange=%s | debug_signal_mode=%s | db_path=%s", settings.exchange_id.upper(), settings.debug_signal_mode, settings.db_path)
     logger.info("Exchange symbol map: %s", EXCHANGE_MAPPINGS.get(settings.exchange_id, EXCHANGE_MAPPINGS["coinbase"]))
     logger.info("Venue configs: %s", {venue: config for venue, config in settings.venue_configs.items()})
+    logger.info(
+        "Whale source config: target=%s discovery_min_event_usd=%s discovery_min_events=%s single_event_usd=%s connect_timeout=%ss read_timeout=%ss concurrency=%s",
+        settings.whale_target_count,
+        settings.whale_discovery_min_event_usd,
+        settings.whale_discovery_min_events,
+        settings.whale_discovery_single_event_usd,
+        settings.whale_connect_timeout_sec,
+        settings.whale_read_timeout_sec,
+        settings.whale_inspection_concurrency,
+    )
 
     runtime = GhostBotRuntime(settings)
     await runtime.run()

@@ -97,9 +97,20 @@ class MarketExplorer:
             "volume_24h": 250_000.0,
             "active": True,
         }
+        crypto_long_market = {
+            "market_id": "debug-crypto-btc-95k-2026",
+            "question": "Will BTC be above $95,000 on December 31, 2026?",
+            "token_id": "debug_crypto_long_token_yes",
+            "token_ids": ["debug_crypto_long_token_yes", "debug_crypto_long_token_no"],
+            "category": "CRYPTO",
+            "volume_24h": 250_000.0,
+            "active": True,
+        }
 
         if self.debug_signal_profile == "crypto_dual":
             return [crypto_market]
+        if self.debug_signal_profile == "crypto_triple_long":
+            return [crypto_long_market]
         if self.debug_signal_profile == "all":
             return [sports_market, crypto_market]
         return [sports_market]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional
 
 import aiosqlite
@@ -124,6 +125,25 @@ class Database:
             )
             """
         )
+        await self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whale_wallets (
+                address TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_event_at DATETIME,
+                last_success_at DATETIME,
+                last_failure_at DATETIME,
+                failure_streak INTEGER NOT NULL DEFAULT 0,
+                discovery_score REAL NOT NULL DEFAULT 0,
+                last_event_amount REAL NOT NULL DEFAULT 0,
+                last_event_category TEXT,
+                event_count_24h INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
 
         async with self.conn.execute("SELECT COUNT(*) AS count FROM wallet") as cursor:
             row = await cursor.fetchone()
@@ -144,6 +164,14 @@ class Database:
             "ALTER TABLE venue_positions ADD COLUMN source_signal TEXT",
             "ALTER TABLE venue_positions ADD COLUMN linked_market_id TEXT",
             "ALTER TABLE venue_positions ADD COLUMN mark_price REAL",
+            "ALTER TABLE whale_wallets ADD COLUMN last_event_at DATETIME",
+            "ALTER TABLE whale_wallets ADD COLUMN last_success_at DATETIME",
+            "ALTER TABLE whale_wallets ADD COLUMN last_failure_at DATETIME",
+            "ALTER TABLE whale_wallets ADD COLUMN failure_streak INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE whale_wallets ADD COLUMN discovery_score REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE whale_wallets ADD COLUMN last_event_amount REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE whale_wallets ADD COLUMN last_event_category TEXT",
+            "ALTER TABLE whale_wallets ADD COLUMN event_count_24h INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 await self.conn.execute(statement)
@@ -314,6 +342,232 @@ class Database:
     async def get_whale_stats(self, address):
         async with self.conn.execute("SELECT * FROM whale_stats WHERE address = ?", (address,)) as cursor:
             return await cursor.fetchone()
+
+    async def get_whale_wallet(self, address: str):
+        async with self.conn.execute("SELECT * FROM whale_wallets WHERE address = ?", (address,)) as cursor:
+            return await cursor.fetchone()
+
+    async def upsert_whale_wallet(
+        self,
+        address: str,
+        source_type: str,
+        event_amount: float | None = None,
+        event_category: str | None = None,
+        seen_at: str | None = None,
+    ) -> None:
+        seen_at = seen_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        existing = await self.get_whale_wallet(address)
+        source_type = self._prefer_whale_source(existing["source_type"] if existing else None, source_type)
+
+        if existing is None:
+            event_count_24h = 1 if event_amount is not None else 0
+            await self.conn.execute(
+                """
+                INSERT INTO whale_wallets (
+                    address, source_type, enabled, first_seen_at, last_seen_at, last_event_at,
+                    last_event_amount, last_event_category, event_count_24h
+                )
+                VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    address,
+                    source_type,
+                    seen_at,
+                    seen_at,
+                    seen_at if event_amount is not None else None,
+                    float(event_amount or 0.0),
+                    event_category,
+                    event_count_24h,
+                ),
+            )
+            await self.conn.commit()
+            return
+
+        event_count_24h = int(existing["event_count_24h"] or 0)
+        last_event_at = existing["last_event_at"]
+        if event_amount is not None:
+            if last_event_at:
+                last_event_dt = datetime.strptime(str(last_event_at), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) - last_event_dt > timedelta(hours=24):
+                    event_count_24h = 1
+                else:
+                    event_count_24h += 1
+            else:
+                event_count_24h = 1
+
+        await self.conn.execute(
+            """
+            UPDATE whale_wallets
+            SET source_type = ?,
+                enabled = 1,
+                last_seen_at = ?,
+                last_event_at = COALESCE(?, last_event_at),
+                last_event_amount = CASE WHEN ? IS NULL THEN last_event_amount ELSE ? END,
+                last_event_category = COALESCE(?, last_event_category),
+                event_count_24h = CASE WHEN ? IS NULL THEN event_count_24h ELSE ? END
+            WHERE address = ?
+            """,
+            (
+                source_type,
+                seen_at,
+                seen_at if event_amount is not None else None,
+                event_amount,
+                float(event_amount or 0.0),
+                event_category,
+                event_amount,
+                event_count_24h,
+                address,
+            ),
+        )
+        await self.conn.commit()
+
+    async def record_whale_wallet_success(self, address: str, seen_at: str | None = None) -> None:
+        seen_at = seen_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        await self.conn.execute(
+            """
+            UPDATE whale_wallets
+            SET enabled = 1,
+                last_success_at = ?,
+                failure_streak = 0
+            WHERE address = ?
+            """,
+            (seen_at, address),
+        )
+        await self.conn.commit()
+
+    async def record_whale_wallet_failure(self, address: str, seen_at: str | None = None) -> None:
+        seen_at = seen_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        await self.conn.execute(
+            """
+            UPDATE whale_wallets
+            SET last_failure_at = ?,
+                failure_streak = failure_streak + 1
+            WHERE address = ?
+            """,
+            (seen_at, address),
+        )
+        await self.conn.commit()
+
+    async def disable_stale_whale_wallets(self, stale_days: int = 7) -> None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=stale_days)).strftime("%Y-%m-%d %H:%M:%S")
+        await self.conn.execute(
+            """
+            UPDATE whale_wallets
+            SET enabled = 0
+            WHERE enabled = 1
+              AND last_seen_at < ?
+              AND (last_success_at IS NULL OR last_success_at < ?)
+            """,
+            (cutoff, cutoff),
+        )
+        await self.conn.commit()
+
+    async def update_whale_wallet_score(self, address: str, discovery_score: float) -> None:
+        await self.conn.execute(
+            "UPDATE whale_wallets SET discovery_score = ? WHERE address = ?",
+            (discovery_score, address),
+        )
+        await self.conn.commit()
+
+    async def get_ranked_whale_wallets(
+        self,
+        limit: int = 50,
+        source_type: str | None = None,
+        min_event_count_24h: int = 2,
+        single_event_min_usd: float = 10_000.0,
+    ) -> List[aiosqlite.Row]:
+        query = """
+            SELECT whale_wallets.*, COALESCE(whale_stats.trust_score, 0.5) AS trust_score
+            FROM whale_wallets
+            LEFT JOIN whale_stats ON whale_stats.address = whale_wallets.address
+            WHERE whale_wallets.enabled = 1
+        """
+        params: list = []
+        if source_type is not None:
+            query += " AND whale_wallets.source_type = ?"
+            params.append(source_type)
+        if source_type == "activity_discovery":
+            query += " AND (whale_wallets.event_count_24h >= ? OR whale_wallets.last_event_amount >= ?)"
+            params.extend([min_event_count_24h, single_event_min_usd])
+
+        async with self.conn.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+
+        ranked = sorted(rows, key=self._rank_whale_wallet_row, reverse=True)
+        return ranked[:limit]
+
+    async def get_whale_wallet_counts(self) -> dict:
+        counts = {
+            "persisted_wallets": 0,
+            "activity_discovered_wallets": 0,
+            "leaderboard_wallets": 0,
+            "manual_seed_wallets": 0,
+            "static_seed_wallets": 0,
+        }
+        async with self.conn.execute(
+            """
+            SELECT source_type, COUNT(*) AS count
+            FROM whale_wallets
+            WHERE enabled = 1
+            GROUP BY source_type
+            """
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        total = 0
+        for row in rows:
+            source_type = str(row["source_type"])
+            count = int(row["count"])
+            total += count
+            if source_type == "activity_discovery":
+                counts["activity_discovered_wallets"] = count
+            elif source_type == "leaderboard":
+                counts["leaderboard_wallets"] = count
+            elif source_type == "manual_seed":
+                counts["manual_seed_wallets"] = count
+            elif source_type == "static_seed":
+                counts["static_seed_wallets"] = count
+        counts["persisted_wallets"] = total
+        return counts
+
+    @staticmethod
+    def _prefer_whale_source(existing_source: str | None, incoming_source: str) -> str:
+        precedence = {
+            None: 0,
+            "static_seed": 1,
+            "manual_seed": 2,
+            "leaderboard": 3,
+            "activity_discovery": 4,
+        }
+        if precedence.get(incoming_source, 0) >= precedence.get(existing_source, 0):
+            return incoming_source
+        return str(existing_source)
+
+    @staticmethod
+    def _rank_whale_wallet_row(row: aiosqlite.Row) -> float:
+        trust_score = float(row["trust_score"] or 0.5)
+        event_amount = float(row["last_event_amount"] or 0.0)
+        event_count = int(row["event_count_24h"] or 0)
+        failure_streak = int(row["failure_streak"] or 0)
+
+        recency_reference = row["last_success_at"] or row["last_event_at"] or row["last_seen_at"]
+        recency_component = 0.0
+        if recency_reference:
+            recency_dt = datetime.strptime(str(recency_reference), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            age_hours = max((datetime.now(timezone.utc) - recency_dt).total_seconds() / 3600, 0.0)
+            recency_component = max(0.0, 1.0 - min(age_hours / 168.0, 1.0))
+
+        event_amount_component = min(event_amount / 10_000.0, 1.0)
+        event_count_component = min(event_count / 5.0, 1.0)
+        failure_penalty = min(failure_streak * 0.1, 0.5)
+        return round(
+            (0.35 * event_amount_component)
+            + (0.25 * event_count_component)
+            + (0.25 * trust_score)
+            + (0.15 * recency_component)
+            - failure_penalty,
+            4,
+        )
 
     async def get_bot_performance(self):
         async with self.conn.execute(

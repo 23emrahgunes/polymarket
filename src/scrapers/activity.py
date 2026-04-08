@@ -5,7 +5,8 @@ import time
 from collections import defaultdict
 from typing import Dict, List
 
-import requests
+from src.decision_engine import classify_market_category
+from src.gamma_client import GammaApiClient
 
 
 logger = logging.getLogger(__name__)
@@ -17,28 +18,32 @@ class ActivityHunter:
         gamma_api_base="https://gamma-api.polymarket.com",
         debug_signal_mode: bool = False,
         debug_signal_profile: str = "sports",
+        db=None,
+        gamma_client: GammaApiClient | None = None,
+        discovery_min_event_usd: float = 2_500.0,
+        discovery_min_events: int = 2,
+        discovery_single_event_usd: float = 10_000.0,
     ):
         self.gamma_api_base = gamma_api_base
         self.debug_signal_mode = debug_signal_mode
         self.debug_signal_profile = (debug_signal_profile or os.getenv("DEBUG_SIGNAL_PROFILE", "sports")).strip().lower()
+        self.db = db
+        self.gamma_client = gamma_client or GammaApiClient(gamma_api_base=gamma_api_base)
         self.activity_clusters = defaultdict(list)
         self.processed_transaction_ids = set()
         self.whale_event_threshold = 1_000.0
         self.cluster_time_window = 120
         self.debug_event_emitted = False
+        self.discovery_min_event_usd = discovery_min_event_usd
+        self.discovery_min_events = discovery_min_events
+        self.discovery_single_event_usd = discovery_single_event_usd
 
     async def fetch_latest_activity(self, limit=50):
-        try:
-            url = f"{self.gamma_api_base}/activity?limit={limit}"
-            response = await asyncio.to_thread(requests.get, url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                if isinstance(data, list):
-                    return data
-            return []
-        except Exception as exc:
-            logger.info("ActivityHunter: API communication error - %s", exc)
-            return []
+        result = await self.gamma_client.fetch_global_activity(limit=limit)
+        if result.ok:
+            return result.data
+        logger.info("ActivityHunter: API communication error - %s", result.reason)
+        return []
 
     async def monitor_stream(self):
         while True:
@@ -49,6 +54,7 @@ class ActivityHunter:
                     yield self._get_debug_event()
 
                 activities = await self.fetch_latest_activity()
+                await self.record_discovery_candidates(activities)
                 for event in self._normalize_activities(activities):
                     yield event
                 await asyncio.sleep(5)
@@ -138,3 +144,29 @@ class ActivityHunter:
                     )
 
         return normalized_events
+
+    async def record_discovery_candidates(self, activities: List[Dict]) -> None:
+        if self.db is None:
+            return
+
+        for activity in activities:
+            if not isinstance(activity, dict):
+                continue
+            wallet = activity.get("proxy_wallet") or activity.get("address")
+            if not wallet:
+                continue
+
+            price = float(activity.get("price", 0.0) or 0.0)
+            size = float(activity.get("size", 0.0) or 0.0)
+            amount = size * price
+            if amount < self.discovery_min_event_usd:
+                continue
+
+            question = str(activity.get("question") or activity.get("title") or "")
+            category = classify_market_category(question) if question else "UNKNOWN"
+            await self.db.upsert_whale_wallet(
+                wallet,
+                "activity_discovery",
+                event_amount=amount,
+                event_category=category,
+            )
