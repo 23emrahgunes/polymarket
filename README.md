@@ -97,6 +97,59 @@ What the bootstrap does:
 
 After that, the service restarts automatically on reboot.
 
+## One-File VPS Refresh
+
+After the first bootstrap, daily VPS operations can run through a single script:
+
+```bash
+chmod +x scripts/vps_refresh_and_evaluate.sh
+./scripts/vps_refresh_and_evaluate.sh
+```
+
+Default behavior is full verification:
+
+- `git fetch` + `git pull --ff-only`
+- dependency sync
+- `pytest -q`
+- sports runtime proof
+- crypto dual-venue proof
+- crypto triple-venue proof
+- `ghost-trader` service restart
+- performance analysis
+- backtest insufficiency / replay report
+- SWOT / verdict report
+- runtime DB state
+- systemd status and last 50 service logs
+
+Useful variants:
+
+```bash
+./scripts/vps_refresh_and_evaluate.sh --quick
+./scripts/vps_refresh_and_evaluate.sh --branch ghost-trader-v1-0-impl-1884939158518981932
+./scripts/vps_refresh_and_evaluate.sh --service ghost-trader
+```
+
+Behavior notes:
+
+- the script fails fast if `.venv`, `.env`, or the `ghost-trader` service is missing
+- local git changes stop the run; nothing is auto-stashed or reset
+- one operation log is written to `logs/vps_refresh_latest.log`
+- the final terminal summary reads:
+  - current commit
+  - branch
+  - test / proof / analysis status
+  - service status
+  - `live_paper_closed`
+  - `synthetic_total`
+  - `core.expectancy`
+  - SWOT `final_verdict`
+
+Role split:
+
+- `scripts/bootstrap_vps.sh`: first installation only
+- `scripts/vps_refresh_and_evaluate.sh`: day-to-day refresh and validation
+- `scripts/check_runtime.sh`: lightweight healthcheck
+
 ## Installation
 
 ```bash

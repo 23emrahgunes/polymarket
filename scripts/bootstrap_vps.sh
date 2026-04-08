@@ -114,7 +114,7 @@ print_summary() {
 main() {
   cd "$REPO_ROOT"
   run_as_app_user "mkdir -p '$REPO_ROOT/data' '$REPO_ROOT/logs'"
-  chmod +x "$REPO_ROOT/scripts/start_bot.sh" "$REPO_ROOT/scripts/check_runtime.sh" "$REPO_ROOT/scripts/bootstrap_vps.sh"
+  chmod +x "$REPO_ROOT/scripts/start_bot.sh" "$REPO_ROOT/scripts/check_runtime.sh" "$REPO_ROOT/scripts/bootstrap_vps.sh" "$REPO_ROOT/scripts/vps_refresh_and_evaluate.sh"
   install_packages
   ensure_env_file
   create_virtualenv
