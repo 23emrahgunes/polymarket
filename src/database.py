@@ -12,6 +12,7 @@ from src.evaluation_utils import (
     is_synthetic_sample,
     normalize_signal_family,
 )
+from src.market_mapping import normalize_market_alias
 
 
 class Database:
@@ -192,7 +193,26 @@ class Database:
                 whale_trust REAL,
                 spread_pct REAL,
                 slippage_proxy_bps REAL,
-                inputs_json TEXT
+                inputs_json TEXT,
+                mapping_stage TEXT,
+                alias_candidates_json TEXT,
+                lazy_lookup_attempted INTEGER DEFAULT 0,
+                lazy_lookup_hit INTEGER DEFAULT 0
+            )
+            """
+        )
+        await self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS market_aliases (
+                alias TEXT PRIMARY KEY,
+                alias_type TEXT NOT NULL,
+                market_id TEXT NOT NULL,
+                question TEXT,
+                category TEXT,
+                volume_24h REAL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                source TEXT
             )
             """
         )
@@ -243,11 +263,30 @@ class Database:
             "ALTER TABLE whale_wallets ADD COLUMN last_event_amount REAL NOT NULL DEFAULT 0",
             "ALTER TABLE whale_wallets ADD COLUMN last_event_category TEXT",
             "ALTER TABLE whale_wallets ADD COLUMN event_count_24h INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE decision_audit ADD COLUMN mapping_stage TEXT",
+            "ALTER TABLE decision_audit ADD COLUMN alias_candidates_json TEXT",
+            "ALTER TABLE decision_audit ADD COLUMN lazy_lookup_attempted INTEGER DEFAULT 0",
+            "ALTER TABLE decision_audit ADD COLUMN lazy_lookup_hit INTEGER DEFAULT 0",
         ]:
             try:
                 await self.conn.execute(statement)
             except Exception:
                 pass
+        await self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS market_aliases (
+                alias TEXT PRIMARY KEY,
+                alias_type TEXT NOT NULL,
+                market_id TEXT NOT NULL,
+                question TEXT,
+                category TEXT,
+                volume_24h REAL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                source TEXT
+            )
+            """
+        )
         await self.conn.commit()
 
     async def _backfill_evaluation_defaults(self) -> None:
@@ -522,6 +561,121 @@ class Database:
     async def get_whale_wallet(self, address: str):
         async with self.conn.execute("SELECT * FROM whale_wallets WHERE address = ?", (address,)) as cursor:
             return await cursor.fetchone()
+
+    async def upsert_market_aliases(
+        self,
+        market_id: str,
+        aliases: Iterable[str],
+        *,
+        question: str | None = None,
+        category: str | None = None,
+        volume_24h: float | None = None,
+        active: bool = True,
+        source: str = "explorer",
+        seen_at: str | None = None,
+    ) -> None:
+        normalized_market_id = normalize_market_alias(market_id)
+        if not normalized_market_id:
+            return
+
+        seen_at = seen_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        normalized_aliases: list[str] = []
+        for alias in aliases:
+            normalized_alias = normalize_market_alias(alias)
+            if normalized_alias and normalized_alias not in normalized_aliases:
+                normalized_aliases.append(normalized_alias)
+
+        if not normalized_aliases:
+            return
+
+        for alias in normalized_aliases:
+            alias_type = "market_id" if alias == normalized_market_id else "token_id"
+            await self.conn.execute(
+                """
+                INSERT INTO market_aliases (
+                    alias, alias_type, market_id, question, category, volume_24h, active, last_seen_at, source
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(alias) DO UPDATE SET
+                    alias_type = excluded.alias_type,
+                    market_id = excluded.market_id,
+                    question = COALESCE(excluded.question, market_aliases.question),
+                    category = COALESCE(excluded.category, market_aliases.category),
+                    volume_24h = excluded.volume_24h,
+                    active = excluded.active,
+                    last_seen_at = excluded.last_seen_at,
+                    source = excluded.source
+                """,
+                (
+                    alias,
+                    alias_type,
+                    normalized_market_id,
+                    question,
+                    category,
+                    float(volume_24h or 0.0),
+                    1 if active else 0,
+                    seen_at,
+                    source,
+                ),
+            )
+        await self.conn.commit()
+
+    async def resolve_market_alias(self, aliases: Iterable[str]) -> Optional[aiosqlite.Row]:
+        normalized_aliases = [normalize_market_alias(alias) for alias in aliases]
+        normalized_aliases = [alias for alias in normalized_aliases if alias]
+        if not normalized_aliases:
+            return None
+
+        placeholders = ", ".join("?" for _ in normalized_aliases)
+        async with self.conn.execute(
+            f"""
+            SELECT *
+            FROM market_aliases
+            WHERE alias IN ({placeholders})
+            ORDER BY active DESC, volume_24h DESC, last_seen_at DESC
+            LIMIT 1
+            """,
+            normalized_aliases,
+        ) as cursor:
+            return await cursor.fetchone()
+
+    async def get_market_alias_counts(self) -> List[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT source, COUNT(*) AS count
+            FROM market_aliases
+            GROUP BY source
+            ORDER BY source
+            """
+        ) as cursor:
+            return await cursor.fetchall()
+
+    async def get_top_market_aliases(self, limit: int = 10) -> List[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT alias, alias_type, market_id, category, volume_24h, active, source, last_seen_at
+            FROM market_aliases
+            ORDER BY volume_24h DESC, last_seen_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ) as cursor:
+            return await cursor.fetchall()
+
+    async def get_market_aliases_for_market(self, market_id: str) -> List[aiosqlite.Row]:
+        normalized_market_id = normalize_market_alias(market_id)
+        if not normalized_market_id:
+            return []
+        async with self.conn.execute(
+            """
+            SELECT *
+            FROM market_aliases
+            WHERE market_id = ?
+            ORDER BY CASE WHEN alias_type = 'token_id' THEN 0 ELSE 1 END, last_seen_at DESC
+            """,
+            (normalized_market_id,),
+        ) as cursor:
+            return await cursor.fetchall()
 
     async def upsert_whale_wallet(
         self,
@@ -822,6 +976,10 @@ class Database:
         spread_pct: float | None = None,
         slippage_proxy_bps: float | None = None,
         inputs_json: str | None = None,
+        mapping_stage: str | None = None,
+        alias_candidates_json: str | None = None,
+        lazy_lookup_attempted: bool = False,
+        lazy_lookup_hit: bool = False,
         occurred_at: str | None = None,
     ) -> int:
         normalized_signal_family = signal_family or normalize_signal_family(raw_source_signal)
@@ -832,9 +990,10 @@ class Database:
             INSERT INTO decision_audit (
                 occurred_at, venue, market_id, category, signal_family, raw_source_signal, sample_kind,
                 is_synthetic, decision_score, threshold, trade_size, action, reason, confidence,
-                whale_trust, spread_pct, slippage_proxy_bps, inputs_json
+                whale_trust, spread_pct, slippage_proxy_bps, inputs_json, mapping_stage,
+                alias_candidates_json, lazy_lookup_attempted, lazy_lookup_hit
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 occurred_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
@@ -855,6 +1014,10 @@ class Database:
                 spread_pct,
                 slippage_proxy_bps,
                 inputs_json,
+                mapping_stage,
+                alias_candidates_json,
+                1 if lazy_lookup_attempted else 0,
+                1 if lazy_lookup_hit else 0,
             ),
         )
         await self.conn.commit()

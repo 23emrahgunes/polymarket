@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 
 from src.decision_engine import classify_market_category
 from src.gamma_client import GammaApiClient
+from src.market_mapping import collect_alias_candidates
 
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,16 @@ class ActivityHunter:
             token_id = activity.get("asset") or activity.get("token_id") or activity.get("market_id")
             if not market_id and not token_id:
                 continue
+            alias_candidates = collect_alias_candidates(
+                market_id,
+                token_id,
+                extra=[
+                    activity.get("asset"),
+                    activity.get("conditionId"),
+                    activity.get("condition_id"),
+                    activity.get("market_id"),
+                ],
+            )
 
             side = str(activity.get("side", "BUY")).upper()
             wallet = activity.get("proxyWallet") or activity.get("proxy_wallet") or activity.get("address")
@@ -126,6 +137,7 @@ class ActivityHunter:
                         "amount": amount,
                         "wallet": wallet,
                         "price": price,
+                        "alias_candidates": alias_candidates,
                     }
                 )
 
@@ -148,6 +160,7 @@ class ActivityHunter:
                             "wallets_count": len(unique_wallets),
                             "avg_price": price,
                             "amount": amount,
+                            "alias_candidates": alias_candidates,
                         }
                     )
 

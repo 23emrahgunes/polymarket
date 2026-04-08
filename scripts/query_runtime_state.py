@@ -49,6 +49,26 @@ def main() -> int:
         """
     ).fetchall()
     try:
+        market_alias_counts = cursor.execute(
+            """
+            SELECT source, COUNT(*) AS count
+            FROM market_aliases
+            GROUP BY source
+            ORDER BY source
+            """
+        ).fetchall()
+        market_aliases = cursor.execute(
+            """
+            SELECT alias, alias_type, market_id, category, volume_24h, active, source
+            FROM market_aliases
+            ORDER BY volume_24h DESC, last_seen_at DESC
+            LIMIT 10
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        market_alias_counts = []
+        market_aliases = []
+    try:
         whale_counts = cursor.execute(
             """
             SELECT source_type, COUNT(*) AS count
@@ -97,6 +117,12 @@ def main() -> int:
     print("OPEN_ORDERS")
     for order in orders:
         print(order)
+    print("MARKET_ALIAS_COUNTS")
+    for count in market_alias_counts:
+        print(count)
+    print("TOP_MARKET_ALIASES")
+    for market_alias in market_aliases:
+        print(market_alias)
     print("WHALE_WALLET_COUNTS")
     for count in whale_counts:
         print(count)

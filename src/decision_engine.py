@@ -56,6 +56,10 @@ class DecisionInputs:
     price_drift_pct: Optional[float] = None
     venue: Optional[str] = None
     direction: Optional[str] = None
+    mapping_stage: Optional[str] = None
+    alias_candidates: Optional[List[str]] = None
+    lazy_lookup_attempted: bool = False
+    lazy_lookup_hit: bool = False
 
 
 @dataclass
@@ -277,6 +281,10 @@ class DecisionEngine:
             "whale_trust": self._round_or_none(inputs.whale_trust),
             "price_drift_pct": self._round_or_none(inputs.price_drift_pct),
             "direction": inputs.direction,
+            "mapping_stage": inputs.mapping_stage,
+            "alias_candidates": inputs.alias_candidates,
+            "lazy_lookup_attempted": inputs.lazy_lookup_attempted,
+            "lazy_lookup_hit": inputs.lazy_lookup_hit,
         }
         for key, value in extras.items():
             payload[key] = value

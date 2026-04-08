@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 from py_clob_client.client import ClobClient
 
 from src.gamma_client import GammaApiClient
+from src.market_mapping import collect_alias_candidates
 
 
 import logging
@@ -207,6 +208,16 @@ class WhaleTracker:
             event_amount = size * price
         market_id = latest_activity.get("conditionId") or latest_activity.get("condition_id")
         token_id = latest_activity.get("asset") or latest_activity.get("market_id")
+        alias_candidates = collect_alias_candidates(
+            market_id,
+            token_id,
+            extra=[
+                latest_activity.get("asset"),
+                latest_activity.get("conditionId"),
+                latest_activity.get("condition_id"),
+                latest_activity.get("market_id"),
+            ],
+        )
 
         if (market_id or token_id) and price > 0:
             return {
@@ -216,6 +227,7 @@ class WhaleTracker:
                 "token_id": token_id,
                 "price": price,
                 "amount": event_amount,
+                "alias_candidates": alias_candidates,
                 "timestamp": time.time(),
             }
         return None

@@ -7,6 +7,7 @@ from typing import Dict, List
 import requests
 
 from src.decision_engine import classify_market_category
+from src.market_mapping import build_market_aliases
 
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,18 @@ class MarketExplorer:
             logger.error("Explorer: failed to fetch active markets - %s", exc)
             return []
 
+    async def find_market_by_alias(self, aliases: List[str], limit: int = 1000) -> Dict | None:
+        if not aliases:
+            return None
+
+        active_markets = await self.fetch_active_markets(limit=limit)
+        alias_set = {alias for alias in aliases if alias}
+        for market in active_markets:
+            market_aliases = set(market.get("alias_candidates", []))
+            if market_aliases.intersection(alias_set):
+                return market
+        return None
+
     def _normalize_market(self, raw_market: Dict) -> Dict | None:
         if not isinstance(raw_market, dict):
             return None
@@ -67,15 +80,28 @@ class MarketExplorer:
         if not isinstance(token_ids, list) or not token_ids:
             return None
 
+        token_ids = [str(token_id).strip() for token_id in token_ids if str(token_id).strip()]
+        if not token_ids:
+            return None
+
         question = raw_market.get("question", "Unknown market")
+        market_id = raw_market.get("conditionId") or str(raw_market.get("id") or "")
+        market_id = str(market_id).strip()
+        alias_candidates = build_market_aliases(
+            market_id=market_id,
+            token_id=token_ids[0],
+            token_ids=token_ids,
+            extra_aliases=[raw_market.get("conditionId"), raw_market.get("id"), raw_market.get("slug")],
+        )
         return {
-            "market_id": raw_market.get("conditionId") or str(raw_market.get("id") or ""),
+            "market_id": market_id,
             "question": question,
             "token_ids": token_ids,
             "token_id": token_ids[0],
             "volume_24h": float(raw_market.get("volume24hr") or raw_market.get("volume24h") or raw_market.get("volume") or 0.0),
             "active": bool(raw_market.get("active", True)),
             "category": classify_market_category(question),
+            "alias_candidates": alias_candidates,
         }
 
     def _get_debug_markets(self) -> List[Dict]:
@@ -87,6 +113,7 @@ class MarketExplorer:
             "category": "SPORTS",
             "volume_24h": 75_000.0,
             "active": True,
+            "alias_candidates": build_market_aliases("debug-sports-finals-2026", "debug_sports_token_yes", ["debug_sports_token_yes", "debug_sports_token_no"]),
         }
         crypto_market = {
             "market_id": "debug-crypto-btc-100k-2026",
@@ -96,6 +123,7 @@ class MarketExplorer:
             "category": "CRYPTO",
             "volume_24h": 250_000.0,
             "active": True,
+            "alias_candidates": build_market_aliases("debug-crypto-btc-100k-2026", "debug_crypto_token_yes", ["debug_crypto_token_yes", "debug_crypto_token_no"]),
         }
         crypto_long_market = {
             "market_id": "debug-crypto-btc-95k-2026",
@@ -105,6 +133,7 @@ class MarketExplorer:
             "category": "CRYPTO",
             "volume_24h": 250_000.0,
             "active": True,
+            "alias_candidates": build_market_aliases("debug-crypto-btc-95k-2026", "debug_crypto_long_token_yes", ["debug_crypto_long_token_yes", "debug_crypto_long_token_no"]),
         }
 
         if self.debug_signal_profile == "crypto_dual":

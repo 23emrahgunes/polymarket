@@ -21,6 +21,7 @@ from src.evaluation_utils import infer_sample_kind, normalize_signal_family, sli
 from src.gamma_client import GammaApiClient
 from src.logic import calculate_annualized_volatility, calculate_black_scholes_prob, calculate_edge, calculate_rsi
 from src.market_config import BINANCE_FUTURES_MAPPINGS, EXCHANGE_MAPPINGS, resolve_binance_futures_symbol, resolve_crypto_symbol
+from src.market_mapping import build_market_aliases, collect_alias_candidates, normalize_market_alias
 from src.parser import parse_polymarket_question
 from src.scanner import MarketScanner
 from src.scrapers.activity import ActivityHunter
@@ -54,6 +55,7 @@ class RuntimeSettings:
     verify_required_venues: Tuple[str, ...] = tuple()
     verify_required_category: Optional[str] = None
     market_limit: int = 200
+    market_lookup_limit: int = 1000
     discovery_interval_seconds: float = 5.0
     whale_interval_seconds: float = 15.0
     status_interval_seconds: float = 300.0
@@ -106,6 +108,10 @@ class GhostBotRuntime:
         self.active_market_context: Dict[str, Dict] = {}
         self.token_to_market_id: Dict[str, str] = {}
         self.crypto_orderflow_hints: Dict[str, Dict] = {}
+        self.mapped_orderflow_events = 0
+        self.unmapped_orderflow_events = 0
+        self.lazy_lookup_hits = 0
+        self.alias_cache_hits = 0
 
         self.scanner: Optional[MarketScanner] = None
         self.db: Optional[Database] = None
@@ -165,7 +171,14 @@ class GhostBotRuntime:
             discovery_min_events=self.settings.whale_discovery_min_events,
             discovery_single_event_usd=self.settings.whale_discovery_single_event_usd,
         )
-        self.copy_trader = CopyTrader(self.trader, self.scanner, self.db, self.decision_engine)
+        self.copy_trader = CopyTrader(
+            self.trader,
+            self.scanner,
+            self.db,
+            self.decision_engine,
+            market_resolver=self.lazy_resolve_market_context,
+            mapping_event_callback=self.record_mapping_event,
+        )
 
         self.polymarket_venue = PolymarketVenue(
             self.settings.venue_configs["polymarket"],
@@ -234,17 +247,22 @@ class GhostBotRuntime:
             spread_pct=float(decision.inputs.get("spread_pct")) if decision.inputs.get("spread_pct") is not None else None,
             slippage_proxy_bps=slippage_proxy_bps_from_spread(decision.inputs.get("spread_pct")),
             inputs_json=json.dumps(decision.inputs, sort_keys=True, default=str),
+            mapping_stage=decision.inputs.get("mapping_stage"),
+            alias_candidates_json=json.dumps(decision.inputs.get("alias_candidates", []), sort_keys=True, default=str),
+            lazy_lookup_attempted=bool(decision.inputs.get("lazy_lookup_attempted", False)),
+            lazy_lookup_hit=bool(decision.inputs.get("lazy_lookup_hit", False)),
         )
 
     async def bootstrap_market_context(self) -> None:
         if self.explorer is None or self.scanner is None or self.copy_trader is None:
             return
 
-        active_markets = await self.explorer.fetch_active_markets(limit=self.settings.market_limit)
-        self._refresh_market_context(active_markets)
+        market_universe = await self.explorer.fetch_active_markets(limit=max(self.settings.market_limit, self.settings.market_lookup_limit))
+        await self._refresh_market_context(market_universe)
+        active_markets = market_universe[: self.settings.market_limit]
         symbols = {
             resolve_crypto_symbol(market.get("question", ""), self.settings.exchange_id)
-            for market in active_markets
+            for market in market_universe
             if classify_market_category(market.get("question", "")) == "CRYPTO"
         }
         await self.scanner.update_monitored_symbols([symbol for symbol in symbols if symbol])
@@ -293,15 +311,16 @@ class GhostBotRuntime:
 
         while not self.stop_event.is_set():
             cycle_started = time.time()
-            active_markets = await self.explorer.fetch_active_markets(limit=self.settings.market_limit)
-            self._refresh_market_context(active_markets)
+            market_universe = await self.explorer.fetch_active_markets(limit=max(self.settings.market_limit, self.settings.market_lookup_limit))
+            await self._refresh_market_context(market_universe)
+            active_markets = market_universe[: self.settings.market_limit]
 
             if not active_markets:
                 logger.info("[STATUS] No active Polymarket markets discovered in this cycle.")
             else:
                 symbols = {
                     resolve_crypto_symbol(market.get("question", ""), self.settings.exchange_id)
-                    for market in active_markets
+                    for market in market_universe
                     if market.get("category") == "CRYPTO"
                 }
                 await self.scanner.update_monitored_symbols([symbol for symbol in symbols if symbol])
@@ -347,8 +366,12 @@ class GhostBotRuntime:
         spot_balance = await self.db.get_balance("binance_spot", self.settings.venue_configs["binance_spot"].mode)
         spot_open_positions = await self.db.get_open_positions(venue="binance_spot")
         whale_tracker = self.whale_tracker
+        total_orderflow_events = self.mapped_orderflow_events + self.unmapped_orderflow_events
+        market_not_mapped_rate = (
+            (self.unmapped_orderflow_events / total_orderflow_events) * 100.0 if total_orderflow_events else 0.0
+        )
         logger.info(
-            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s scan_time=%.2fs",
+            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s mapped_orderflow_events=%s unmapped_orderflow_events=%s alias_cache_hits=%s lazy_lookup_hits=%s market_not_mapped_rate=%.1f scan_time=%.2fs",
             active_markets_count,
             len(whale_tracker.top_whales if whale_tracker else []),
             getattr(whale_tracker, "leaderboard_wallets_count", 0),
@@ -367,6 +390,11 @@ class GhostBotRuntime:
             spot_realized,
             spot_unrealized,
             len(spot_open_positions),
+            self.mapped_orderflow_events,
+            self.unmapped_orderflow_events,
+            self.alias_cache_hits,
+            self.lazy_lookup_hits,
+            market_not_mapped_rate,
             cycle_duration,
         )
 
@@ -718,7 +746,12 @@ class GhostBotRuntime:
     def _record_crypto_orderflow_hint(self, event: Dict, source: str) -> None:
         token_id = event.get("token_id")
         market_id = event.get("market_id")
-        context = self._resolve_market_context(market_id=market_id, token_id=token_id)
+        alias_candidates = collect_alias_candidates(
+            market_id,
+            token_id,
+            extra=event.get("alias_candidates"),
+        )
+        context = self._resolve_market_context(market_id=market_id, token_id=token_id, alias_candidates=alias_candidates)
         if context is None or context.get("category") != "CRYPTO":
             return
         futures_symbol = resolve_binance_futures_symbol(context.get("question", ""))
@@ -740,34 +773,98 @@ class GhostBotRuntime:
             return {}
         return hint
 
-    def _resolve_market_context(self, market_id: Optional[str], token_id: Optional[str]) -> Optional[Dict]:
-        if market_id and market_id in self.active_market_context:
-            return self.active_market_context[market_id]
-        if token_id and token_id in self.token_to_market_id:
-            resolved_market_id = self.token_to_market_id[token_id]
+    def _resolve_market_context(
+        self,
+        market_id: Optional[str],
+        token_id: Optional[str],
+        alias_candidates: Optional[list[str]] = None,
+    ) -> Optional[Dict]:
+        normalized_market_id = normalize_market_alias(market_id)
+        normalized_token_id = normalize_market_alias(token_id)
+        if normalized_market_id and normalized_market_id in self.active_market_context:
+            return self.active_market_context[normalized_market_id]
+        if normalized_token_id and normalized_token_id in self.token_to_market_id:
+            resolved_market_id = self.token_to_market_id[normalized_token_id]
             return self.active_market_context.get(resolved_market_id)
+        for alias in alias_candidates or ():
+            normalized_alias = normalize_market_alias(alias)
+            if not normalized_alias:
+                continue
+            if normalized_alias in self.active_market_context:
+                return self.active_market_context[normalized_alias]
+            if normalized_alias in self.token_to_market_id:
+                resolved_market_id = self.token_to_market_id[normalized_alias]
+                return self.active_market_context.get(resolved_market_id)
         return None
 
-    def _refresh_market_context(self, active_markets: list[Dict]) -> None:
+    async def _refresh_market_context(self, active_markets: list[Dict]) -> None:
         self.active_market_context = {}
         self.token_to_market_id = {}
 
         for market in active_markets:
-            market_id = market.get("market_id")
-            if not market_id:
-                continue
-            normalized_market = dict(market)
-            normalized_market["category"] = market.get("category", classify_market_category(market.get("question", "")))
-            self.active_market_context[market_id] = normalized_market
-
-            token_id = market.get("token_id")
-            if token_id:
-                self.token_to_market_id[token_id] = market_id
-            for market_token_id in market.get("token_ids", []):
-                self.token_to_market_id[market_token_id] = market_id
+            await self._register_market_context(market, source="explorer")
 
         if self.copy_trader is not None:
             self.copy_trader.update_market_contexts(self.active_market_context, self.token_to_market_id)
+
+    async def _register_market_context(self, market: Dict, source: str) -> Optional[Dict]:
+        market_id = normalize_market_alias(market.get("market_id"))
+        if not market_id:
+            return None
+
+        normalized_market = dict(market)
+        normalized_market["market_id"] = market_id
+        normalized_market["category"] = market.get("category", classify_market_category(market.get("question", "")))
+        alias_candidates = build_market_aliases(
+            market_id=market_id,
+            token_id=market.get("token_id"),
+            token_ids=market.get("token_ids", []),
+            extra_aliases=market.get("alias_candidates", []),
+        )
+        normalized_market["alias_candidates"] = alias_candidates
+        self.active_market_context[market_id] = normalized_market
+
+        for alias in alias_candidates:
+            if alias == market_id:
+                continue
+            self.token_to_market_id[alias] = market_id
+
+        if self.db is not None:
+            await self.db.upsert_market_aliases(
+                market_id=market_id,
+                aliases=alias_candidates,
+                question=normalized_market.get("question"),
+                category=normalized_market.get("category"),
+                volume_24h=float(normalized_market.get("volume_24h", 0.0) or 0.0),
+                active=bool(normalized_market.get("active", True)),
+                source=source,
+            )
+        return normalized_market
+
+    async def lazy_resolve_market_context(self, alias_candidates: list[str], source: str) -> Optional[Dict]:
+        if self.explorer is None:
+            return None
+
+        market = await self.explorer.find_market_by_alias(alias_candidates, limit=max(self.settings.market_limit, self.settings.market_lookup_limit))
+        if market is None:
+            return None
+
+        normalized_market = await self._register_market_context(market, source="lazy_lookup")
+        if normalized_market is None:
+            return None
+        if self.copy_trader is not None:
+            self.copy_trader.update_market_contexts(self.active_market_context, self.token_to_market_id)
+        return normalized_market
+
+    async def record_mapping_event(self, *, mapped: bool, stage: str) -> None:
+        if mapped:
+            self.mapped_orderflow_events += 1
+            if stage == "alias_cache":
+                self.alias_cache_hits += 1
+            elif stage == "lazy_lookup":
+                self.lazy_lookup_hits += 1
+            return
+        self.unmapped_orderflow_events += 1
 
     async def _sleep_or_stop(self, seconds: float) -> None:
         try:

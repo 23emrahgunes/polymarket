@@ -49,6 +49,8 @@ def test_activity_normalizes_data_api_trade_payload():
     assert whale_events[0]["market_id"] == "0xMARKET1"
     assert whale_events[0]["token_id"] == "0xTOKEN1"
     assert whale_events[0]["amount"] == 2500.0
+    assert "0xmarket1" in whale_events[0]["alias_candidates"]
+    assert "0xtoken1" in whale_events[0]["alias_candidates"]
 
 
 def test_activity_cluster_detection_emits_wallet_counts():
