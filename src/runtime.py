@@ -4,23 +4,26 @@ import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
 from src.brain import Brain
 from src.copy_trader import CopyTrader
+from src.crypto_signal_engine import CryptoSignalEngine, CryptoSignalInputs
 from src.database import Database
 from src.decision_engine import DecisionEngine, DecisionInputs, classify_market_category
 from src.explorer import MarketExplorer
 from src.logic import calculate_annualized_volatility, calculate_black_scholes_prob, calculate_edge, calculate_rsi
-from src.market_config import EXCHANGE_MAPPINGS, resolve_crypto_symbol
+from src.market_config import BINANCE_FUTURES_MAPPINGS, EXCHANGE_MAPPINGS, resolve_binance_futures_symbol, resolve_crypto_symbol
 from src.parser import parse_polymarket_question
 from src.scanner import MarketScanner
 from src.scrapers.activity import ActivityHunter
 from src.trading import TradeExecutor
+from src.venue_config import VenueConfig, build_default_venue_configs
+from src.venues import BinanceFuturesPaperVenue, BinanceSpotVenue, PolymarketVenue
 from src.whale_tracker import WhaleTracker
 
 
@@ -31,17 +34,28 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_csv(name: str) -> Tuple[str, ...]:
+    raw = os.getenv(name, "")
+    if not raw.strip():
+        return tuple()
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
 @dataclass(frozen=True)
 class RuntimeSettings:
     exchange_id: str = "coinbase"
     db_path: str = "data/ghost_trader.db"
     debug_signal_mode: bool = False
+    debug_signal_profile: str = "sports"
     runtime_verify_once: bool = False
+    verify_required_venues: Tuple[str, ...] = tuple()
+    verify_required_category: Optional[str] = None
     market_limit: int = 200
     discovery_interval_seconds: float = 5.0
     whale_interval_seconds: float = 15.0
     status_interval_seconds: float = 300.0
     market_scan_interval_seconds: float = 60.0
+    venue_configs: Dict[str, VenueConfig] = field(default_factory=build_default_venue_configs)
 
     @classmethod
     def from_env(cls) -> "RuntimeSettings":
@@ -49,7 +63,11 @@ class RuntimeSettings:
             exchange_id=os.getenv("EXCHANGE_ID", "coinbase"),
             db_path=os.getenv("GHOST_TRADER_DB_PATH", "data/ghost_trader.db"),
             debug_signal_mode=_env_flag("DEBUG_SIGNAL_MODE", False),
+            debug_signal_profile=os.getenv("DEBUG_SIGNAL_PROFILE", "sports").strip().lower() or "sports",
             runtime_verify_once=_env_flag("RUNTIME_VERIFY_ONCE", False),
+            verify_required_venues=_env_csv("VERIFY_REQUIRED_VENUES"),
+            verify_required_category=(os.getenv("VERIFY_REQUIRED_CATEGORY", "").strip().upper() or None),
+            venue_configs=build_default_venue_configs(),
         )
 
 
@@ -57,10 +75,15 @@ class GhostBotRuntime:
     def __init__(self, settings: RuntimeSettings):
         self.settings = settings
         self.decision_engine = DecisionEngine()
+        self.crypto_signal_engine = CryptoSignalEngine()
         self.stop_event = asyncio.Event()
         self.trade_inserted_event = asyncio.Event()
+        self.verify_required_venues = set(settings.verify_required_venues or (("polymarket",) if settings.runtime_verify_once else tuple()))
+        self.verify_required_category = settings.verify_required_category
+        self.verify_completed_venues: set[str] = set()
         self.active_market_context: Dict[str, Dict] = {}
         self.token_to_market_id: Dict[str, str] = {}
+        self.crypto_orderflow_hints: Dict[str, Dict] = {}
 
         self.scanner: Optional[MarketScanner] = None
         self.db: Optional[Database] = None
@@ -70,6 +93,9 @@ class GhostBotRuntime:
         self.whale_tracker: Optional[WhaleTracker] = None
         self.activity_hunter: Optional[ActivityHunter] = None
         self.copy_trader: Optional[CopyTrader] = None
+        self.polymarket_venue: Optional[PolymarketVenue] = None
+        self.binance_futures_venue: Optional[BinanceFuturesPaperVenue] = None
+        self.binance_spot_venue: Optional[BinanceSpotVenue] = None
 
     async def initialize(self) -> None:
         self.scanner = MarketScanner(
@@ -81,6 +107,7 @@ class GhostBotRuntime:
         self.explorer = MarketExplorer(
             self.scanner.polymarket,
             debug_signal_mode=self.settings.debug_signal_mode,
+            debug_signal_profile=self.settings.debug_signal_profile,
         )
         self.brain = Brain(decision_engine=self.decision_engine)
         self.trader = TradeExecutor(
@@ -94,8 +121,20 @@ class GhostBotRuntime:
             debug_signal_mode=self.settings.debug_signal_mode,
             poll_interval_seconds=self.settings.whale_interval_seconds,
         )
-        self.activity_hunter = ActivityHunter(debug_signal_mode=self.settings.debug_signal_mode)
+        self.activity_hunter = ActivityHunter(
+            debug_signal_mode=self.settings.debug_signal_mode,
+            debug_signal_profile=self.settings.debug_signal_profile,
+        )
         self.copy_trader = CopyTrader(self.trader, self.scanner, self.db, self.decision_engine)
+
+        self.polymarket_venue = PolymarketVenue(self.settings.venue_configs["polymarket"], self.db, self.trader)
+        self.binance_futures_venue = BinanceFuturesPaperVenue(
+            self.settings.venue_configs["binance_futures"],
+            self.db,
+            self.scanner,
+            trade_insert_callback=self.on_trade_inserted,
+        )
+        self.binance_spot_venue = BinanceSpotVenue(self.settings.venue_configs["binance_spot"], self.db)
 
     async def close(self) -> None:
         self.stop_event.set()
@@ -105,7 +144,18 @@ class GhostBotRuntime:
             await self.db.close()
 
     async def on_trade_inserted(self, trade_record: Dict) -> None:
-        if self.settings.runtime_verify_once:
+        if not self.settings.runtime_verify_once:
+            return
+
+        category = str(trade_record.get("category", "") or "").upper()
+        venue = str(trade_record.get("venue", "") or "").strip()
+        if self.verify_required_category and category != self.verify_required_category:
+            return
+        if self.verify_required_venues and venue not in self.verify_required_venues:
+            return
+
+        self.verify_completed_venues.add(venue)
+        if not self.verify_required_venues or self.verify_completed_venues.issuperset(self.verify_required_venues):
             self.trade_inserted_event.set()
 
     async def bootstrap_market_context(self) -> None:
@@ -157,7 +207,7 @@ class GhostBotRuntime:
             await self.close()
 
     async def run_discovery_loop(self) -> None:
-        if self.explorer is None or self.scanner is None or self.trader is None or self.db is None:
+        if self.explorer is None or self.scanner is None or self.db is None:
             return
 
         last_status_log = 0.0
@@ -183,17 +233,25 @@ class GhostBotRuntime:
                         break
 
             await self.trader.check_resolutions(self.scanner)
+            await self.sync_venue_states()
 
             now = time.time()
             if now - last_status_log >= self.settings.status_interval_seconds:
                 total, wins, win_rate, total_pnl = await self.db.get_bot_performance()
+                futures_realized, futures_unrealized = await self.db.get_venue_performance("binance_futures")
+                futures_balance = await self.db.get_balance("binance_futures", self.settings.venue_configs["binance_futures"].mode)
+                futures_open_positions = await self.db.get_open_positions(venue="binance_futures")
                 logger.info(
-                    "[STATUS] active_markets=%s tracked_whales=%s total_trades=%s win_rate=%.1f total_pnl=%.2f scan_time=%.2fs",
+                    "[STATUS] active_markets=%s tracked_whales=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s scan_time=%.2fs",
                     len(active_markets),
                     len(self.whale_tracker.top_whales if self.whale_tracker else []),
                     total,
                     win_rate,
                     total_pnl,
+                    futures_balance,
+                    futures_realized,
+                    futures_unrealized,
+                    len(futures_open_positions),
                     now - cycle_started,
                 )
                 last_status_log = now
@@ -208,6 +266,10 @@ class GhostBotRuntime:
                 last_market_scan_log = now
 
             await self._sleep_or_stop(self.settings.discovery_interval_seconds)
+
+    async def sync_venue_states(self) -> None:
+        if self.binance_futures_venue is not None and self.settings.venue_configs["binance_futures"].enabled:
+            await self.binance_futures_venue.sync_account_state(self.scanner)
 
     async def run_activity_hunter_loop(self) -> None:
         if self.activity_hunter is None:
@@ -230,147 +292,290 @@ class GhostBotRuntime:
             await self.handle_whale_action(action)
 
     async def process_market(self, market: Dict) -> None:
-        if self.scanner is None or self.trader is None:
+        category = market.get("category", classify_market_category(market.get("question", "")))
+        if category != "CRYPTO":
+            inputs = DecisionInputs(
+                source="discovery",
+                category=category,
+                market_id=market.get("market_id", ""),
+                token_id=market.get("token_id"),
+                question=market.get("question", ""),
+                volume_24h=float(market.get("volume_24h", 0.0)),
+                venue="polymarket",
+            )
+            self.decision_engine.log_result(self.decision_engine.reject(inputs, "route_whale_orderflow_only"), logger)
             return
 
-        category = market.get("category", classify_market_category(market.get("question", "")))
+        await self.process_crypto_market(market)
+
+    async def process_crypto_market(self, market: Dict) -> None:
+        if self.scanner is None or self.polymarket_venue is None:
+            return
+
         market_id = market.get("market_id", "")
         token_id = market.get("token_id")
         question = market.get("question", "")
         volume_24h = float(market.get("volume_24h", 0.0))
 
-        inputs = DecisionInputs(
+        base_inputs = DecisionInputs(
             source="discovery",
-            category=category,
+            category="CRYPTO",
             market_id=market_id,
             token_id=token_id,
             question=question,
             volume_24h=volume_24h,
+            venue="polymarket",
         )
 
         if not token_id:
-            self.decision_engine.log_result(self.decision_engine.reject(inputs, "market_not_mapped"), logger)
+            self.decision_engine.log_result(self.decision_engine.reject(base_inputs, "market_not_mapped"), logger)
             return
 
-        if category != "CRYPTO":
-            self.decision_engine.log_result(self.decision_engine.reject(inputs, "route_whale_orderflow_only"), logger)
-            return
-
-        snapshot = await self.scanner.get_orderbook_snapshot(token_id)
-        if not snapshot["is_valid"]:
-            self.decision_engine.log_result(
-                self.decision_engine.reject(
-                    DecisionInputs(**{**inputs.__dict__, "mid_price": snapshot.get("mid_price"), "spread_pct": snapshot.get("spread_pct")}),
-                    snapshot.get("reason", "invalid_orderbook_data"),
-                ),
-                logger,
+        polymarket_snapshot = await self.scanner.get_orderbook_snapshot(token_id)
+        if not polymarket_snapshot["is_valid"]:
+            rejection = self.decision_engine.reject(
+                DecisionInputs(**{**base_inputs.__dict__, "mid_price": polymarket_snapshot.get("mid_price"), "spread_pct": polymarket_snapshot.get("spread_pct")}),
+                polymarket_snapshot.get("reason", "invalid_orderbook_data"),
             )
+            self.decision_engine.log_result(rejection, logger)
             return
 
-        symbol = resolve_crypto_symbol(question, self.settings.exchange_id)
-        if not symbol:
-            self.decision_engine.log_result(self.decision_engine.reject(inputs, "market_not_mapped"), logger)
+        spot_symbol = resolve_crypto_symbol(question, self.settings.exchange_id)
+        futures_symbol = resolve_binance_futures_symbol(question)
+        if not spot_symbol or not futures_symbol:
+            self.decision_engine.log_result(self.decision_engine.reject(base_inputs, "market_not_mapped"), logger)
             return
 
-        current_exchange_price = self.scanner.current_prices.get(symbol)
+        current_exchange_price = self.scanner.current_prices.get(spot_symbol)
         if current_exchange_price is None:
-            current_exchange_price = await self.scanner.refresh_symbol_price(symbol)
+            current_exchange_price = await self.scanner.refresh_symbol_price(spot_symbol)
         if current_exchange_price is None:
-            self.decision_engine.log_result(
-                self.decision_engine.reject(
-                    DecisionInputs(**{**inputs.__dict__, "mid_price": snapshot["mid_price"], "spread_pct": snapshot["spread_pct"]}),
-                    "missing_exchange_price",
-                ),
-                logger,
+            rejection = self.decision_engine.reject(
+                DecisionInputs(**{**base_inputs.__dict__, "mid_price": polymarket_snapshot["mid_price"], "spread_pct": polymarket_snapshot["spread_pct"]}),
+                "missing_exchange_price",
             )
+            self.decision_engine.log_result(rejection, logger)
             return
 
-        historical_data = await self.scanner.get_historical_data(symbol)
+        historical_data = await self.scanner.get_historical_data(spot_symbol)
         if historical_data.empty or "close" not in historical_data:
-            self.decision_engine.log_result(
-                self.decision_engine.reject(
-                    DecisionInputs(**{**inputs.__dict__, "mid_price": snapshot["mid_price"], "spread_pct": snapshot["spread_pct"]}),
-                    "missing_exchange_price",
-                ),
-                logger,
+            rejection = self.decision_engine.reject(
+                DecisionInputs(**{**base_inputs.__dict__, "mid_price": polymarket_snapshot["mid_price"], "spread_pct": polymarket_snapshot["spread_pct"]}),
+                "missing_exchange_price",
             )
+            self.decision_engine.log_result(rejection, logger)
             return
 
         strike_price, expiry_dt = parse_polymarket_question(question)
         if not strike_price:
-            self.decision_engine.log_result(
-                self.decision_engine.reject(
-                    DecisionInputs(**{**inputs.__dict__, "mid_price": snapshot["mid_price"], "spread_pct": snapshot["spread_pct"]}),
-                    "market_not_mapped",
-                ),
-                logger,
+            rejection = self.decision_engine.reject(
+                DecisionInputs(**{**base_inputs.__dict__, "mid_price": polymarket_snapshot["mid_price"], "spread_pct": polymarket_snapshot["spread_pct"]}),
+                "market_not_mapped",
             )
+            self.decision_engine.log_result(rejection, logger)
             return
 
         now = datetime.now(timezone.utc)
         if expiry_dt is None or expiry_dt <= now:
-            self.decision_engine.log_result(
-                self.decision_engine.reject(
-                    DecisionInputs(**{**inputs.__dict__, "mid_price": snapshot["mid_price"], "spread_pct": snapshot["spread_pct"]}),
-                    "market_expired",
-                ),
-                logger,
+            rejection = self.decision_engine.reject(
+                DecisionInputs(**{**base_inputs.__dict__, "mid_price": polymarket_snapshot["mid_price"], "spread_pct": polymarket_snapshot["spread_pct"]}),
+                "market_expired",
             )
+            self.decision_engine.log_result(rejection, logger)
             return
 
-        volatility = calculate_annualized_volatility(historical_data["close"])
+        spot_volatility = calculate_annualized_volatility(historical_data["close"])
         time_to_expiry_years = (expiry_dt - now).total_seconds() / (24 * 365 * 3600)
         implied_probability = calculate_black_scholes_prob(
             current_exchange_price,
             strike_price,
             time_to_expiry_years,
-            volatility,
+            spot_volatility,
         )
-        edge = calculate_edge(snapshot["mid_price"], implied_probability)
+        edge = calculate_edge(polymarket_snapshot["mid_price"], implied_probability)
         rsi_series = calculate_rsi(historical_data["close"])
         rsi_value = rsi_series.iloc[-1] if not rsi_series.empty else None
         if pd.isna(rsi_value):
             rsi_value = None
 
-        decision = self.decision_engine.score_discovery(
+        discovery_decision = self.decision_engine.score_discovery(
             DecisionInputs(
                 source="discovery",
-                category=category,
+                category="CRYPTO",
                 market_id=market_id,
                 token_id=token_id,
                 question=question,
                 volume_24h=volume_24h,
-                mid_price=snapshot["mid_price"],
-                spread_pct=snapshot["spread_pct"],
+                mid_price=polymarket_snapshot["mid_price"],
+                spread_pct=polymarket_snapshot["spread_pct"],
                 edge=edge,
                 rsi=float(rsi_value) if rsi_value is not None else None,
+                venue="polymarket",
             )
         )
-        self.decision_engine.log_result(decision, logger)
 
-        if decision.should_trade:
-            await self.trader.execute_trade(
-                market_id,
-                "YES",
-                decision.trade_size,
-                snapshot["mid_price"],
-                edge=edge,
-                confidence=decision.score,
-                source="discovery",
-                category=category,
+        futures_snapshot = await self.scanner.get_futures_market_snapshot(futures_symbol)
+        if not futures_snapshot.get("is_valid"):
+            futures_rejection = self.decision_engine.reject(
+                DecisionInputs(
+                    source="binance_futures_price_structure",
+                    category="CRYPTO",
+                    market_id=futures_symbol,
+                    token_id=token_id,
+                    question=question,
+                    volume_24h=volume_24h,
+                    venue="binance_futures",
+                ),
+                futures_snapshot.get("reason", "position_sync_failed"),
+            )
+            self.decision_engine.log_result(futures_rejection, logger)
+            self.decision_engine.log_result(discovery_decision, logger)
+            return
+
+        futures_history = await self.scanner.get_futures_historical_data(futures_symbol)
+        volatility_source = futures_history["close"] if not futures_history.empty and "close" in futures_history else historical_data["close"]
+        futures_volatility = calculate_annualized_volatility(volatility_source)
+
+        orderflow_hint = self._get_crypto_orderflow_hint(futures_symbol)
+        shared_signal = self.crypto_signal_engine.score(
+            CryptoSignalInputs(
+                market_id=market_id,
+                token_id=token_id,
+                question=question,
+                volume_24h=volume_24h,
+                polymarket_mid_price=polymarket_snapshot["mid_price"],
+                polymarket_spread_pct=polymarket_snapshot["spread_pct"],
+                spot_price=current_exchange_price,
+                futures_symbol=futures_symbol,
+                futures_last_price=float(futures_snapshot["last_price"]),
+                futures_mark_price=float(futures_snapshot["mark_price"]),
+                futures_spread_pct=float(futures_snapshot["spread_pct"]),
+                futures_volume_24h=float(futures_snapshot["volume_24h"]),
+                funding_rate=float(futures_snapshot["funding_rate"]),
+                open_interest=float(futures_snapshot["open_interest"]),
+                volatility=futures_volatility,
+                strike_price=strike_price,
+                expiry_dt=expiry_dt,
+                orderflow_bias=float(orderflow_hint.get("bias", 0.0)),
+                orderflow_notional=float(orderflow_hint.get("notional", 0.0)),
+            )
+        )
+
+        polymarket_decision = self.crypto_signal_engine.build_polymarket_decision(
+            shared_signal,
+            self.settings.venue_configs["polymarket"],
+            discovery_decision,
+        )
+        self.decision_engine.log_result(polymarket_decision, logger)
+
+        if polymarket_decision.should_trade:
+            await self.polymarket_venue.place_entry_order(
+                market_id=market_id,
+                side=shared_signal.polymarket_side,
+                size_usd=polymarket_decision.trade_size,
+                price=polymarket_snapshot["mid_price"],
+                edge=shared_signal.edge,
+                confidence=polymarket_decision.score,
+                source="blended_crypto",
+                category="CRYPTO",
+                source_signal="blended_crypto",
+            )
+
+        if not self.settings.venue_configs["binance_futures"].enabled or self.binance_futures_venue is None:
+            return
+
+        open_position = await self.binance_futures_venue.get_open_position(futures_symbol)
+        if open_position is not None and open_position["side"] != shared_signal.futures_side and shared_signal.should_trade:
+            await self.binance_futures_venue.place_exit_order(
+                futures_symbol,
+                exit_price=float(futures_snapshot["mark_price"]),
+                reason="signal_exit",
+                source="binance_futures_price_structure",
+            )
+            open_position = None
+
+        risk_reasons = []
+        trade_size = min(
+            self.settings.venue_configs["binance_futures"].max_order_usd,
+            self.settings.venue_configs["binance_futures"].max_position_usd,
+        )
+        if open_position is not None:
+            risk_reasons.append("duplicate_open_trade")
+        else:
+            risk_reasons = await self.binance_futures_venue.risk_manager.validate_entry(
+                symbol=futures_symbol,
+                side=shared_signal.futures_side,
+                price=float(futures_snapshot["mark_price"]),
+                trade_size=trade_size,
+                spread_pct=float(futures_snapshot["spread_pct"]),
+                signal_score=shared_signal.score,
+            )
+
+        futures_decision = self.crypto_signal_engine.build_binance_futures_decision(
+            shared_signal,
+            self.settings.venue_configs["binance_futures"],
+            risk_reasons,
+            trade_size=trade_size,
+        )
+        self.decision_engine.log_result(futures_decision, logger)
+
+        if futures_decision.should_trade:
+            await self.binance_futures_venue.place_entry_order(
+                symbol=futures_symbol,
+                side=shared_signal.futures_side,
+                entry_price=float(futures_snapshot["mark_price"]),
+                trade_size=trade_size,
+                signal_score=futures_decision.score,
+                source="binance_futures_price_structure",
+                source_signal="binance_futures_price_structure",
+                spread_pct=float(futures_snapshot["spread_pct"]),
+                market_context=market,
             )
 
     async def handle_whale_action(self, action: Dict) -> None:
         if self.copy_trader is None:
             return
-
+        self._record_crypto_orderflow_hint(action, source="whale_tracker")
         await self.copy_trader.evaluate_signal(action)
 
     async def handle_activity_event(self, event: Dict) -> None:
         if self.copy_trader is None:
             return
-
+        self._record_crypto_orderflow_hint(event, source=event.get("source", "activity"))
         await self.copy_trader.evaluate_activity_event(event)
+
+    def _record_crypto_orderflow_hint(self, event: Dict, source: str) -> None:
+        token_id = event.get("token_id")
+        market_id = event.get("market_id")
+        context = self._resolve_market_context(market_id=market_id, token_id=token_id)
+        if context is None or context.get("category") != "CRYPTO":
+            return
+        futures_symbol = resolve_binance_futures_symbol(context.get("question", ""))
+        if not futures_symbol:
+            return
+        side = str(event.get("side", "BUY")).upper()
+        self.crypto_orderflow_hints[futures_symbol] = {
+            "bias": 1.0 if side == "BUY" else -1.0,
+            "notional": float(event.get("amount", 0.0) or 0.0),
+            "source": source,
+            "timestamp": time.time(),
+        }
+
+    def _get_crypto_orderflow_hint(self, futures_symbol: str) -> Dict:
+        hint = self.crypto_orderflow_hints.get(futures_symbol)
+        if not hint:
+            return {}
+        if time.time() - float(hint.get("timestamp", 0.0)) > 300:
+            return {}
+        return hint
+
+    def _resolve_market_context(self, market_id: Optional[str], token_id: Optional[str]) -> Optional[Dict]:
+        if market_id and market_id in self.active_market_context:
+            return self.active_market_context[market_id]
+        if token_id and token_id in self.token_to_market_id:
+            resolved_market_id = self.token_to_market_id[token_id]
+            return self.active_market_context.get(resolved_market_id)
+        return None
 
     def _refresh_market_context(self, active_markets: list[Dict]) -> None:
         self.active_market_context = {}

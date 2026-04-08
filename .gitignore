@@ -6,3 +6,5 @@ logs/
 data/*.db-shm
 data/*.db-wal
 .env
+__publish_repo/
+docs/polymarket-research.md

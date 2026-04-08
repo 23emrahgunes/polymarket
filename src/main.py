@@ -20,6 +20,7 @@ async def main():
     logger.info("Starting Ghost Intelligence v4.0 - all-category PAPER runtime")
     logger.info("Mode: PAPER | exchange=%s | debug_signal_mode=%s | db_path=%s", settings.exchange_id.upper(), settings.debug_signal_mode, settings.db_path)
     logger.info("Exchange symbol map: %s", EXCHANGE_MAPPINGS.get(settings.exchange_id, EXCHANGE_MAPPINGS["coinbase"]))
+    logger.info("Venue configs: %s", {venue: config for venue, config in settings.venue_configs.items()})
 
     runtime = GhostBotRuntime(settings)
     await runtime.run()

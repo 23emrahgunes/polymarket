@@ -17,6 +17,15 @@ EXCHANGE_MAPPINGS = {
     },
 }
 
+BINANCE_FUTURES_MAPPINGS = {
+    "BTC": "BTC/USDT:USDT",
+    "ETH": "ETH/USDT:USDT",
+    "SOL": "SOL/USDT:USDT",
+    "XRP": "XRP/USDT:USDT",
+    "DOGE": "DOGE/USDT:USDT",
+    "BNB": "BNB/USDT:USDT",
+}
+
 
 def resolve_crypto_symbol(question: str, exchange_id: str) -> str | None:
     normalized = (question or "").upper()
@@ -24,4 +33,12 @@ def resolve_crypto_symbol(question: str, exchange_id: str) -> str | None:
     for base_symbol, exchange_symbol in exchange_map.items():
         if base_symbol in normalized:
             return exchange_symbol
+    return None
+
+
+def resolve_binance_futures_symbol(question: str) -> str | None:
+    normalized = (question or "").upper()
+    for base_symbol, futures_symbol in BINANCE_FUTURES_MAPPINGS.items():
+        if base_symbol in normalized:
+            return futures_symbol
     return None

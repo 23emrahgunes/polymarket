@@ -32,6 +32,15 @@ class MarketScanner:
                 },
             }
         )
+        self.futures_exchange = ccxt.binanceusdm(
+            {
+                "enableRateLimit": True,
+                "options": {
+                    "defaultType": "future",
+                    "adjustForTimeDifference": True,
+                },
+            }
+        )
 
         private_key = resolve_polygon_private_key()
         self.polymarket = ClobClient(
@@ -47,11 +56,14 @@ class MarketScanner:
         self.ticker_task: Optional[asyncio.Task] = None
         self.negative_cache: Dict[str, float] = {}
         self.orderbook_cache: Dict[str, Dict] = {}
+        self.futures_snapshot_cache: Dict[str, Dict] = {}
+        self.futures_ohlcv_cache: Dict[str, pd.DataFrame] = {}
+        self._futures_last_ohlcv_update: Dict[str, float] = {}
 
         self._debug_orderbooks = {
             "debug_sports_token_yes": {"best_bid": 0.575, "best_ask": 0.585},
             "debug_sports_token_no": {"best_bid": 0.415, "best_ask": 0.425},
-            "debug_crypto_token_yes": {"best_bid": 0.44, "best_ask": 0.46},
+            "debug_crypto_token_yes": {"best_bid": 0.447, "best_ask": 0.453},
         }
         self._debug_tickers = {
             "BTC/USD": 102000.0,
@@ -66,6 +78,26 @@ class MarketScanner:
             "XRP/USDT": 1.45,
             "DOGE/USDT": 0.38,
             "BNB/USDT": 980.0,
+        }
+        self._debug_futures = {
+            "BTC/USDT:USDT": {
+                "last_price": 103200.0,
+                "mark_price": 103100.0,
+                "best_bid": 103050.0,
+                "best_ask": 103150.0,
+                "volume_24h": 220000.0,
+                "open_interest": 1800000.0,
+                "funding_rate": 0.0002,
+            },
+            "ETH/USDT:USDT": {
+                "last_price": 5250.0,
+                "mark_price": 5246.0,
+                "best_bid": 5245.0,
+                "best_ask": 5247.0,
+                "volume_24h": 180000.0,
+                "open_interest": 950000.0,
+                "funding_rate": 0.0001,
+            },
         }
 
     async def update_monitored_symbols(self, symbols: List[str]) -> None:
@@ -132,7 +164,7 @@ class MarketScanner:
 
         if self.debug_signal_mode and symbol in self._debug_tickers:
             if symbol not in self._ohlcv_cache or (now - last_update) > 60:
-                self._ohlcv_cache[symbol] = self._build_debug_ohlcv(symbol, limit)
+                self._ohlcv_cache[symbol] = self._build_debug_ohlcv(self._debug_tickers[symbol], limit)
                 self._last_ohlcv_update[symbol] = now
             return self._ohlcv_cache[symbol]
 
@@ -146,8 +178,28 @@ class MarketScanner:
 
         return self._ohlcv_cache[symbol]
 
-    def _build_debug_ohlcv(self, symbol: str, limit: int) -> pd.DataFrame:
-        base_price = self._debug_tickers[symbol]
+    @backoff.on_exception(backoff.expo, Exception, max_tries=5)
+    async def get_futures_historical_data(self, symbol: str, timeframe: str = "1m", limit: int = 1440) -> pd.DataFrame:
+        limit = int(limit)
+        now = time.time()
+        last_update = self._futures_last_ohlcv_update.get(symbol, 0.0)
+
+        if self.debug_signal_mode and symbol in self._debug_futures:
+            if symbol not in self.futures_ohlcv_cache or (now - last_update) > 60:
+                self.futures_ohlcv_cache[symbol] = self._build_debug_ohlcv(self._debug_futures[symbol]["mark_price"], limit)
+                self._futures_last_ohlcv_update[symbol] = now
+            return self.futures_ohlcv_cache[symbol]
+
+        if symbol not in self.futures_ohlcv_cache or (now - last_update) > 60:
+            ohlcv = await self.futures_exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            self.futures_ohlcv_cache[symbol] = pd.DataFrame(
+                ohlcv,
+                columns=["timestamp", "open", "high", "low", "close", "volume"],
+            )
+            self._futures_last_ohlcv_update[symbol] = now
+        return self.futures_ohlcv_cache[symbol]
+
+    def _build_debug_ohlcv(self, base_price: float, limit: int) -> pd.DataFrame:
         rows = []
         for index in range(limit):
             delta = ((index % 10) - 5) * 0.0025
@@ -244,6 +296,91 @@ class MarketScanner:
             )
             return self._invalid_snapshot(token_id, "invalid_orderbook_data")
 
+    async def get_futures_market_snapshot(self, symbol: str) -> Dict:
+        now = time.time()
+        cached = self.futures_snapshot_cache.get(symbol)
+        if cached and now - cached["fetched_at"] < 2:
+            return cached
+
+        if self.debug_signal_mode and symbol in self._debug_futures:
+            data = self._debug_futures[symbol]
+            mid_price = (data["best_bid"] + data["best_ask"]) / 2
+            snapshot = {
+                "symbol": symbol,
+                "last_price": data["last_price"],
+                "mark_price": data["mark_price"],
+                "best_bid": data["best_bid"],
+                "best_ask": data["best_ask"],
+                "spread_pct": (data["best_ask"] - data["best_bid"]) / mid_price,
+                "volume_24h": data["volume_24h"],
+                "open_interest": data["open_interest"],
+                "funding_rate": data["funding_rate"],
+                "is_valid": True,
+                "reason": "debug_futures",
+                "fetched_at": now,
+            }
+            self.futures_snapshot_cache[symbol] = snapshot
+            return snapshot
+
+        try:
+            ticker = await self.futures_exchange.fetch_ticker(symbol)
+            best_bid = float(ticker.get("bid") or ticker.get("last") or 0.0)
+            best_ask = float(ticker.get("ask") or ticker.get("last") or 0.0)
+            last_price = float(ticker.get("last") or 0.0)
+            mark_price = float(ticker.get("info", {}).get("markPrice") or last_price or 0.0)
+            volume_24h = float(ticker.get("quoteVolume") or 0.0)
+
+            funding_rate = 0.0
+            open_interest = 0.0
+            try:
+                funding = await self.futures_exchange.fetch_funding_rate(symbol)
+                funding_rate = float(funding.get("fundingRate") or funding.get("info", {}).get("lastFundingRate") or 0.0)
+            except Exception:
+                funding_rate = 0.0
+            try:
+                oi = await self.futures_exchange.fetch_open_interest(symbol)
+                open_interest = float(oi.get("openInterestAmount") or oi.get("openInterest") or oi.get("info", {}).get("openInterest") or 0.0)
+            except Exception:
+                open_interest = 0.0
+
+            if best_bid <= 0 or best_ask <= 0 or last_price <= 0 or mark_price <= 0:
+                return {
+                    "symbol": symbol,
+                    "is_valid": False,
+                    "reason": "position_sync_failed",
+                    "fetched_at": now,
+                }
+
+            mid_price = (best_bid + best_ask) / 2
+            snapshot = {
+                "symbol": symbol,
+                "last_price": last_price,
+                "mark_price": mark_price,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "spread_pct": (best_ask - best_bid) / mid_price if mid_price > 0 else 1.0,
+                "volume_24h": volume_24h,
+                "open_interest": open_interest,
+                "funding_rate": funding_rate,
+                "is_valid": True,
+                "reason": "ok",
+                "fetched_at": now,
+            }
+            self.futures_snapshot_cache[symbol] = snapshot
+            return snapshot
+        except Exception as exc:
+            logger.info(
+                "[REJECT] source=futures category=CRYPTO market=%s reasons=position_sync_failed inputs=%s",
+                symbol,
+                {"symbol": symbol, "error": str(exc)},
+            )
+            return {
+                "symbol": symbol,
+                "is_valid": False,
+                "reason": "position_sync_failed",
+                "fetched_at": now,
+            }
+
     def _build_snapshot(self, token_id: str, best_bid: float, best_ask: float, reason: str = "ok") -> Dict:
         mid_price = (best_bid + best_ask) / 2
         spread_pct = (best_ask - best_bid) / mid_price if mid_price > 0 else 1.0
@@ -279,3 +416,4 @@ class MarketScanner:
             self.ticker_task.cancel()
             await asyncio.gather(self.ticker_task, return_exceptions=True)
         await self.exchange.close()
+        await self.futures_exchange.close()

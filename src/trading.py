@@ -48,12 +48,18 @@ class TradeExecutor:
         whale_address=None,
         source: str = "runtime",
         category: str = "UNKNOWN",
+        venue: str = "polymarket",
+        instrument_type: str = "prediction",
+        position_id: int | None = None,
+        source_signal: str = "runtime",
+        execution_mode: str = "paper",
     ):
         async with self.lock:
-            current_balance = await self.db.get_balance()
+            current_balance = await self.db.get_balance(venue, execution_mode)
             if current_balance < size:
                 logger.info(
-                    "[REJECT] source=%s category=%s market=%s reasons=insufficient_balance inputs=%s",
+                    "[REJECT] venue=%s source=%s category=%s market=%s reasons=insufficient_balance inputs=%s",
+                    venue,
                     source,
                     category,
                     market_id,
@@ -61,9 +67,10 @@ class TradeExecutor:
                 )
                 return False, f"Insufficient balance: {current_balance} < {size}"
 
-            if await self.db.has_open_trade(market_id, side):
+            if await self.db.has_open_trade(market_id, side, venue=venue):
                 logger.info(
-                    "[REJECT] source=%s category=%s market=%s reasons=duplicate_open_trade inputs=%s",
+                    "[REJECT] venue=%s source=%s category=%s market=%s reasons=duplicate_open_trade inputs=%s",
+                    venue,
                     source,
                     category,
                     market_id,
@@ -79,7 +86,7 @@ class TradeExecutor:
                     return False, f"Live execution error: {exc}"
 
             new_balance = current_balance - size
-            await self.db.update_balance(new_balance)
+            await self.db.update_balance(new_balance, venue, execution_mode)
             trade_id = await self.db.add_trade(
                 market_id,
                 side,
@@ -89,12 +96,18 @@ class TradeExecutor:
                 confidence,
                 status="OPEN",
                 whale_address=whale_address,
+                venue=venue,
+                instrument_type=instrument_type,
+                position_id=position_id,
+                source_signal=source_signal,
+                execution_mode=execution_mode,
             )
 
             mode_prefix = "LIVE" if self.live_mode else "PAPER"
             logger.info(
-                "[%s-TRADE-RUNTIME] inserted trade id=%s market=%s side=%s balance_before=%.2f balance_after=%.2f source=%s category=%s",
+                "[%s-TRADE-RUNTIME] venue=%s inserted trade id=%s market=%s side=%s balance_before=%.2f balance_after=%.2f source=%s category=%s",
                 mode_prefix,
+                venue,
                 trade_id,
                 market_id,
                 side,
@@ -114,6 +127,10 @@ class TradeExecutor:
                         "balance_after": new_balance,
                         "source": source,
                         "category": category,
+                        "venue": venue,
+                        "instrument_type": instrument_type,
+                        "source_signal": source_signal,
+                        "execution_mode": execution_mode,
                     }
                 )
                 if inspect.isawaitable(callback_result):
@@ -125,7 +142,7 @@ class TradeExecutor:
         if not self.polymarket:
             return
 
-        open_trades = await self.db.get_open_trades()
+        open_trades = await self.db.get_open_trades(venue="polymarket", instrument_type="prediction")
         for trade in open_trades:
             trade_id = trade["id"]
             market_id = trade["market_id"]
@@ -144,8 +161,8 @@ class TradeExecutor:
                         pnl = payout - size
 
                         async with self.lock:
-                            current_balance = await self.db.get_balance()
-                            await self.db.update_balance(current_balance + payout)
+                            current_balance = await self.db.get_balance("polymarket", "paper")
+                            await self.db.update_balance(current_balance + payout, "polymarket", "paper")
 
                             status = "CLOSED_WIN" if pnl > 0 else "CLOSED_LOSS"
                             await self.db.update_trade_resolution(trade_id, status, pnl)
@@ -165,7 +182,7 @@ class TradeExecutor:
                 logger.error("Error resolving trade %s: %s", trade_id, exc)
 
     async def get_total_value(self):
-        return await self.db.get_balance()
+        return await self.db.get_balance("polymarket", "paper")
 
 
 PaperTrader = TradeExecutor

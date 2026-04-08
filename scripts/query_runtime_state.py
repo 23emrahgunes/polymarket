@@ -16,10 +16,34 @@ def main() -> int:
     cursor = connection.cursor()
 
     wallet = cursor.execute("SELECT balance FROM wallet WHERE id = 1").fetchone()
+    venue_accounts = cursor.execute(
+        """
+        SELECT venue, execution_mode, cash_balance, equity, available_balance
+        FROM venue_accounts
+        ORDER BY venue, execution_mode
+        """
+    ).fetchall()
     trades = cursor.execute(
         """
-        SELECT id, market_id, side, size, price, confidence, whale_address, timestamp
+        SELECT id, venue, instrument_type, market_id, side, size, price, confidence, whale_address, timestamp
         FROM trades
+        ORDER BY id DESC
+        LIMIT 10
+        """
+    ).fetchall()
+    positions = cursor.execute(
+        """
+        SELECT id, venue, instrument_type, symbol_or_market_id, side, entry_price, mark_price, notional_usd, unrealized_pnl, realized_pnl, status
+        FROM venue_positions
+        ORDER BY id DESC
+        LIMIT 10
+        """
+    ).fetchall()
+    orders = cursor.execute(
+        """
+        SELECT id, venue, symbol_or_market_id, order_type, side, qty, price, stop_price, reduce_only, status
+        FROM venue_orders
+        WHERE status = 'OPEN'
         ORDER BY id DESC
         LIMIT 10
         """
@@ -28,9 +52,18 @@ def main() -> int:
 
     print(f"DB_PATH={db_path}")
     print(f"WALLET_BALANCE={wallet[0] if wallet else 'missing'}")
+    print("VENUE_ACCOUNTS")
+    for account in venue_accounts:
+        print(account)
     print("RECENT_TRADES")
     for trade in trades:
         print(trade)
+    print("OPEN_POSITIONS")
+    for position in positions:
+        print(position)
+    print("OPEN_ORDERS")
+    for order in orders:
+        print(order)
     return 0
 
 

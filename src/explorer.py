@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from typing import Dict, List
 
 import requests
@@ -12,10 +13,11 @@ logger = logging.getLogger(__name__)
 
 
 class MarketExplorer:
-    def __init__(self, polymarket_client, debug_signal_mode: bool = False):
+    def __init__(self, polymarket_client, debug_signal_mode: bool = False, debug_signal_profile: str = "sports"):
         self.polymarket = polymarket_client
         self.gamma_api_base = "https://gamma-api.polymarket.com"
         self.debug_signal_mode = debug_signal_mode
+        self.debug_signal_profile = (debug_signal_profile or os.getenv("DEBUG_SIGNAL_PROFILE", "sports")).strip().lower()
 
     async def fetch_active_markets(self, limit: int = 200) -> List[Dict]:
         if self.debug_signal_mode:
@@ -77,14 +79,27 @@ class MarketExplorer:
         }
 
     def _get_debug_markets(self) -> List[Dict]:
-        return [
-            {
-                "market_id": "debug-sports-finals-2026",
-                "question": "Will the Istanbul Lions win the 2026 championship match?",
-                "token_id": "debug_sports_token_yes",
-                "token_ids": ["debug_sports_token_yes", "debug_sports_token_no"],
-                "category": "SPORTS",
-                "volume_24h": 75_000.0,
-                "active": True,
-            }
-        ]
+        sports_market = {
+            "market_id": "debug-sports-finals-2026",
+            "question": "Will the Istanbul Lions win the 2026 championship match?",
+            "token_id": "debug_sports_token_yes",
+            "token_ids": ["debug_sports_token_yes", "debug_sports_token_no"],
+            "category": "SPORTS",
+            "volume_24h": 75_000.0,
+            "active": True,
+        }
+        crypto_market = {
+            "market_id": "debug-crypto-btc-100k-2026",
+            "question": "Will BTC be above $100,000 on December 31, 2026?",
+            "token_id": "debug_crypto_token_yes",
+            "token_ids": ["debug_crypto_token_yes", "debug_crypto_token_no"],
+            "category": "CRYPTO",
+            "volume_24h": 250_000.0,
+            "active": True,
+        }
+
+        if self.debug_signal_profile == "crypto_dual":
+            return [crypto_market]
+        if self.debug_signal_profile == "all":
+            return [sports_market, crypto_market]
+        return [sports_market]

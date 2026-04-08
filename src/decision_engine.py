@@ -52,6 +52,8 @@ class DecisionInputs:
     wallets_count: Optional[int] = None
     whale_trust: float = 0.5
     price_drift_pct: Optional[float] = None
+    venue: Optional[str] = None
+    direction: Optional[str] = None
 
 
 @dataclass
@@ -65,6 +67,8 @@ class DecisionResult:
     reasons: List[str]
     trade_size: float
     inputs: Dict[str, Any]
+    venue: Optional[str] = None
+    direction: Optional[str] = None
 
 
 RISK_PROFILES: Dict[str, CategoryRiskProfile] = {
@@ -93,6 +97,8 @@ class DecisionEngine:
             reasons=list(reasons) or ["rejected"],
             trade_size=profile.paper_trade_size,
             inputs=self._inputs_for_log(inputs),
+            venue=inputs.venue,
+            direction=inputs.direction,
         )
 
     def score_discovery(self, inputs: DecisionInputs) -> DecisionResult:
@@ -105,7 +111,7 @@ class DecisionEngine:
             reasons.append("invalid_orderbook_data")
         if inputs.edge is None:
             reasons.append("missing_edge")
-        elif inputs.edge < 0.05:
+        elif abs(inputs.edge) < 0.05:
             reasons.append("edge_below_threshold")
         if inputs.rsi is None:
             reasons.append("missing_rsi")
@@ -114,7 +120,7 @@ class DecisionEngine:
         if inputs.spread_pct is not None and inputs.spread_pct > profile.max_spread_pct:
             reasons.append("slippage_guard_rejection")
 
-        edge_component = clamp((inputs.edge or 0.0) / 0.05)
+        edge_component = clamp(abs(inputs.edge or 0.0) / 0.05)
         rsi_component = self._rsi_component(inputs.rsi)
         volume_component = clamp(inputs.volume_24h / profile.min_volume_24h) if profile.min_volume_24h else 0.0
         microstructure_component = 0.0
@@ -146,6 +152,8 @@ class DecisionEngine:
                 volume_component=round(volume_component, 4),
                 microstructure_component=round(microstructure_component, 4),
             ),
+            venue=inputs.venue,
+            direction=inputs.direction or ("LONG" if (inputs.edge or 0.0) >= 0 else "SHORT"),
         )
 
     def score_orderflow(self, inputs: DecisionInputs) -> DecisionResult:
@@ -215,13 +223,16 @@ class DecisionEngine:
                 drift_penalty=round(drift_penalty, 4),
                 spread_penalty=round(spread_penalty, 4),
             ),
+            venue=inputs.venue,
+            direction=inputs.direction,
         )
 
     def log_result(self, decision: DecisionResult, runtime_logger: Optional[logging.Logger] = None) -> None:
         active_logger = runtime_logger or logger
         if decision.should_trade:
             active_logger.info(
-                "[DECISION] source=%s category=%s market=%s score=%.2f threshold=%.2f trade_size=%.2f inputs=%s",
+                "[DECISION] venue=%s source=%s category=%s market=%s score=%.2f threshold=%.2f trade_size=%.2f inputs=%s",
+                decision.venue or "unassigned",
                 decision.source,
                 decision.category,
                 decision.market_id,
@@ -233,7 +244,8 @@ class DecisionEngine:
             return
 
         active_logger.info(
-            "[REJECT] source=%s category=%s market=%s reasons=%s score=%.2f threshold=%.2f inputs=%s",
+            "[REJECT] venue=%s source=%s category=%s market=%s reasons=%s score=%.2f threshold=%.2f inputs=%s",
+            decision.venue or "unassigned",
             decision.source,
             decision.category,
             decision.market_id,
@@ -257,6 +269,7 @@ class DecisionEngine:
             "wallets_count": inputs.wallets_count,
             "whale_trust": self._round_or_none(inputs.whale_trust),
             "price_drift_pct": self._round_or_none(inputs.price_drift_pct),
+            "direction": inputs.direction,
         }
         for key, value in extras.items():
             payload[key] = value

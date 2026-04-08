@@ -61,6 +61,7 @@ class CopyTrader:
             volume_24h=float(context.get("volume_24h", 0.0) if context else 0.0),
             event_amount=float(event.get("amount", 0.0) or 0.0),
             wallets_count=int(event.get("wallets_count", 1) or 1),
+            venue="polymarket",
         )
 
         if context is None:
@@ -86,6 +87,7 @@ class CopyTrader:
                         **base_inputs.__dict__,
                         "mid_price": snapshot.get("mid_price"),
                         "spread_pct": snapshot.get("spread_pct"),
+                        "venue": "polymarket",
                     }
                 ),
                 snapshot.get("reason", "invalid_orderbook_data"),
@@ -118,6 +120,7 @@ class CopyTrader:
                 wallets_count=int(event.get("wallets_count", 1) or 1),
                 whale_trust=whale_trust,
                 price_drift_pct=price_drift_pct,
+                venue="polymarket",
             )
         )
         self.decision_engine.log_result(decision, logger)
@@ -136,6 +139,10 @@ class CopyTrader:
             whale_address=whale_address,
             source=source,
             category=category,
+            venue="polymarket",
+            instrument_type="prediction",
+            source_signal=source,
+            execution_mode="paper",
         )
         if success:
             logger.info(

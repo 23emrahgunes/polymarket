@@ -35,7 +35,10 @@ def resolve_db_path() -> str:
 async def verify_runtime_trade():
     db_path = resolve_db_path()
     os.environ["DEBUG_SIGNAL_MODE"] = "true"
+    os.environ["DEBUG_SIGNAL_PROFILE"] = "sports"
     os.environ["RUNTIME_VERIFY_ONCE"] = "true"
+    os.environ["VERIFY_REQUIRED_VENUES"] = "polymarket"
+    os.environ["VERIFY_REQUIRED_CATEGORY"] = "SPORTS"
     os.environ["GHOST_TRADER_DB_PATH"] = db_path
 
     database = Database(db_path)

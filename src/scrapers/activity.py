@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 from collections import defaultdict
 from typing import Dict, List
@@ -11,9 +12,15 @@ logger = logging.getLogger(__name__)
 
 
 class ActivityHunter:
-    def __init__(self, gamma_api_base="https://gamma-api.polymarket.com", debug_signal_mode: bool = False):
+    def __init__(
+        self,
+        gamma_api_base="https://gamma-api.polymarket.com",
+        debug_signal_mode: bool = False,
+        debug_signal_profile: str = "sports",
+    ):
         self.gamma_api_base = gamma_api_base
         self.debug_signal_mode = debug_signal_mode
+        self.debug_signal_profile = (debug_signal_profile or os.getenv("DEBUG_SIGNAL_PROFILE", "sports")).strip().lower()
         self.activity_clusters = defaultdict(list)
         self.processed_transaction_ids = set()
         self.whale_event_threshold = 1_000.0
@@ -39,14 +46,7 @@ class ActivityHunter:
                 if self.debug_signal_mode and not self.debug_event_emitted:
                     self.debug_event_emitted = True
                     await asyncio.sleep(1)
-                    yield {
-                        "type": "WHALE_EVENT",
-                        "token_id": "debug_sports_token_yes",
-                        "side": "BUY",
-                        "amount": 2_500.0,
-                        "wallet": "0xDEBUGSPORTS",
-                        "price": 0.57,
-                    }
+                    yield self._get_debug_event()
 
                 activities = await self.fetch_latest_activity()
                 for event in self._normalize_activities(activities):
@@ -57,6 +57,27 @@ class ActivityHunter:
             except Exception as exc:
                 logger.info("ActivityHunter: stream monitoring error - %s", exc)
                 await asyncio.sleep(5)
+
+    def _get_debug_event(self) -> Dict:
+        if self.debug_signal_profile == "crypto_dual":
+            return {
+                "type": "WHALE_EVENT",
+                "token_id": "debug_crypto_token_yes",
+                "side": "BUY",
+                "amount": 5_000.0,
+                "price": 0.45,
+                "source": "activity",
+            }
+
+        return {
+            "type": "WHALE_EVENT",
+            "token_id": "debug_sports_token_yes",
+            "side": "BUY",
+            "amount": 2_500.0,
+            "wallet": "0xDEBUGSPORTS",
+            "price": 0.57,
+            "source": "activity",
+        }
 
     def _normalize_activities(self, activities: List[Dict]) -> List[Dict]:
         normalized_events: List[Dict] = []
