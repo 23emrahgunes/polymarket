@@ -1,0 +1,112 @@
+{
+  "db_paths": [
+    "data\\ghost_trader.db",
+    "data\\runtime_verification.db",
+    "data\\runtime_crypto_dual_venue.db",
+    "data\\runtime_crypto_triple_venue.db"
+  ],
+  "sample_counts": {
+    "synthetic_verify": 6
+  },
+  "what_was_measurable": [
+    "paper trade counts",
+    "venue/category/signal family attribution",
+    "realized pnl from closed trades",
+    "unrealized pnl from open venue positions",
+    "drawdown from realized trade equity curve",
+    "rejection counts from decision audit",
+    "sample separation logic (live_paper vs synthetic_verify)"
+  ],
+  "what_was_not_measurable": [
+    "live paper alpha evidence",
+    "reliable historical Polymarket orderbook replay for non-crypto categories",
+    "full historical whale/orderflow archive replay from public repo data"
+  ],
+  "core": {
+    "total_trades": 0,
+    "closed_trades": 0,
+    "open_trades": 0,
+    "win_rate": null,
+    "average_win": null,
+    "average_loss": null,
+    "expectancy": null,
+    "profit_factor": null,
+    "profit_factor_is_infinite": false,
+    "total_pnl": 0.0,
+    "realized_pnl": 0.0,
+    "unrealized_pnl": 0.0,
+    "max_drawdown": 0.0,
+    "longest_losing_streak": 0,
+    "average_hold_time_seconds": null,
+    "average_hold_time_hours": null,
+    "exposure_by_venue": [],
+    "exposure_by_category": [],
+    "average_entry_spread": null,
+    "average_slippage_proxy": null,
+    "average_confidence": null,
+    "average_whale_trust": null
+  },
+  "venue_comparison": [],
+  "category_comparison": [],
+  "signal_source_comparison": [],
+  "confidence_bucket_performance": [],
+  "whale_trust_bucket_performance": [],
+  "rejection_counts_by_reason": [],
+  "synthetic_appendix": {
+    "trade_count": 6,
+    "position_count": 3,
+    "audit_count": 0,
+    "core_metrics": {
+      "total_trades": 6,
+      "closed_trades": 0,
+      "open_trades": 6,
+      "win_rate": null,
+      "average_win": null,
+      "average_loss": null,
+      "expectancy": null,
+      "profit_factor": null,
+      "profit_factor_is_infinite": false,
+      "total_pnl": 0.0,
+      "realized_pnl": 0.0,
+      "unrealized_pnl": 0.0,
+      "max_drawdown": 0.0,
+      "longest_losing_streak": 0,
+      "average_hold_time_seconds": null,
+      "average_hold_time_hours": null,
+      "exposure_by_venue": [
+        {
+          "bucket": "binance_futures",
+          "open_exposure": 200.0
+        },
+        {
+          "bucket": "binance_spot",
+          "open_exposure": 100.0
+        },
+        {
+          "bucket": "polymarket",
+          "open_exposure": 140.0
+        }
+      ],
+      "exposure_by_category": [
+        {
+          "bucket": "CRYPTO",
+          "open_exposure": 400.0
+        },
+        {
+          "bucket": "SPORTS",
+          "open_exposure": 40.0
+        }
+      ],
+      "average_entry_spread": null,
+      "average_slippage_proxy": null,
+      "average_confidence": 0.8384,
+      "average_whale_trust": null
+    }
+  },
+  "evidence": {
+    "live_paper_total": 0,
+    "live_paper_closed": 0,
+    "synthetic_total": 6,
+    "sufficient_live_sample_for_go_gate": false
+  }
+}

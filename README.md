@@ -146,6 +146,74 @@ Important variables:
   - `VERIFY_REQUIRED_VENUES=polymarket`
   - `VERIFY_REQUIRED_CATEGORY=SPORTS`
 
+## Performance Evaluation
+
+The repo now includes a conservative strategy-evaluation layer. Its job is not to promise profit, but to measure what is actually knowable and say `insufficient evidence` when the data is weak.
+
+Core rules:
+
+- `live_paper` runtime trades are the primary evidence source
+- `synthetic_verify` trades from debug/proof harnesses are excluded from core performance by default
+- `replay` / backtest results are reported separately and never mixed into live paper alpha claims
+- if there is not enough trustworthy data, the final verdict will be `IMPROVE FIRST`
+
+Main commands:
+
+```bash
+python scripts/analyze_performance.py
+python scripts/run_backtest.py
+python scripts/swot_report.py
+```
+
+Outputs are written under:
+
+```bash
+reports/performance/
+```
+
+Main files:
+
+- `summary.json`
+- `summary.csv`
+- `rejections.csv`
+- `summary.md`
+- `backtest.json`
+- `swot_report.md`
+- `swot_report.json`
+
+What `analyze_performance.py` measures:
+
+- total / closed / open trades
+- win rate
+- average win / average loss
+- expectancy
+- profit factor
+- total / realized / unrealized pnl
+- venue / category / signal-family comparisons
+- max drawdown
+- longest losing streak
+- average hold time
+- open exposure by venue / category
+- average entry spread
+- average slippage proxy
+- rejection counts by reason
+- confidence bucket performance
+- whale trust bucket performance
+
+What `run_backtest.py` does today:
+
+- supports deterministic replay only when you provide a structured replay dataset
+- defaults to an explicit `insufficient_evidence` report when the repo does not contain enough trustworthy historical data
+- does **not** fabricate Polymarket non-crypto replay when historical orderbook / whale archive data is missing
+
+What `swot_report.py` decides:
+
+- `GO`
+- `NO-GO`
+- `IMPROVE FIRST`
+
+The default expected result on a fresh repo is usually `IMPROVE FIRST`, because proof-harness trades are synthetic and do not count as live alpha evidence.
+
 ## Run
 
 Start the bot:

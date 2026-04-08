@@ -1,0 +1,2 @@
+total_trades,closed_trades,open_trades,win_rate,average_win,average_loss,expectancy,profit_factor,profit_factor_is_infinite,total_pnl,realized_pnl,unrealized_pnl,max_drawdown,longest_losing_streak,average_hold_time_seconds,average_hold_time_hours,exposure_by_venue,exposure_by_category,average_entry_spread,average_slippage_proxy,average_confidence,average_whale_trust
+0,0,0,,,,,,False,0.0,0.0,0.0,0.0,0,,,[],[],,,,

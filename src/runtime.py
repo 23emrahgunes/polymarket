@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -16,6 +17,7 @@ from src.crypto_signal_engine import CryptoSignalEngine, CryptoSignalInputs
 from src.database import Database
 from src.decision_engine import DecisionEngine, DecisionInputs, classify_market_category
 from src.explorer import MarketExplorer
+from src.evaluation_utils import infer_sample_kind, normalize_signal_family, slippage_proxy_bps_from_spread
 from src.gamma_client import GammaApiClient
 from src.logic import calculate_annualized_volatility, calculate_black_scholes_prob, calculate_edge, calculate_rsi
 from src.market_config import BINANCE_FUTURES_MAPPINGS, EXCHANGE_MAPPINGS, resolve_binance_futures_symbol, resolve_crypto_symbol
@@ -91,6 +93,11 @@ class GhostBotRuntime:
         self.settings = settings
         self.decision_engine = DecisionEngine()
         self.crypto_signal_engine = CryptoSignalEngine()
+        self.sample_kind = infer_sample_kind(
+            debug_signal_mode=settings.debug_signal_mode,
+            debug_profile=settings.debug_signal_profile if settings.debug_signal_mode else None,
+        )
+        self.debug_profile = settings.debug_signal_profile if settings.debug_signal_mode else None
         self.stop_event = asyncio.Event()
         self.trade_inserted_event = asyncio.Event()
         self.verify_required_venues = set(settings.verify_required_venues or (("polymarket",) if settings.runtime_verify_once else tuple()))
@@ -125,6 +132,7 @@ class GhostBotRuntime:
         )
         self.db = Database(self.settings.db_path)
         await self.db.connect()
+        self.decision_engine.audit_sink = self.audit_decision
         self.explorer = MarketExplorer(
             self.scanner.polymarket,
             debug_signal_mode=self.settings.debug_signal_mode,
@@ -135,6 +143,8 @@ class GhostBotRuntime:
             self.db,
             live_mode=False,
             trade_insert_callback=self.on_trade_inserted,
+            sample_kind=self.sample_kind,
+            debug_profile=self.debug_profile,
         )
         self.whale_tracker = WhaleTracker(
             self.scanner.polymarket,
@@ -157,18 +167,28 @@ class GhostBotRuntime:
         )
         self.copy_trader = CopyTrader(self.trader, self.scanner, self.db, self.decision_engine)
 
-        self.polymarket_venue = PolymarketVenue(self.settings.venue_configs["polymarket"], self.db, self.trader)
+        self.polymarket_venue = PolymarketVenue(
+            self.settings.venue_configs["polymarket"],
+            self.db,
+            self.trader,
+            sample_kind=self.sample_kind,
+            debug_profile=self.debug_profile,
+        )
         self.binance_futures_venue = BinanceFuturesPaperVenue(
             self.settings.venue_configs["binance_futures"],
             self.db,
             self.scanner,
             trade_insert_callback=self.on_trade_inserted,
+            sample_kind=self.sample_kind,
+            debug_profile=self.debug_profile,
         )
         self.binance_spot_venue = BinanceSpotVenue(
             self.settings.venue_configs["binance_spot"],
             self.db,
             self.scanner,
             trade_insert_callback=self.on_trade_inserted,
+            sample_kind=self.sample_kind,
+            debug_profile=self.debug_profile,
         )
 
     async def close(self) -> None:
@@ -192,6 +212,29 @@ class GhostBotRuntime:
         self.verify_completed_venues.add(venue)
         if not self.verify_required_venues or self.verify_completed_venues.issuperset(self.verify_required_venues):
             self.trade_inserted_event.set()
+
+    async def audit_decision(self, decision) -> None:
+        if self.db is None:
+            return
+        await self.db.add_decision_audit(
+            venue=decision.venue,
+            market_id=decision.market_id,
+            category=decision.category,
+            signal_family=normalize_signal_family(decision.source),
+            raw_source_signal=decision.source,
+            sample_kind=self.sample_kind,
+            is_synthetic=self.sample_kind != "live_paper",
+            decision_score=decision.score,
+            threshold=decision.threshold,
+            trade_size=decision.trade_size,
+            action="decision" if decision.should_trade else "reject",
+            reason=",".join(decision.reasons) if decision.reasons else None,
+            confidence=decision.score,
+            whale_trust=float(decision.inputs.get("whale_trust", 0.5)) if decision.inputs.get("whale_trust") is not None else None,
+            spread_pct=float(decision.inputs.get("spread_pct")) if decision.inputs.get("spread_pct") is not None else None,
+            slippage_proxy_bps=slippage_proxy_bps_from_spread(decision.inputs.get("spread_pct")),
+            inputs_json=json.dumps(decision.inputs, sort_keys=True, default=str),
+        )
 
     async def bootstrap_market_context(self) -> None:
         if self.explorer is None or self.scanner is None or self.copy_trader is None:
@@ -541,6 +584,9 @@ class GhostBotRuntime:
                 source="blended_crypto",
                 category="CRYPTO",
                 source_signal="blended_crypto",
+                entry_spread_pct=polymarket_snapshot["spread_pct"],
+                slippage_proxy_bps=slippage_proxy_bps_from_spread(polymarket_snapshot["spread_pct"]),
+                whale_trust_at_entry=0.5,
             )
 
         if not self.settings.venue_configs["binance_futures"].enabled or self.binance_futures_venue is None:
@@ -592,6 +638,7 @@ class GhostBotRuntime:
                 source_signal="binance_futures_price_structure",
                 spread_pct=float(futures_snapshot["spread_pct"]),
                 market_context=market,
+                whale_trust_at_entry=0.5,
             )
 
         if not self.settings.venue_configs["binance_spot"].enabled or self.binance_spot_venue is None:
@@ -645,6 +692,7 @@ class GhostBotRuntime:
                 source_signal="binance_spot_price_structure",
                 spread_pct=float(spot_snapshot["spread_pct"]),
                 market_context=market,
+                whale_trust_at_entry=0.5,
             )
             return
 

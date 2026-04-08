@@ -2,6 +2,7 @@ import logging
 from typing import Dict, Optional
 
 from src.decision_engine import DecisionEngine, DecisionInputs, classify_market_category
+from src.evaluation_utils import normalize_signal_family
 
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,9 @@ class CopyTrader:
             venue="polymarket",
             instrument_type="prediction",
             source_signal=source,
+            signal_family=normalize_signal_family(source),
+            entry_spread_pct=snapshot["spread_pct"],
+            whale_trust_at_entry=whale_trust,
             execution_mode="paper",
         )
         if success:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -82,6 +84,9 @@ DISCOVERY_TRADE_CATEGORIES = {"CRYPTO"}
 
 
 class DecisionEngine:
+    def __init__(self, audit_sink: Optional[Callable[[DecisionResult], Any]] = None):
+        self.audit_sink = audit_sink
+
     def get_profile(self, category: str) -> CategoryRiskProfile:
         return RISK_PROFILES.get(category or "OTHER", RISK_PROFILES["OTHER"])
 
@@ -241,6 +246,7 @@ class DecisionEngine:
                 decision.trade_size,
                 decision.inputs,
             )
+            self._emit_audit(decision)
             return
 
         active_logger.info(
@@ -254,6 +260,7 @@ class DecisionEngine:
             decision.threshold,
             decision.inputs,
         )
+        self._emit_audit(decision)
 
     def _inputs_for_log(self, inputs: DecisionInputs, **extras: Any) -> Dict[str, Any]:
         payload = {
@@ -300,3 +307,17 @@ class DecisionEngine:
                 seen.add(value)
                 ordered.append(value)
         return ordered
+
+    def _emit_audit(self, decision: DecisionResult) -> None:
+        if self.audit_sink is None:
+            return
+        try:
+            result = self.audit_sink(decision)
+            if inspect.isawaitable(result):
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    return
+                loop.create_task(result)
+        except Exception:
+            logger.exception("Decision audit sink failed")

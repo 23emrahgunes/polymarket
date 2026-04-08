@@ -6,6 +6,13 @@ from typing import Iterable, List, Optional
 
 import aiosqlite
 
+from src.evaluation_utils import (
+    infer_debug_profile_from_db_path,
+    infer_sample_kind_from_db_path,
+    is_synthetic_sample,
+    normalize_signal_family,
+)
+
 
 class Database:
     def __init__(self, db_path: str | None = None):
@@ -20,6 +27,7 @@ class Database:
         self.conn.row_factory = aiosqlite.Row
         await self._create_tables()
         await self._migrate_tables()
+        await self._backfill_evaluation_defaults()
         await self.ensure_venue_account("polymarket", "paper")
         await self.ensure_venue_account("binance_futures", "paper")
         await self.ensure_venue_account("binance_spot", "paper")
@@ -50,8 +58,19 @@ class Database:
                 instrument_type TEXT DEFAULT 'prediction',
                 position_id INTEGER,
                 source_signal TEXT DEFAULT 'runtime',
+                category TEXT,
+                signal_family TEXT DEFAULT 'unknown',
+                sample_kind TEXT DEFAULT 'live_paper',
+                is_synthetic INTEGER DEFAULT 0,
+                debug_profile TEXT,
+                entry_spread_pct REAL,
+                slippage_proxy_bps REAL,
+                whale_trust_at_entry REAL,
                 execution_mode TEXT DEFAULT 'paper',
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                opened_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                closed_at DATETIME,
+                hold_seconds REAL
             )
             """
         )
@@ -98,6 +117,14 @@ class Database:
                 leverage INTEGER DEFAULT 1,
                 status TEXT NOT NULL DEFAULT 'OPEN',
                 source_signal TEXT,
+                category TEXT,
+                signal_family TEXT DEFAULT 'unknown',
+                sample_kind TEXT DEFAULT 'live_paper',
+                is_synthetic INTEGER DEFAULT 0,
+                debug_profile TEXT,
+                entry_spread_pct REAL,
+                slippage_proxy_bps REAL,
+                whale_trust_at_entry REAL,
                 linked_market_id TEXT,
                 opened_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 closed_at DATETIME
@@ -144,6 +171,31 @@ class Database:
             )
             """
         )
+        await self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS decision_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                occurred_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                venue TEXT,
+                market_id TEXT NOT NULL,
+                category TEXT,
+                signal_family TEXT DEFAULT 'unknown',
+                raw_source_signal TEXT,
+                sample_kind TEXT DEFAULT 'live_paper',
+                is_synthetic INTEGER DEFAULT 0,
+                decision_score REAL,
+                threshold REAL,
+                trade_size REAL,
+                action TEXT NOT NULL,
+                reason TEXT,
+                confidence REAL,
+                whale_trust REAL,
+                spread_pct REAL,
+                slippage_proxy_bps REAL,
+                inputs_json TEXT
+            )
+            """
+        )
 
         async with self.conn.execute("SELECT COUNT(*) AS count FROM wallet") as cursor:
             row = await cursor.fetchone()
@@ -160,8 +212,27 @@ class Database:
             "ALTER TABLE trades ADD COLUMN instrument_type TEXT DEFAULT 'prediction'",
             "ALTER TABLE trades ADD COLUMN position_id INTEGER",
             "ALTER TABLE trades ADD COLUMN source_signal TEXT DEFAULT 'runtime'",
+            "ALTER TABLE trades ADD COLUMN category TEXT",
+            "ALTER TABLE trades ADD COLUMN signal_family TEXT DEFAULT 'unknown'",
+            "ALTER TABLE trades ADD COLUMN sample_kind TEXT DEFAULT 'live_paper'",
+            "ALTER TABLE trades ADD COLUMN is_synthetic INTEGER DEFAULT 0",
+            "ALTER TABLE trades ADD COLUMN debug_profile TEXT",
+            "ALTER TABLE trades ADD COLUMN entry_spread_pct REAL",
+            "ALTER TABLE trades ADD COLUMN slippage_proxy_bps REAL",
+            "ALTER TABLE trades ADD COLUMN whale_trust_at_entry REAL",
             "ALTER TABLE trades ADD COLUMN execution_mode TEXT DEFAULT 'paper'",
+            "ALTER TABLE trades ADD COLUMN opened_at DATETIME",
+            "ALTER TABLE trades ADD COLUMN closed_at DATETIME",
+            "ALTER TABLE trades ADD COLUMN hold_seconds REAL",
             "ALTER TABLE venue_positions ADD COLUMN source_signal TEXT",
+            "ALTER TABLE venue_positions ADD COLUMN category TEXT",
+            "ALTER TABLE venue_positions ADD COLUMN signal_family TEXT DEFAULT 'unknown'",
+            "ALTER TABLE venue_positions ADD COLUMN sample_kind TEXT DEFAULT 'live_paper'",
+            "ALTER TABLE venue_positions ADD COLUMN is_synthetic INTEGER DEFAULT 0",
+            "ALTER TABLE venue_positions ADD COLUMN debug_profile TEXT",
+            "ALTER TABLE venue_positions ADD COLUMN entry_spread_pct REAL",
+            "ALTER TABLE venue_positions ADD COLUMN slippage_proxy_bps REAL",
+            "ALTER TABLE venue_positions ADD COLUMN whale_trust_at_entry REAL",
             "ALTER TABLE venue_positions ADD COLUMN linked_market_id TEXT",
             "ALTER TABLE venue_positions ADD COLUMN mark_price REAL",
             "ALTER TABLE whale_wallets ADD COLUMN last_event_at DATETIME",
@@ -177,6 +248,77 @@ class Database:
                 await self.conn.execute(statement)
             except Exception:
                 pass
+        await self.conn.commit()
+
+    async def _backfill_evaluation_defaults(self) -> None:
+        sample_kind = infer_sample_kind_from_db_path(self.db_path)
+        debug_profile = infer_debug_profile_from_db_path(self.db_path)
+        signal_family_updates = {
+            "discovery": ("discovery", "blended_crypto", "binance_futures_price_structure", "binance_spot_price_structure"),
+            "whale": ("whale_tracker",),
+            "activity_orderflow": ("activity", "cluster_detected"),
+        }
+
+        await self.conn.execute("UPDATE trades SET opened_at = COALESCE(opened_at, timestamp)")
+        await self.conn.execute("UPDATE venue_positions SET opened_at = COALESCE(opened_at, CURRENT_TIMESTAMP)")
+        await self.conn.execute(
+            "UPDATE trades SET sample_kind = COALESCE(NULLIF(sample_kind, ''), ?) WHERE sample_kind IS NULL OR sample_kind = ''",
+            (sample_kind,),
+        )
+        await self.conn.execute(
+            "UPDATE trades SET debug_profile = COALESCE(debug_profile, ?) WHERE debug_profile IS NULL",
+            (debug_profile,),
+        )
+        await self.conn.execute(
+            "UPDATE trades SET is_synthetic = CASE WHEN sample_kind = 'live_paper' THEN 0 ELSE 1 END"
+        )
+        await self.conn.execute(
+            "UPDATE venue_positions SET sample_kind = COALESCE(NULLIF(sample_kind, ''), ?) WHERE sample_kind IS NULL OR sample_kind = ''",
+            (sample_kind,),
+        )
+        await self.conn.execute(
+            "UPDATE venue_positions SET debug_profile = COALESCE(debug_profile, ?) WHERE debug_profile IS NULL",
+            (debug_profile,),
+        )
+        await self.conn.execute(
+            "UPDATE venue_positions SET is_synthetic = CASE WHEN sample_kind = 'live_paper' THEN 0 ELSE 1 END"
+        )
+        await self.conn.execute(
+            """
+            UPDATE trades
+            SET category = 'CRYPTO'
+            WHERE (category IS NULL OR category = '')
+              AND instrument_type IN ('futures', 'spot')
+            """
+        )
+        await self.conn.execute(
+            """
+            UPDATE venue_positions
+            SET category = 'CRYPTO'
+            WHERE (category IS NULL OR category = '')
+              AND instrument_type IN ('futures', 'spot')
+            """
+        )
+
+        for normalized, source_signals in signal_family_updates.items():
+            placeholders = ", ".join("?" for _ in source_signals)
+            await self.conn.execute(
+                f"""
+                UPDATE trades
+                SET signal_family = ?
+                WHERE source_signal IN ({placeholders}) AND (signal_family IS NULL OR signal_family = '' OR signal_family = 'unknown')
+                """,
+                (normalized, *source_signals),
+            )
+            await self.conn.execute(
+                f"""
+                UPDATE venue_positions
+                SET signal_family = ?
+                WHERE source_signal IN ({placeholders}) AND (signal_family IS NULL OR signal_family = '' OR signal_family = 'unknown')
+                """,
+                (normalized, *source_signals),
+            )
+
         await self.conn.commit()
 
     async def ensure_venue_account(self, venue: str, execution_mode: str = "paper", initial_balance: float | None = None):
@@ -245,14 +387,31 @@ class Database:
         position_id: int | None = None,
         source_signal: str = "runtime",
         execution_mode: str = "paper",
+        category: str | None = None,
+        signal_family: str | None = None,
+        sample_kind: str | None = None,
+        is_synthetic: bool | None = None,
+        debug_profile: str | None = None,
+        entry_spread_pct: float | None = None,
+        slippage_proxy_bps: float | None = None,
+        whale_trust_at_entry: float | None = None,
+        opened_at: str | None = None,
+        closed_at: str | None = None,
+        hold_seconds: float | None = None,
     ) -> int:
+        normalized_signal_family = signal_family or normalize_signal_family(source_signal)
+        normalized_sample_kind = sample_kind or infer_sample_kind_from_db_path(self.db_path)
+        normalized_is_synthetic = int(is_synthetic_sample(normalized_sample_kind) if is_synthetic is None else bool(is_synthetic))
+        normalized_opened_at = opened_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         cursor = await self.conn.execute(
             """
             INSERT INTO trades (
                 market_id, side, size, price, edge, confidence, status, whale_address,
-                venue, instrument_type, position_id, source_signal, execution_mode
+                venue, instrument_type, position_id, source_signal, category, signal_family,
+                sample_kind, is_synthetic, debug_profile, entry_spread_pct, slippage_proxy_bps,
+                whale_trust_at_entry, execution_mode, opened_at, closed_at, hold_seconds
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 market_id,
@@ -267,7 +426,18 @@ class Database:
                 instrument_type,
                 position_id,
                 source_signal,
+                category,
+                normalized_signal_family,
+                normalized_sample_kind,
+                normalized_is_synthetic,
+                debug_profile,
+                entry_spread_pct,
+                slippage_proxy_bps,
+                whale_trust_at_entry,
                 execution_mode,
+                normalized_opened_at,
+                closed_at,
+                hold_seconds,
             ),
         )
         await self.conn.commit()
@@ -313,7 +483,13 @@ class Database:
             return await cursor.fetchone() is not None
 
     async def update_trade_resolution(self, trade_id, status, pnl):
-        await self.conn.execute("UPDATE trades SET status = ?, pnl = ? WHERE id = ?", (status, pnl, trade_id))
+        trade = await self.get_trade(trade_id)
+        closed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        hold_seconds = self._calculate_hold_seconds(trade["opened_at"] if trade else None, closed_at)
+        await self.conn.execute(
+            "UPDATE trades SET status = ?, pnl = ?, closed_at = ?, hold_seconds = ? WHERE id = ?",
+            (status, pnl, closed_at, hold_seconds, trade_id),
+        )
         await self.conn.commit()
 
     async def update_whale_stats(self, address, pnl):
@@ -615,8 +791,74 @@ class Database:
             return float(row["total"])
 
     async def update_trade_status(self, trade_id, status):
-        await self.conn.execute("UPDATE trades SET status = ? WHERE id = ?", (status, trade_id))
+        trade = await self.get_trade(trade_id)
+        closed_at = None
+        hold_seconds = None
+        if status != "OPEN":
+            closed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            hold_seconds = self._calculate_hold_seconds(trade["opened_at"] if trade else None, closed_at)
+        await self.conn.execute(
+            "UPDATE trades SET status = ?, closed_at = COALESCE(?, closed_at), hold_seconds = COALESCE(?, hold_seconds) WHERE id = ?",
+            (status, closed_at, hold_seconds, trade_id),
+        )
         await self.conn.commit()
+
+    async def add_decision_audit(
+        self,
+        market_id: str,
+        action: str,
+        venue: str | None = None,
+        category: str | None = None,
+        signal_family: str | None = None,
+        raw_source_signal: str | None = None,
+        sample_kind: str | None = None,
+        is_synthetic: bool | None = None,
+        decision_score: float | None = None,
+        threshold: float | None = None,
+        trade_size: float | None = None,
+        reason: str | None = None,
+        confidence: float | None = None,
+        whale_trust: float | None = None,
+        spread_pct: float | None = None,
+        slippage_proxy_bps: float | None = None,
+        inputs_json: str | None = None,
+        occurred_at: str | None = None,
+    ) -> int:
+        normalized_signal_family = signal_family or normalize_signal_family(raw_source_signal)
+        normalized_sample_kind = sample_kind or infer_sample_kind_from_db_path(self.db_path)
+        normalized_is_synthetic = int(is_synthetic_sample(normalized_sample_kind) if is_synthetic is None else bool(is_synthetic))
+        cursor = await self.conn.execute(
+            """
+            INSERT INTO decision_audit (
+                occurred_at, venue, market_id, category, signal_family, raw_source_signal, sample_kind,
+                is_synthetic, decision_score, threshold, trade_size, action, reason, confidence,
+                whale_trust, spread_pct, slippage_proxy_bps, inputs_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                occurred_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                venue,
+                market_id,
+                category,
+                normalized_signal_family,
+                raw_source_signal,
+                normalized_sample_kind,
+                normalized_is_synthetic,
+                decision_score,
+                threshold,
+                trade_size,
+                action,
+                reason,
+                confidence,
+                whale_trust,
+                spread_pct,
+                slippage_proxy_bps,
+                inputs_json,
+            ),
+        )
+        await self.conn.commit()
+        return int(cursor.lastrowid)
 
     async def create_venue_position(
         self,
@@ -630,16 +872,29 @@ class Database:
         notional_usd: float,
         leverage: int = 1,
         source_signal: str | None = None,
+        category: str | None = None,
+        signal_family: str | None = None,
+        sample_kind: str | None = None,
+        is_synthetic: bool | None = None,
+        debug_profile: str | None = None,
+        entry_spread_pct: float | None = None,
+        slippage_proxy_bps: float | None = None,
+        whale_trust_at_entry: float | None = None,
         linked_market_id: str | None = None,
         status: str = "OPEN",
     ) -> int:
+        normalized_signal_family = signal_family or normalize_signal_family(source_signal)
+        normalized_sample_kind = sample_kind or infer_sample_kind_from_db_path(self.db_path)
+        normalized_is_synthetic = int(is_synthetic_sample(normalized_sample_kind) if is_synthetic is None else bool(is_synthetic))
         cursor = await self.conn.execute(
             """
             INSERT INTO venue_positions (
                 venue, execution_mode, instrument_type, symbol_or_market_id, side, qty_or_shares,
-                entry_price, mark_price, notional_usd, leverage, status, source_signal, linked_market_id
+                entry_price, mark_price, notional_usd, leverage, status, source_signal, category,
+                signal_family, sample_kind, is_synthetic, debug_profile, entry_spread_pct,
+                slippage_proxy_bps, whale_trust_at_entry, linked_market_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 venue,
@@ -654,6 +909,14 @@ class Database:
                 leverage,
                 status,
                 source_signal,
+                category,
+                normalized_signal_family,
+                normalized_sample_kind,
+                normalized_is_synthetic,
+                debug_profile,
+                entry_spread_pct,
+                slippage_proxy_bps,
+                whale_trust_at_entry,
                 linked_market_id,
             ),
         )
@@ -715,6 +978,8 @@ class Database:
         await self.conn.commit()
 
     async def close_venue_position(self, position_id: int, exit_price: float, realized_pnl: float, status: str):
+        closed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        position = await self.get_position(position_id)
         await self.conn.execute(
             """
             UPDATE venue_positions
@@ -723,6 +988,48 @@ class Database:
             """,
             (exit_price, realized_pnl, status, position_id),
         )
+
+        async with self.conn.execute(
+            "SELECT id, opened_at FROM trades WHERE position_id = ? AND status = 'OPEN'",
+            (position_id,),
+        ) as cursor:
+            linked_trades = await cursor.fetchall()
+
+        trade_status = "CLOSED_FLAT"
+        if realized_pnl > 0:
+            trade_status = "CLOSED_WIN"
+        elif realized_pnl < 0:
+            trade_status = "CLOSED_LOSS"
+
+        for trade in linked_trades:
+            hold_seconds = self._calculate_hold_seconds(trade["opened_at"], closed_at)
+            await self.conn.execute(
+                """
+                UPDATE trades
+                SET status = ?, pnl = ?, closed_at = ?, hold_seconds = ?
+                WHERE id = ?
+                """,
+                (trade_status, realized_pnl, closed_at, hold_seconds, trade["id"]),
+            )
+
+        if position is not None:
+            open_rows = await self.get_open_positions(venue=position["venue"])
+            account = await self.get_venue_account(position["venue"], position["execution_mode"])
+            cash_balance = float(account["cash_balance"]) if account else 0.0
+            total_unrealized = sum(float(row["unrealized_pnl"]) for row in open_rows)
+            await self.conn.execute(
+                """
+                UPDATE venue_accounts
+                SET equity = ?, available_balance = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE venue = ? AND execution_mode = ?
+                """,
+                (
+                    cash_balance + total_unrealized,
+                    cash_balance,
+                    position["venue"],
+                    position["execution_mode"],
+                ),
+            )
         await self.conn.commit()
 
     async def add_venue_order(
@@ -800,3 +1107,14 @@ class Database:
     async def close(self):
         if self.conn is not None:
             await self.conn.close()
+
+    @staticmethod
+    def _calculate_hold_seconds(opened_at: str | None, closed_at: str | None) -> float | None:
+        if not opened_at or not closed_at:
+            return None
+        try:
+            opened_dt = datetime.strptime(str(opened_at), "%Y-%m-%d %H:%M:%S")
+            closed_dt = datetime.strptime(str(closed_at), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+        return max((closed_dt - opened_dt).total_seconds(), 0.0)

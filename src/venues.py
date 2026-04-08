@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.evaluation_utils import infer_sample_kind, normalize_signal_family, slippage_proxy_bps_from_spread
 from src.venue_config import VenueConfig
 
 
@@ -21,11 +22,13 @@ class ProtectionOrders:
 
 
 class ExecutionVenue(ABC):
-    def __init__(self, venue_id: str, config: VenueConfig, db):
+    def __init__(self, venue_id: str, config: VenueConfig, db, sample_kind: str | None = None, debug_profile: str | None = None):
         self.venue_id = venue_id
         self.config = config
         self.db = db
         self.lock = asyncio.Lock()
+        self.sample_kind = sample_kind or infer_sample_kind(False)
+        self.debug_profile = debug_profile
 
     @abstractmethod
     async def sync_account_state(self, scanner=None) -> None:
@@ -67,8 +70,8 @@ class VenueRiskManager(ABC):
 
 
 class PolymarketVenue(ExecutionVenue):
-    def __init__(self, config: VenueConfig, db, trader):
-        super().__init__("polymarket", config, db)
+    def __init__(self, config: VenueConfig, db, trader, sample_kind: str | None = None, debug_profile: str | None = None):
+        super().__init__("polymarket", config, db, sample_kind=sample_kind, debug_profile=debug_profile)
         self.trader = trader
 
     async def sync_account_state(self, scanner=None) -> None:
@@ -91,6 +94,9 @@ class PolymarketVenue(ExecutionVenue):
         source: str,
         category: str,
         source_signal: str,
+        entry_spread_pct: float | None = None,
+        slippage_proxy_bps: float | None = None,
+        whale_trust_at_entry: float | None = None,
     ) -> Tuple[bool, str]:
         existing = await self.get_open_positions(market_id)
         if existing:
@@ -115,6 +121,12 @@ class PolymarketVenue(ExecutionVenue):
             venue="polymarket",
             instrument_type="prediction",
             source_signal=source_signal,
+            signal_family=normalize_signal_family(source_signal),
+            sample_kind=self.sample_kind,
+            debug_profile=self.debug_profile,
+            entry_spread_pct=entry_spread_pct,
+            slippage_proxy_bps=slippage_proxy_bps if slippage_proxy_bps is not None else slippage_proxy_bps_from_spread(entry_spread_pct),
+            whale_trust_at_entry=whale_trust_at_entry,
             execution_mode=self.config.mode,
         )
 
@@ -224,8 +236,8 @@ class BinanceFuturesRiskManager(VenueRiskManager):
 
 
 class BinanceFuturesPaperVenue(ExecutionVenue):
-    def __init__(self, config: VenueConfig, db, scanner, trade_insert_callback=None):
-        super().__init__("binance_futures", config, db)
+    def __init__(self, config: VenueConfig, db, scanner, trade_insert_callback=None, sample_kind: str | None = None, debug_profile: str | None = None):
+        super().__init__("binance_futures", config, db, sample_kind=sample_kind, debug_profile=debug_profile)
         self.scanner = scanner
         self.risk_manager = BinanceFuturesRiskManager(config, db)
         self.trade_insert_callback = trade_insert_callback
@@ -296,8 +308,11 @@ class BinanceFuturesPaperVenue(ExecutionVenue):
         source_signal: str,
         spread_pct: float,
         market_context: Dict[str, Any],
+        whale_trust_at_entry: float | None = None,
     ) -> Tuple[bool, str]:
         async with self.lock:
+            signal_family = normalize_signal_family(source_signal)
+            slippage_proxy_bps = slippage_proxy_bps_from_spread(spread_pct)
             reasons = await self.risk_manager.validate_entry(
                 symbol=symbol,
                 side=side,
@@ -307,6 +322,24 @@ class BinanceFuturesPaperVenue(ExecutionVenue):
                 signal_score=signal_score,
             )
             if reasons:
+                await self.db.add_decision_audit(
+                    venue="binance_futures",
+                    market_id=symbol,
+                    category="CRYPTO",
+                    signal_family=signal_family,
+                    raw_source_signal=source_signal,
+                    sample_kind=self.sample_kind,
+                    decision_score=signal_score,
+                    threshold=self.config.signal_threshold,
+                    trade_size=trade_size,
+                    action="reject",
+                    reason=",".join(reasons),
+                    confidence=signal_score,
+                    whale_trust=whale_trust_at_entry,
+                    spread_pct=spread_pct,
+                    slippage_proxy_bps=slippage_proxy_bps,
+                    inputs_json=str({"side": side, "trade_size": trade_size, "entry_price": entry_price}),
+                )
                 logger.info(
                     "[REJECT] venue=binance_futures source=%s category=CRYPTO market=%s reasons=%s inputs=%s",
                     source,
@@ -318,6 +351,24 @@ class BinanceFuturesPaperVenue(ExecutionVenue):
 
             existing = await self.get_open_position(symbol)
             if existing is not None:
+                await self.db.add_decision_audit(
+                    venue="binance_futures",
+                    market_id=symbol,
+                    category="CRYPTO",
+                    signal_family=signal_family,
+                    raw_source_signal=source_signal,
+                    sample_kind=self.sample_kind,
+                    decision_score=signal_score,
+                    threshold=self.config.signal_threshold,
+                    trade_size=trade_size,
+                    action="reject",
+                    reason="duplicate_open_trade",
+                    confidence=signal_score,
+                    whale_trust=whale_trust_at_entry,
+                    spread_pct=spread_pct,
+                    slippage_proxy_bps=slippage_proxy_bps,
+                    inputs_json=str({"side": side, "existing_side": existing["side"]}),
+                )
                 logger.info(
                     "[REJECT] venue=binance_futures source=%s category=CRYPTO market=%s reasons=duplicate_open_trade inputs=%s",
                     source,
@@ -330,6 +381,24 @@ class BinanceFuturesPaperVenue(ExecutionVenue):
                 protection = await self.risk_manager.build_protection_orders(side=side, entry_price=entry_price)
             except ValueError as exc:
                 reason = str(exc)
+                await self.db.add_decision_audit(
+                    venue="binance_futures",
+                    market_id=symbol,
+                    category="CRYPTO",
+                    signal_family=signal_family,
+                    raw_source_signal=source_signal,
+                    sample_kind=self.sample_kind,
+                    decision_score=signal_score,
+                    threshold=self.config.signal_threshold,
+                    trade_size=trade_size,
+                    action="reject",
+                    reason=reason,
+                    confidence=signal_score,
+                    whale_trust=whale_trust_at_entry,
+                    spread_pct=spread_pct,
+                    slippage_proxy_bps=slippage_proxy_bps,
+                    inputs_json=str({"side": side, "entry_price": entry_price}),
+                )
                 logger.info(
                     "[REJECT] venue=binance_futures source=%s category=CRYPTO market=%s reasons=%s inputs=%s",
                     source,
@@ -356,6 +425,13 @@ class BinanceFuturesPaperVenue(ExecutionVenue):
                 notional_usd=trade_size,
                 leverage=self.config.leverage,
                 source_signal=source_signal,
+                category="CRYPTO",
+                signal_family=signal_family,
+                sample_kind=self.sample_kind,
+                debug_profile=self.debug_profile,
+                entry_spread_pct=spread_pct,
+                slippage_proxy_bps=slippage_proxy_bps,
+                whale_trust_at_entry=whale_trust_at_entry,
                 linked_market_id=market_context.get("market_id"),
             )
             await self.db.add_venue_order(
@@ -397,7 +473,31 @@ class BinanceFuturesPaperVenue(ExecutionVenue):
                 instrument_type="futures",
                 position_id=position_id,
                 source_signal=source_signal,
+                category="CRYPTO",
+                signal_family=signal_family,
+                sample_kind=self.sample_kind,
+                debug_profile=self.debug_profile,
+                entry_spread_pct=spread_pct,
+                slippage_proxy_bps=slippage_proxy_bps,
+                whale_trust_at_entry=whale_trust_at_entry,
                 execution_mode=self.config.mode,
+            )
+            await self.db.add_decision_audit(
+                venue="binance_futures",
+                market_id=symbol,
+                category="CRYPTO",
+                signal_family=signal_family,
+                raw_source_signal=source_signal,
+                sample_kind=self.sample_kind,
+                decision_score=signal_score,
+                threshold=self.config.signal_threshold,
+                trade_size=trade_size,
+                action="execute",
+                confidence=signal_score,
+                whale_trust=whale_trust_at_entry,
+                spread_pct=spread_pct,
+                slippage_proxy_bps=slippage_proxy_bps,
+                inputs_json=str({"trade_id": trade_id, "position_id": position_id, "side": side, "entry_price": entry_price}),
             )
             logger.info(
                 "[PAPER-TRADE-RUNTIME] venue=binance_futures inserted trade id=%s market=%s side=%s balance_before=%.2f balance_after=%.2f source=%s protection=%s",
@@ -440,6 +540,17 @@ class BinanceFuturesPaperVenue(ExecutionVenue):
             position = await self.get_open_position(symbol_or_market_id)
             exit_reasons = await self.risk_manager.validate_exit(position)
             if exit_reasons:
+                await self.db.add_decision_audit(
+                    venue="binance_futures",
+                    market_id=symbol_or_market_id,
+                    category="CRYPTO",
+                    signal_family=normalize_signal_family(source),
+                    raw_source_signal=source,
+                    sample_kind=self.sample_kind,
+                    action="reject",
+                    reason=",".join(exit_reasons),
+                    inputs_json=str({"reason": reason}),
+                )
                 logger.info(
                     "[REJECT] venue=binance_futures source=%s category=CRYPTO market=%s reasons=%s inputs=%s",
                     source,
@@ -467,6 +578,7 @@ class BinanceFuturesPaperVenue(ExecutionVenue):
         notional_usd: float,
         triggered_order_id: Optional[int],
     ) -> None:
+        position = dict(position)
         entry_price = float(position["entry_price"])
         quantity = float(position["qty_or_shares"])
         margin = notional_usd / max(leverage, 1)
@@ -482,6 +594,23 @@ class BinanceFuturesPaperVenue(ExecutionVenue):
         await self.cancel_protection_orders(position["symbol_or_market_id"])
         if triggered_order_id is not None:
             await self.db.update_venue_order_status(triggered_order_id, "FILLED")
+        await self.db.add_decision_audit(
+            venue="binance_futures",
+            market_id=position["symbol_or_market_id"],
+            category=position.get("category") or "CRYPTO",
+            signal_family=position.get("signal_family") or normalize_signal_family(position.get("source_signal")),
+            raw_source_signal=position.get("source_signal"),
+            sample_kind=position.get("sample_kind") or self.sample_kind,
+            decision_score=None,
+            trade_size=notional_usd,
+            action="exit",
+            reason=reason,
+            confidence=None,
+            whale_trust=position.get("whale_trust_at_entry"),
+            spread_pct=position.get("entry_spread_pct"),
+            slippage_proxy_bps=position.get("slippage_proxy_bps"),
+            inputs_json=str({"position_id": position["id"], "exit_price": exit_price, "realized_pnl": realized_pnl}),
+        )
         logger.info(
             "[POSITION-CLOSED] venue=binance_futures market=%s side=%s reason=%s exit_price=%.4f pnl=%.2f balance_before=%.2f balance_after=%.2f",
             position["symbol_or_market_id"],
@@ -507,8 +636,8 @@ class BinanceFuturesPaperVenue(ExecutionVenue):
 
 
 class BinanceSpotVenue(ExecutionVenue):
-    def __init__(self, config: VenueConfig, db, scanner, trade_insert_callback=None):
-        super().__init__("binance_spot", config, db)
+    def __init__(self, config: VenueConfig, db, scanner, trade_insert_callback=None, sample_kind: str | None = None, debug_profile: str | None = None):
+        super().__init__("binance_spot", config, db, sample_kind=sample_kind, debug_profile=debug_profile)
         self.scanner = scanner
         self.risk_manager = BinanceSpotRiskManager(config, db)
         self.trade_insert_callback = trade_insert_callback
@@ -573,8 +702,11 @@ class BinanceSpotVenue(ExecutionVenue):
         source_signal: str,
         spread_pct: float,
         market_context: Dict[str, Any],
+        whale_trust_at_entry: float | None = None,
     ) -> Tuple[bool, str]:
         async with self.lock:
+            signal_family = normalize_signal_family(source_signal)
+            slippage_proxy_bps = slippage_proxy_bps_from_spread(spread_pct)
             reasons = await self.risk_manager.validate_entry(
                 symbol=symbol,
                 side=side,
@@ -584,6 +716,24 @@ class BinanceSpotVenue(ExecutionVenue):
                 signal_score=signal_score,
             )
             if reasons:
+                await self.db.add_decision_audit(
+                    venue="binance_spot",
+                    market_id=symbol,
+                    category="CRYPTO",
+                    signal_family=signal_family,
+                    raw_source_signal=source_signal,
+                    sample_kind=self.sample_kind,
+                    decision_score=signal_score,
+                    threshold=self.config.signal_threshold,
+                    trade_size=trade_size,
+                    action="reject",
+                    reason=",".join(reasons),
+                    confidence=signal_score,
+                    whale_trust=whale_trust_at_entry,
+                    spread_pct=spread_pct,
+                    slippage_proxy_bps=slippage_proxy_bps,
+                    inputs_json=str({"side": side, "trade_size": trade_size, "entry_price": entry_price}),
+                )
                 logger.info(
                     "[REJECT] venue=binance_spot source=%s category=CRYPTO market=%s reasons=%s inputs=%s",
                     source,
@@ -595,6 +745,24 @@ class BinanceSpotVenue(ExecutionVenue):
 
             existing = await self.get_open_position(symbol)
             if existing is not None:
+                await self.db.add_decision_audit(
+                    venue="binance_spot",
+                    market_id=symbol,
+                    category="CRYPTO",
+                    signal_family=signal_family,
+                    raw_source_signal=source_signal,
+                    sample_kind=self.sample_kind,
+                    decision_score=signal_score,
+                    threshold=self.config.signal_threshold,
+                    trade_size=trade_size,
+                    action="reject",
+                    reason="duplicate_open_trade",
+                    confidence=signal_score,
+                    whale_trust=whale_trust_at_entry,
+                    spread_pct=spread_pct,
+                    slippage_proxy_bps=slippage_proxy_bps,
+                    inputs_json=str({"side": side, "existing_side": existing["side"]}),
+                )
                 logger.info(
                     "[REJECT] venue=binance_spot source=%s category=CRYPTO market=%s reasons=duplicate_open_trade inputs=%s",
                     source,
@@ -607,6 +775,24 @@ class BinanceSpotVenue(ExecutionVenue):
                 protection = await self.risk_manager.build_protection_orders(side=side, entry_price=entry_price)
             except ValueError as exc:
                 reason = str(exc)
+                await self.db.add_decision_audit(
+                    venue="binance_spot",
+                    market_id=symbol,
+                    category="CRYPTO",
+                    signal_family=signal_family,
+                    raw_source_signal=source_signal,
+                    sample_kind=self.sample_kind,
+                    decision_score=signal_score,
+                    threshold=self.config.signal_threshold,
+                    trade_size=trade_size,
+                    action="reject",
+                    reason=reason,
+                    confidence=signal_score,
+                    whale_trust=whale_trust_at_entry,
+                    spread_pct=spread_pct,
+                    slippage_proxy_bps=slippage_proxy_bps,
+                    inputs_json=str({"side": side, "entry_price": entry_price}),
+                )
                 logger.info(
                     "[REJECT] venue=binance_spot source=%s category=CRYPTO market=%s reasons=%s inputs=%s",
                     source,
@@ -632,6 +818,13 @@ class BinanceSpotVenue(ExecutionVenue):
                 notional_usd=trade_size,
                 leverage=1,
                 source_signal=source_signal,
+                category="CRYPTO",
+                signal_family=signal_family,
+                sample_kind=self.sample_kind,
+                debug_profile=self.debug_profile,
+                entry_spread_pct=spread_pct,
+                slippage_proxy_bps=slippage_proxy_bps,
+                whale_trust_at_entry=whale_trust_at_entry,
                 linked_market_id=market_context.get("market_id"),
             )
             await self.db.add_venue_order(
@@ -673,7 +866,31 @@ class BinanceSpotVenue(ExecutionVenue):
                 instrument_type="spot",
                 position_id=position_id,
                 source_signal=source_signal,
+                category="CRYPTO",
+                signal_family=signal_family,
+                sample_kind=self.sample_kind,
+                debug_profile=self.debug_profile,
+                entry_spread_pct=spread_pct,
+                slippage_proxy_bps=slippage_proxy_bps,
+                whale_trust_at_entry=whale_trust_at_entry,
                 execution_mode=self.config.mode,
+            )
+            await self.db.add_decision_audit(
+                venue="binance_spot",
+                market_id=symbol,
+                category="CRYPTO",
+                signal_family=signal_family,
+                raw_source_signal=source_signal,
+                sample_kind=self.sample_kind,
+                decision_score=signal_score,
+                threshold=self.config.signal_threshold,
+                trade_size=trade_size,
+                action="execute",
+                confidence=signal_score,
+                whale_trust=whale_trust_at_entry,
+                spread_pct=spread_pct,
+                slippage_proxy_bps=slippage_proxy_bps,
+                inputs_json=str({"trade_id": trade_id, "position_id": position_id, "side": "LONG", "entry_price": entry_price}),
             )
             logger.info(
                 "[PAPER-TRADE-RUNTIME] venue=binance_spot inserted trade id=%s market=%s side=LONG balance_before=%.2f balance_after=%.2f source=%s protection=%s",
@@ -715,6 +932,17 @@ class BinanceSpotVenue(ExecutionVenue):
             position = await self.get_open_position(symbol_or_market_id)
             exit_reasons = await self.risk_manager.validate_exit(position)
             if exit_reasons:
+                await self.db.add_decision_audit(
+                    venue="binance_spot",
+                    market_id=symbol_or_market_id,
+                    category="CRYPTO",
+                    signal_family=normalize_signal_family(source),
+                    raw_source_signal=source,
+                    sample_kind=self.sample_kind,
+                    action="reject",
+                    reason=",".join(exit_reasons),
+                    inputs_json=str({"reason": reason}),
+                )
                 logger.info(
                     "[REJECT] venue=binance_spot source=%s category=CRYPTO market=%s reasons=%s inputs=%s",
                     source,
@@ -741,6 +969,7 @@ class BinanceSpotVenue(ExecutionVenue):
         notional_usd: float,
         triggered_order_id: Optional[int],
     ) -> None:
+        position = dict(position)
         entry_price = float(position["entry_price"])
         quantity = float(position["qty_or_shares"])
         realized_pnl = quantity * (exit_price - entry_price)
@@ -752,6 +981,21 @@ class BinanceSpotVenue(ExecutionVenue):
         await self.cancel_protection_orders(position["symbol_or_market_id"])
         if triggered_order_id is not None:
             await self.db.update_venue_order_status(triggered_order_id, "FILLED")
+        await self.db.add_decision_audit(
+            venue="binance_spot",
+            market_id=position["symbol_or_market_id"],
+            category=position.get("category") or "CRYPTO",
+            signal_family=position.get("signal_family") or normalize_signal_family(position.get("source_signal")),
+            raw_source_signal=position.get("source_signal"),
+            sample_kind=position.get("sample_kind") or self.sample_kind,
+            trade_size=notional_usd,
+            action="exit",
+            reason=reason,
+            whale_trust=position.get("whale_trust_at_entry"),
+            spread_pct=position.get("entry_spread_pct"),
+            slippage_proxy_bps=position.get("slippage_proxy_bps"),
+            inputs_json=str({"position_id": position["id"], "exit_price": exit_price, "realized_pnl": realized_pnl}),
+        )
         logger.info(
             "[POSITION-CLOSED] venue=binance_spot market=%s side=%s reason=%s exit_price=%.4f pnl=%.2f balance_before=%.2f balance_after=%.2f",
             position["symbol_or_market_id"],

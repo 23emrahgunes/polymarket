@@ -1,0 +1,25 @@
+{
+  "seed": 42,
+  "status": "insufficient_evidence",
+  "reason": "No structured replay dataset was provided. The repo does not include a reliable historical Polymarket orderbook / whale archive for a trustworthy all-category backtest.",
+  "supported_categories": [
+    "CRYPTO"
+  ],
+  "unsupported_categories": {
+    "SPORTS": "Missing reliable historical Polymarket orderbook and whale/activity archive.",
+    "POLITICS": "Missing reliable historical Polymarket orderbook and whale/activity archive.",
+    "OTHER": "Missing reliable historical Polymarket orderbook and whale/activity archive."
+  },
+  "what_was_measurable": [],
+  "what_was_not_measurable": [
+    "Out-of-sample replay without a structured crypto dataset",
+    "Non-crypto Polymarket replay from current repo data"
+  ],
+  "train": {},
+  "validation": {},
+  "test": {},
+  "sensitivity": {
+    "status": "insufficient_evidence",
+    "parameter_effects": []
+  }
+}

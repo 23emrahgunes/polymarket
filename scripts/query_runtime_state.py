@@ -70,6 +70,17 @@ def main() -> int:
     except sqlite3.OperationalError:
         whale_counts = []
         whale_wallets = []
+    try:
+        decision_audit = cursor.execute(
+            """
+            SELECT occurred_at, venue, category, signal_family, action, reason, decision_score, trade_size
+            FROM decision_audit
+            ORDER BY id DESC
+            LIMIT 10
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        decision_audit = []
     connection.close()
 
     print(f"DB_PATH={db_path}")
@@ -92,6 +103,9 @@ def main() -> int:
     print("TOP_WHALE_WALLETS")
     for whale_wallet in whale_wallets:
         print(whale_wallet)
+    print("RECENT_DECISION_AUDIT")
+    for audit_row in decision_audit:
+        print(audit_row)
     return 0
 
 
