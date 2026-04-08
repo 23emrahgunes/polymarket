@@ -187,7 +187,14 @@ class WhaleTracker:
         if not isinstance(activities, list) or not activities:
             return None
 
-        latest_activity = activities[0]
+        latest_activity = next(
+            (
+                activity
+                for activity in activities
+                if isinstance(activity, dict) and str(activity.get("type", "TRADE")).upper() == "TRADE"
+            ),
+            activities[0],
+        )
         if not isinstance(latest_activity, dict):
             return None
 
@@ -195,9 +202,11 @@ class WhaleTracker:
         side = "BUY" if "buy" in side_raw else "SELL"
         price = float(latest_activity.get("price", 0.0) or 0.0)
         size = float(latest_activity.get("size", 0.0) or 0.0)
-        event_amount = size * price
+        event_amount = float(latest_activity.get("usdcSize", 0.0) or 0.0)
+        if event_amount <= 0:
+            event_amount = size * price
         market_id = latest_activity.get("conditionId") or latest_activity.get("condition_id")
-        token_id = latest_activity.get("market_id")
+        token_id = latest_activity.get("asset") or latest_activity.get("market_id")
 
         if (market_id or token_id) and price > 0:
             return {
@@ -258,7 +267,11 @@ class WhaleTracker:
             self.leaderboard_wallets_count = 0
             return []
 
-        wallets = [entry.get("address") for entry in result.data if isinstance(entry, dict) and entry.get("address")]
+        wallets = [
+            entry.get("address") or entry.get("proxyWallet") or entry.get("proxy_wallet")
+            for entry in result.data
+            if isinstance(entry, dict) and (entry.get("address") or entry.get("proxyWallet") or entry.get("proxy_wallet"))
+        ]
         for wallet in wallets:
             if self.db is not None:
                 await self.db.upsert_whale_wallet(wallet, "leaderboard")

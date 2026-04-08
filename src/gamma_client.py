@@ -28,6 +28,7 @@ class GammaApiClient:
     def __init__(
         self,
         gamma_api_base: str = "https://gamma-api.polymarket.com",
+        data_api_base: str = "https://data-api.polymarket.com",
         connect_timeout_sec: float = 3.0,
         read_timeout_sec: float = 6.0,
         inspection_concurrency: int = 8,
@@ -35,6 +36,7 @@ class GammaApiClient:
         log_throttle_seconds: float = 60.0,
     ):
         self.gamma_api_base = gamma_api_base.rstrip("/")
+        self.data_api_base = data_api_base.rstrip("/")
         self.connect_timeout_sec = connect_timeout_sec
         self.read_timeout_sec = read_timeout_sec
         self.max_retries = max_retries
@@ -44,31 +46,34 @@ class GammaApiClient:
 
     async def fetch_leaderboard(self, limit: int = 20) -> GammaFetchResult:
         return await self._request_json(
-            path="/leaderboard",
+            path="/v1/leaderboard",
             params={"limit": limit},
             timeout_reason="leaderboard_unavailable",
             http_reason="leaderboard_unavailable",
             invalid_reason="leaderboard_unavailable",
+            base_url=self.data_api_base,
         )
 
     async def fetch_global_activity(self, limit: int = 50) -> GammaFetchResult:
         return await self._request_json(
-            path="/activity",
+            path="/trades",
             params={"limit": limit},
             timeout_reason="activity_feed_unavailable",
             http_reason="activity_feed_unavailable",
             invalid_reason="activity_feed_unavailable",
+            base_url=self.data_api_base,
         )
 
     async def fetch_wallet_activity(self, address: str, limit: int = 5) -> GammaFetchResult:
         async with self._wallet_semaphore:
             return await self._request_json(
                 path="/activity",
-                params={"address": address, "limit": limit},
+                params={"user": address, "limit": limit},
                 timeout_reason="wallet_activity_timeout",
                 http_reason="wallet_activity_http_error",
                 invalid_reason="wallet_activity_http_error",
                 log_suffix=address[:10],
+                base_url=self.data_api_base,
             )
 
     async def _request_json(
@@ -79,8 +84,9 @@ class GammaApiClient:
         http_reason: str,
         invalid_reason: str,
         log_suffix: str = "",
+        base_url: Optional[str] = None,
     ) -> GammaFetchResult:
-        url = f"{self.gamma_api_base}{path}"
+        url = f"{(base_url or self.gamma_api_base).rstrip('/')}{path}"
         last_reason = invalid_reason
         last_status_code: Optional[int] = None
         last_timed_out = False

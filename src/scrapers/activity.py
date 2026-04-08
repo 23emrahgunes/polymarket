@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from src.decision_engine import classify_market_category
 from src.gamma_client import GammaApiClient
@@ -37,12 +37,14 @@ class ActivityHunter:
         self.discovery_min_event_usd = discovery_min_event_usd
         self.discovery_min_events = discovery_min_events
         self.discovery_single_event_usd = discovery_single_event_usd
+        self._last_api_error_reason: Optional[str] = None
+        self._last_api_error_ts = 0.0
 
     async def fetch_latest_activity(self, limit=50):
         result = await self.gamma_client.fetch_global_activity(limit=limit)
         if result.ok:
             return result.data
-        logger.info("ActivityHunter: API communication error - %s", result.reason)
+        self._log_fetch_error(result.reason)
         return []
 
     async def monitor_stream(self):
@@ -94,27 +96,32 @@ class ActivityHunter:
                 continue
 
             tx_id = activity.get("id") or activity.get("transaction_hash")
+            tx_id = tx_id or activity.get("transactionHash")
             if tx_id in self.processed_transaction_ids:
                 continue
             self.processed_transaction_ids.add(tx_id)
             if len(self.processed_transaction_ids) > 2_000:
                 self.processed_transaction_ids.clear()
 
-            token_id = activity.get("market_id")
-            if not token_id:
+            market_id = activity.get("conditionId") or activity.get("condition_id") or activity.get("market_id")
+            token_id = activity.get("asset") or activity.get("token_id") or activity.get("market_id")
+            if not market_id and not token_id:
                 continue
 
             side = str(activity.get("side", "BUY")).upper()
-            wallet = activity.get("proxy_wallet") or activity.get("address")
+            wallet = activity.get("proxyWallet") or activity.get("proxy_wallet") or activity.get("address")
             price = float(activity.get("price", 0.0) or 0.0)
             size = float(activity.get("size", 0.0) or 0.0)
-            amount = size * price
+            amount = float(activity.get("usdcSize", 0.0) or 0.0)
+            if amount <= 0:
+                amount = size * price
 
             if wallet and amount >= self.whale_event_threshold:
                 normalized_events.append(
                     {
                         "type": "WHALE_EVENT",
-                        "token_id": token_id,
+                        "market_id": market_id,
+                        "token_id": token_id or market_id,
                         "side": side,
                         "amount": amount,
                         "wallet": wallet,
@@ -123,7 +130,7 @@ class ActivityHunter:
                 )
 
             if wallet:
-                cluster_key = (token_id, side)
+                cluster_key = (market_id or token_id, side)
                 self.activity_clusters[cluster_key].append({"wallet": wallet, "timestamp": now})
                 self.activity_clusters[cluster_key] = [
                     entry
@@ -135,7 +142,8 @@ class ActivityHunter:
                     normalized_events.append(
                         {
                             "type": "CLUSTER_DETECTED",
-                            "token_id": token_id,
+                            "market_id": market_id,
+                            "token_id": token_id or market_id,
                             "side": side,
                             "wallets_count": len(unique_wallets),
                             "avg_price": price,
@@ -152,13 +160,15 @@ class ActivityHunter:
         for activity in activities:
             if not isinstance(activity, dict):
                 continue
-            wallet = activity.get("proxy_wallet") or activity.get("address")
+            wallet = activity.get("proxyWallet") or activity.get("proxy_wallet") or activity.get("address")
             if not wallet:
                 continue
 
             price = float(activity.get("price", 0.0) or 0.0)
             size = float(activity.get("size", 0.0) or 0.0)
-            amount = size * price
+            amount = float(activity.get("usdcSize", 0.0) or 0.0)
+            if amount <= 0:
+                amount = size * price
             if amount < self.discovery_min_event_usd:
                 continue
 
@@ -170,3 +180,12 @@ class ActivityHunter:
                 event_amount=amount,
                 event_category=category,
             )
+
+    def _log_fetch_error(self, reason: Optional[str]) -> None:
+        reason = reason or "activity_feed_unavailable"
+        now = time.time()
+        if reason == self._last_api_error_reason and (now - self._last_api_error_ts) < 60:
+            return
+        self._last_api_error_reason = reason
+        self._last_api_error_ts = now
+        logger.info("ActivityHunter: API communication error - %s", reason)

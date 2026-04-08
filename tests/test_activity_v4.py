@@ -26,6 +26,31 @@ def test_activity_whale_event_normalization():
     assert whale_events[0]["token_id"] == "TOKEN_1"
 
 
+def test_activity_normalizes_data_api_trade_payload():
+    hunter = ActivityHunter()
+    events = hunter._normalize_activities(
+        [
+            {
+                "transactionHash": "0xTX1",
+                "conditionId": "0xMARKET1",
+                "asset": "0xTOKEN1",
+                "side": "BUY",
+                "size": 2500,
+                "usdcSize": 2500,
+                "price": 0.51,
+                "proxyWallet": "0xWhale",
+                "title": "Will Team A win the championship?",
+            }
+        ]
+    )
+
+    whale_events = [event for event in events if event["type"] == "WHALE_EVENT"]
+    assert len(whale_events) == 1
+    assert whale_events[0]["market_id"] == "0xMARKET1"
+    assert whale_events[0]["token_id"] == "0xTOKEN1"
+    assert whale_events[0]["amount"] == 2500.0
+
+
 def test_activity_cluster_detection_emits_wallet_counts():
     hunter = ActivityHunter()
     events = hunter._normalize_activities(
@@ -47,3 +72,32 @@ async def test_activity_hunter_has_no_synthetic_events_in_normal_mode():
     assert hunter.debug_signal_mode is False
     assert hunter.debug_event_emitted is False
     assert hunter._normalize_activities([]) == []
+
+
+@pytest.mark.asyncio
+async def test_record_discovery_candidates_accepts_data_api_trade_payload(tmp_path):
+    from src.database import Database
+
+    db_path = str(tmp_path / "activity_discovery_data_api.db")
+    db = Database(db_path)
+    await db.connect()
+
+    hunter = ActivityHunter(db=db)
+    await hunter.record_discovery_candidates(
+        [
+            {
+                "transactionHash": "0xTX2",
+                "proxyWallet": "0xDISCOVERYA",
+                "price": 0.4,
+                "size": 3000,
+                "usdcSize": 3000,
+                "title": "Will BTC be above $95,000 on December 31, 2026?",
+            }
+        ]
+    )
+
+    wallet = await db.get_whale_wallet("0xDISCOVERYA")
+    await db.close()
+
+    assert wallet is not None
+    assert wallet["source_type"] == "activity_discovery"
