@@ -150,6 +150,56 @@ Role split:
 - `scripts/vps_refresh_and_evaluate.sh`: day-to-day refresh and validation
 - `scripts/check_runtime.sh`: lightweight healthcheck
 
+## Ops Dashboard
+
+A read-only PHP dashboard is available for browser-based runtime monitoring.
+
+What it shows:
+
+- service health for `ghost-trader`
+- latest venue balances, trades, positions, and open orders
+- recent decision audit rows
+- whale source counts and top cached whales
+- market alias coverage and mapping health
+- performance summary and SWOT verdict
+- best-effort recent service log excerpt
+
+Default access:
+
+```bash
+http://SERVER_IP:8081/
+```
+
+Auth:
+
+- HTTP Basic auth is required for both the page and JSON API
+- credentials come from `.env`
+- default `.env.example` hash corresponds to password `change-me-now`
+- rotate `DASHBOARD_PASSWORD_HASH` before exposing the dashboard publicly
+
+Main env keys:
+
+- `DASHBOARD_ENABLED=true`
+- `DASHBOARD_HOST=0.0.0.0`
+- `DASHBOARD_PORT=8081`
+- `DASHBOARD_USER=admin`
+- `DASHBOARD_PASSWORD_HASH=...`
+- `DASHBOARD_REFRESH_SECONDS=5`
+- `DASHBOARD_LOG_LINES=40`
+
+The dashboard runs as a separate service:
+
+```bash
+sudo systemctl status ghost-trader-dashboard
+```
+
+On VPS bootstrap, the dashboard service is installed when `DASHBOARD_ENABLED=true`.
+The day-to-day refresh script also restarts and checks it if present:
+
+```bash
+./scripts/vps_refresh_and_evaluate.sh
+./scripts/vps_refresh_and_evaluate.sh --quick
+```
 ## Installation
 
 ```bash
@@ -485,3 +535,4 @@ sudo systemctl status ghost-trader
 sudo journalctl -u ghost-trader -f
 ./scripts/check_runtime.sh ghost-trader
 ```
+

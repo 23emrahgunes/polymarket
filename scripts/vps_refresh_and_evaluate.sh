@@ -10,6 +10,10 @@ QUICK_MODE=0
 SKIP_TESTS=0
 SKIP_PROOFS=0
 SKIP_ANALYSIS=0
+DASHBOARD_SERVICE_NAME="ghost-trader-dashboard"
+HAS_DASHBOARD_SERVICE=0
+DASHBOARD_STATUS_SUMMARY="not-installed"
+DASHBOARD_URL=""
 
 CURRENT_STEP="initialization"
 TEST_STATUS="skipped"
@@ -58,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     --service)
       [[ $# -ge 2 ]] || { echo "Missing value for --service" >&2; exit 1; }
       SERVICE_NAME="$2"
+      DASHBOARD_SERVICE_NAME="${SERVICE_NAME}-dashboard"
       shift 2
       ;;
     --help|-h)
@@ -120,13 +125,13 @@ import sys
 from pathlib import Path
 
 json_path = Path(sys.argv[1])
-key_path = sys.argv[2].split(".")
+key_path = sys.argv[2].split('.')
 
 if not json_path.exists():
-    print("missing")
+    print('missing')
     raise SystemExit(0)
 
-with json_path.open("r", encoding="utf-8") as fh:
+with json_path.open('r', encoding='utf-8') as fh:
     data = json.load(fh)
 
 value = data
@@ -134,16 +139,24 @@ for key in key_path:
     if isinstance(value, dict) and key in value:
         value = value[key]
     else:
-        print("missing")
+        print('missing')
         raise SystemExit(0)
 
 if value is None:
-    print("null")
+    print('null')
 elif isinstance(value, (dict, list)):
     print(json.dumps(value))
 else:
     print(value)
 PY
+}
+
+service_exists() {
+  local name="$1"
+  if [[ -f "/etc/systemd/system/${name}.service" ]]; then
+    return 0
+  fi
+  $SUDO systemctl cat "$name" >/dev/null 2>&1
 }
 
 CURRENT_BRANCH="$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null || true)"
@@ -177,6 +190,16 @@ if [[ ! -f "/etc/systemd/system/${SERVICE_NAME}.service" ]] && ! $SUDO systemctl
 fi
 if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
   fail "Local git changes detected. Commit/stash them manually before running this script."
+fi
+
+set -a
+# shellcheck disable=SC1090
+source "$REPO_ROOT/.env"
+set +a
+DASHBOARD_SERVICE_NAME="${DASHBOARD_SERVICE_NAME:-${SERVICE_NAME}-dashboard}"
+DASHBOARD_URL="http://${DASHBOARD_HOST:-0.0.0.0}:${DASHBOARD_PORT:-8081}/"
+if service_exists "$DASHBOARD_SERVICE_NAME"; then
+  HAS_DASHBOARD_SERVICE=1
 fi
 
 CURRENT_STEP="git fetch"
@@ -236,6 +259,13 @@ CURRENT_STEP="service restart"
 section "Service Restart"
 $SUDO systemctl restart "$SERVICE_NAME"
 
+if [[ "$HAS_DASHBOARD_SERVICE" == "1" ]]; then
+  CURRENT_STEP="dashboard restart"
+  section "Dashboard Restart"
+  $SUDO systemctl restart "$DASHBOARD_SERVICE_NAME"
+  DASHBOARD_STATUS_SUMMARY="running"
+fi
+
 if [[ "$SKIP_ANALYSIS" != "1" ]]; then
   CURRENT_STEP="performance analysis"
   section "Performance Analysis"
@@ -262,6 +292,12 @@ section "Service Status"
 $SUDO systemctl status "$SERVICE_NAME" --no-pager
 SERVICE_STATUS_SUMMARY="running"
 
+if [[ "$HAS_DASHBOARD_SERVICE" == "1" ]]; then
+  CURRENT_STEP="dashboard status"
+  section "Dashboard Status"
+  $SUDO systemctl status "$DASHBOARD_SERVICE_NAME" --no-pager
+fi
+
 CURRENT_STEP="recent logs"
 section "Recent Logs"
 $SUDO journalctl -u "$SERVICE_NAME" -n 50 --no-pager
@@ -284,6 +320,8 @@ echo "Tests:                $TEST_STATUS"
 echo "Proofs:               $PROOF_STATUS"
 echo "Analysis:             $ANALYSIS_STATUS"
 echo "Service:              $SERVICE_STATUS_SUMMARY"
+echo "Dashboard:            $DASHBOARD_STATUS_SUMMARY"
+echo "Dashboard URL:        $([[ "$HAS_DASHBOARD_SERVICE" == "1" ]] && echo "$DASHBOARD_URL" || echo "not-installed")"
 echo "Live paper closed:    $LIVE_PAPER_CLOSED"
 echo "Synthetic samples:    $SYNTHETIC_TOTAL"
 echo "Core expectancy:      $CORE_EXPECTANCY"
