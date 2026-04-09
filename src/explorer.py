@@ -26,24 +26,40 @@ class MarketExplorer:
             return self._get_debug_markets()
 
         try:
-            url = f"{self.gamma_api_base}/markets?active=true&closed=false&limit={limit}"
-            response = await asyncio.to_thread(requests.get, url, timeout=10)
-            if response.status_code != 200:
-                logger.error("Explorer: Gamma API returned HTTP %s", response.status_code)
-                return []
+            discovered_by_id: Dict[str, Dict] = {}
+            page_size = max(min(limit, 500), 1)
+            offset = 0
 
-            markets_data = response.json()
-            if not isinstance(markets_data, list):
-                logger.error("Explorer: Gamma API returned non-list data.")
-                return []
+            while len(discovered_by_id) < limit:
+                request_limit = min(page_size, max(limit - len(discovered_by_id), 1))
+                url = f"{self.gamma_api_base}/markets?active=true&closed=false&limit={request_limit}&offset={offset}"
+                response = await asyncio.to_thread(requests.get, url, timeout=10)
+                if response.status_code != 200:
+                    logger.error("Explorer: Gamma API returned HTTP %s", response.status_code)
+                    break
 
-            discovered_markets: List[Dict] = []
-            for raw_market in markets_data:
-                market = self._normalize_market(raw_market)
-                if market is not None:
-                    discovered_markets.append(market)
+                markets_data = response.json()
+                if not isinstance(markets_data, list):
+                    logger.error("Explorer: Gamma API returned non-list data.")
+                    break
+                if not markets_data:
+                    break
 
-            discovered_markets.sort(key=lambda item: item.get("volume_24h", 0.0), reverse=True)
+                for raw_market in markets_data:
+                    market = self._normalize_market(raw_market)
+                    if market is None:
+                        continue
+                    discovered_by_id[market["market_id"]] = market
+
+                if len(markets_data) < request_limit:
+                    break
+                offset += request_limit
+
+            discovered_markets = sorted(
+                discovered_by_id.values(),
+                key=lambda item: item.get("volume_24h", 0.0),
+                reverse=True,
+            )
             return discovered_markets[:limit]
         except Exception as exc:
             logger.error("Explorer: failed to fetch active markets - %s", exc)
@@ -54,8 +70,14 @@ class MarketExplorer:
             return None
 
         active_markets = await self.fetch_active_markets(limit=limit)
+        return self._match_market_by_alias(active_markets, aliases)
+
+    @staticmethod
+    def _match_market_by_alias(markets: List[Dict], aliases: List[str]) -> Dict | None:
         alias_set = {alias for alias in aliases if alias}
-        for market in active_markets:
+        if not alias_set:
+            return None
+        for market in markets:
             market_aliases = set(market.get("alias_candidates", []))
             if market_aliases.intersection(alias_set):
                 return market

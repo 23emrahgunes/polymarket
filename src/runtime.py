@@ -55,7 +55,7 @@ class RuntimeSettings:
     verify_required_venues: Tuple[str, ...] = tuple()
     verify_required_category: Optional[str] = None
     market_limit: int = 200
-    market_lookup_limit: int = 1000
+    market_lookup_limit: int = 5000
     discovery_interval_seconds: float = 5.0
     whale_interval_seconds: float = 15.0
     status_interval_seconds: float = 300.0
@@ -79,6 +79,7 @@ class RuntimeSettings:
             runtime_verify_once=_env_flag("RUNTIME_VERIFY_ONCE", False),
             verify_required_venues=_env_csv("VERIFY_REQUIRED_VENUES"),
             verify_required_category=(os.getenv("VERIFY_REQUIRED_CATEGORY", "").strip().upper() or None),
+            market_lookup_limit=max(int(os.getenv("MARKET_LOOKUP_LIMIT", "5000") or 5000), 200),
             whale_target_count=max(int(os.getenv("WHALE_TARGET_COUNT", "50") or 50), 1),
             whale_discovery_min_event_usd=float(os.getenv("WHALE_DISCOVERY_MIN_EVENT_USD", "2500") or 2500),
             whale_discovery_min_events=max(int(os.getenv("WHALE_DISCOVERY_MIN_EVENTS", "2") or 2), 1),
@@ -107,6 +108,9 @@ class GhostBotRuntime:
         self.verify_completed_venues: set[str] = set()
         self.active_market_context: Dict[str, Dict] = {}
         self.token_to_market_id: Dict[str, str] = {}
+        self.lookup_market_context: Dict[str, Dict] = {}
+        self.lookup_token_to_market_id: Dict[str, str] = {}
+        self.last_lookup_refresh_ts = 0.0
         self.crypto_orderflow_hints: Dict[str, Dict] = {}
         self.mapped_orderflow_events = 0
         self.unmapped_orderflow_events = 0
@@ -257,12 +261,14 @@ class GhostBotRuntime:
         if self.explorer is None or self.scanner is None or self.copy_trader is None:
             return
 
-        market_universe = await self.explorer.fetch_active_markets(limit=max(self.settings.market_limit, self.settings.market_lookup_limit))
-        await self._refresh_market_context(market_universe)
-        active_markets = market_universe[: self.settings.market_limit]
+        lookup_universe = await self.explorer.fetch_active_markets(limit=self.settings.market_lookup_limit)
+        await self._refresh_lookup_context(lookup_universe, source="explorer")
+        self.last_lookup_refresh_ts = time.time()
+        active_markets = await self.explorer.fetch_active_markets(limit=self.settings.market_limit)
+        await self._refresh_active_market_context(active_markets)
         symbols = {
             resolve_crypto_symbol(market.get("question", ""), self.settings.exchange_id)
-            for market in market_universe
+            for market in lookup_universe
             if classify_market_category(market.get("question", "")) == "CRYPTO"
         }
         await self.scanner.update_monitored_symbols([symbol for symbol in symbols if symbol])
@@ -311,16 +317,22 @@ class GhostBotRuntime:
 
         while not self.stop_event.is_set():
             cycle_started = time.time()
-            market_universe = await self.explorer.fetch_active_markets(limit=max(self.settings.market_limit, self.settings.market_lookup_limit))
-            await self._refresh_market_context(market_universe)
-            active_markets = market_universe[: self.settings.market_limit]
+            if (time.time() - self.last_lookup_refresh_ts) >= self.settings.market_scan_interval_seconds or not self.lookup_market_context:
+                lookup_universe = await self.explorer.fetch_active_markets(limit=self.settings.market_lookup_limit)
+                await self._refresh_lookup_context(lookup_universe, source="explorer")
+                self.last_lookup_refresh_ts = time.time()
+            else:
+                lookup_universe = list(self.lookup_market_context.values())
+
+            active_markets = await self.explorer.fetch_active_markets(limit=self.settings.market_limit)
+            await self._refresh_active_market_context(active_markets)
 
             if not active_markets:
                 logger.info("[STATUS] No active Polymarket markets discovered in this cycle.")
             else:
                 symbols = {
                     resolve_crypto_symbol(market.get("question", ""), self.settings.exchange_id)
-                    for market in market_universe
+                    for market in lookup_universe
                     if market.get("category") == "CRYPTO"
                 }
                 await self.scanner.update_monitored_symbols([symbol for symbol in symbols if symbol])
@@ -781,33 +793,78 @@ class GhostBotRuntime:
     ) -> Optional[Dict]:
         normalized_market_id = normalize_market_alias(market_id)
         normalized_token_id = normalize_market_alias(token_id)
-        if normalized_market_id and normalized_market_id in self.active_market_context:
-            return self.active_market_context[normalized_market_id]
-        if normalized_token_id and normalized_token_id in self.token_to_market_id:
-            resolved_market_id = self.token_to_market_id[normalized_token_id]
-            return self.active_market_context.get(resolved_market_id)
+        if normalized_market_id and normalized_market_id in self.lookup_market_context:
+            return self.lookup_market_context[normalized_market_id]
+        if normalized_token_id and normalized_token_id in self.lookup_token_to_market_id:
+            resolved_market_id = self.lookup_token_to_market_id[normalized_token_id]
+            return self.lookup_market_context.get(resolved_market_id)
         for alias in alias_candidates or ():
             normalized_alias = normalize_market_alias(alias)
             if not normalized_alias:
                 continue
-            if normalized_alias in self.active_market_context:
-                return self.active_market_context[normalized_alias]
-            if normalized_alias in self.token_to_market_id:
-                resolved_market_id = self.token_to_market_id[normalized_alias]
-                return self.active_market_context.get(resolved_market_id)
+            if normalized_alias in self.lookup_market_context:
+                return self.lookup_market_context[normalized_alias]
+            if normalized_alias in self.lookup_token_to_market_id:
+                resolved_market_id = self.lookup_token_to_market_id[normalized_alias]
+                return self.lookup_market_context.get(resolved_market_id)
         return None
 
-    async def _refresh_market_context(self, active_markets: list[Dict]) -> None:
+    async def _refresh_active_market_context(self, active_markets: list[Dict]) -> None:
         self.active_market_context = {}
         self.token_to_market_id = {}
 
-        for market in active_markets:
-            await self._register_market_context(market, source="explorer")
+        for market in active_markets[: self.settings.market_limit]:
+            normalized_market = self._normalize_market_context(market)
+            if normalized_market is None:
+                continue
+            self._cache_market_context(normalized_market, self.active_market_context, self.token_to_market_id)
+
+    async def _refresh_lookup_context(self, market_universe: list[Dict], source: str) -> None:
+        self.lookup_market_context = {}
+        self.lookup_token_to_market_id = {}
+
+        for market in market_universe:
+            normalized_market = await self._register_market_context(
+                market,
+                source=source,
+                context_store=self.lookup_market_context,
+                token_store=self.lookup_token_to_market_id,
+            )
 
         if self.copy_trader is not None:
-            self.copy_trader.update_market_contexts(self.active_market_context, self.token_to_market_id)
+            self.copy_trader.update_market_contexts(self.lookup_market_context, self.lookup_token_to_market_id)
 
-    async def _register_market_context(self, market: Dict, source: str) -> Optional[Dict]:
+    async def _register_market_context(
+        self,
+        market: Dict,
+        source: str,
+        *,
+        context_store: Optional[Dict[str, Dict]] = None,
+        token_store: Optional[Dict[str, str]] = None,
+    ) -> Optional[Dict]:
+        normalized_market = self._normalize_market_context(market)
+        if normalized_market is None:
+            return None
+
+        self._cache_market_context(
+            normalized_market,
+            context_store if context_store is not None else self.lookup_market_context,
+            token_store if token_store is not None else self.lookup_token_to_market_id,
+        )
+
+        if self.db is not None:
+            await self.db.upsert_market_aliases(
+                market_id=normalized_market["market_id"],
+                aliases=normalized_market["alias_candidates"],
+                question=normalized_market.get("question"),
+                category=normalized_market.get("category"),
+                volume_24h=float(normalized_market.get("volume_24h", 0.0) or 0.0),
+                active=bool(normalized_market.get("active", True)),
+                source=source,
+            )
+        return normalized_market
+
+    def _normalize_market_context(self, market: Dict) -> Optional[Dict]:
         market_id = normalize_market_alias(market.get("market_id"))
         if not market_id:
             return None
@@ -822,38 +879,54 @@ class GhostBotRuntime:
             extra_aliases=market.get("alias_candidates", []),
         )
         normalized_market["alias_candidates"] = alias_candidates
-        self.active_market_context[market_id] = normalized_market
+        return normalized_market
 
-        for alias in alias_candidates:
+    def _cache_market_context(
+        self,
+        normalized_market: Dict,
+        context_store: Dict[str, Dict],
+        token_store: Dict[str, str],
+    ) -> None:
+        market_id = normalized_market["market_id"]
+        context_store[market_id] = dict(normalized_market)
+        for alias in normalized_market["alias_candidates"]:
             if alias == market_id:
                 continue
-            self.token_to_market_id[alias] = market_id
-
-        if self.db is not None:
-            await self.db.upsert_market_aliases(
-                market_id=market_id,
-                aliases=alias_candidates,
-                question=normalized_market.get("question"),
-                category=normalized_market.get("category"),
-                volume_24h=float(normalized_market.get("volume_24h", 0.0) or 0.0),
-                active=bool(normalized_market.get("active", True)),
-                source=source,
-            )
-        return normalized_market
+            token_store[alias] = market_id
 
     async def lazy_resolve_market_context(self, alias_candidates: list[str], source: str) -> Optional[Dict]:
         if self.explorer is None:
             return None
 
-        market = await self.explorer.find_market_by_alias(alias_candidates, limit=max(self.settings.market_limit, self.settings.market_lookup_limit))
+        market = await self.explorer.find_market_by_alias(
+            alias_candidates,
+            limit=max(self.settings.market_limit, self.settings.market_lookup_limit),
+        )
         if market is None:
-            return None
+            refreshed_market_universe = await self.explorer.fetch_active_markets(limit=self.settings.market_lookup_limit)
+            await self._refresh_lookup_context(refreshed_market_universe, source="lazy_lookup_refresh")
+            self.last_lookup_refresh_ts = time.time()
+            market = self._resolve_market_context(None, None, alias_candidates)
+            if market is not None:
+                return market
+            market = await self.explorer.find_market_by_alias(
+                alias_candidates,
+                limit=self.settings.market_lookup_limit,
+            )
+            if market is None:
+                return None
 
-        normalized_market = await self._register_market_context(market, source="lazy_lookup")
+        normalized_market = await self._register_market_context(
+            market,
+            source="lazy_lookup",
+            context_store=self.lookup_market_context,
+            token_store=self.lookup_token_to_market_id,
+        )
         if normalized_market is None:
             return None
+        self._cache_market_context(normalized_market, self.active_market_context, self.token_to_market_id)
         if self.copy_trader is not None:
-            self.copy_trader.update_market_contexts(self.active_market_context, self.token_to_market_id)
+            self.copy_trader.update_market_contexts(self.lookup_market_context, self.lookup_token_to_market_id)
         return normalized_market
 
     async def record_mapping_event(self, *, mapped: bool, stage: str) -> None:

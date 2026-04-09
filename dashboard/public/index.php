@@ -9,11 +9,11 @@ dashboard_require_auth();
 $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
 ?>
 <!DOCTYPE html>
-<html lang="en">
+<html lang="tr">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Ghost Trader Ops Dashboard</title>
+    <title>Ghost Trader Operasyon Paneli</title>
     <style>
         :root {
             --bg: #08121a;
@@ -82,6 +82,13 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .panel-header { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 14px; }
         .panel h2 { margin: 0; font-size: 1rem; letter-spacing: 0.03em; text-transform: uppercase; }
         .panel-copy { margin: 0 0 14px; color: var(--muted); line-height: 1.5; font-size: 0.94rem; }
+        .subsection-title {
+            margin: 16px 0 8px;
+            color: var(--muted);
+            font-size: 0.8rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
         .badge {
             display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px; font-size: 0.78rem;
             letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.02); color: var(--text);
@@ -112,62 +119,306 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
     <section class="hero-card">
         <div class="hero-top">
             <div>
-                <div class="eyebrow">Ghost Trader Ops</div>
-                <h1>Live runtime, mapping health, and strategy evidence in one screen.</h1>
+                <div class="eyebrow">Ghost Trader Operasyon</div>
+                <h1>Canlı çalışma zamanı, mapping sağlığı ve strateji kanıtı tek ekranda.</h1>
             </div>
-            <div class="badge info" id="last-refresh-badge">Refreshing every <?= dashboard_html((string) $refreshSeconds) ?>s</div>
+            <div class="badge info" id="last-refresh-badge">Her <?= dashboard_html((string) $refreshSeconds) ?> saniyede yenileniyor</div>
         </div>
-        <p class="hero-sub">Read-only dashboard for runtime health, multi-venue state, decision audit flow, market mapping coverage, and conservative performance verdicts.</p>
+        <p class="hero-sub">Çalışma zamanı sağlığı, çoklu venue durumu, karar denetim akışı, market eşleme kapsamı ve temkinli performans verdict’i için salt-okunur operasyon paneli.</p>
     </section>
 
     <div class="status-banner" id="status-banner"></div>
-    <div class="warnings" id="warnings-panel"><strong>Warnings</strong><ul id="warnings-list"></ul></div>
+    <div class="warnings" id="warnings-panel"><strong>Uyarılar</strong><ul id="warnings-list"></ul></div>
 
     <section class="stats">
-        <article class="stat-card"><div class="stat-label">Service</div><div class="stat-value" id="service-status">...</div><div class="stat-note" id="service-name">ghost-trader</div></article>
-        <article class="stat-card"><div class="stat-label">Total Trades</div><div class="stat-value" id="total-trades">0</div><div class="stat-note" id="open-state-note">0 open positions / 0 open orders</div></article>
-        <article class="stat-card"><div class="stat-label">Tracked Whales</div><div class="stat-value" id="tracked-whales">0</div><div class="stat-note">Hybrid cache coverage</div></article>
-        <article class="stat-card"><div class="stat-label">Mapped Orderflow</div><div class="stat-value" id="mapped-orderflow">0 / 0</div><div class="stat-note" id="mapping-note">Alias cache 0, lazy hits 0</div></article>
-        <article class="stat-card"><div class="stat-label">Market Not Mapped</div><div class="stat-value" id="market-not-mapped-rate">0%</div><div class="stat-note">Lower is better</div></article>
-        <article class="stat-card"><div class="stat-label">Final Verdict</div><div class="stat-value" id="final-verdict">...</div><div class="stat-note" id="verdict-reason">Awaiting report</div></article>
+        <article class="stat-card"><div class="stat-label">Servis</div><div class="stat-value" id="service-status">...</div><div class="stat-note" id="service-name">ghost-trader</div></article>
+        <article class="stat-card"><div class="stat-label">Toplam İşlem</div><div class="stat-value" id="total-trades">0</div><div class="stat-note" id="open-state-note">0 açık pozisyon / 0 açık emir</div></article>
+        <article class="stat-card"><div class="stat-label">İzlenen Balinalar</div><div class="stat-value" id="tracked-whales">0</div><div class="stat-note">Hibrit cache kapsamı</div></article>
+        <article class="stat-card"><div class="stat-label">Eşlenen Orderflow</div><div class="stat-value" id="mapped-orderflow">0 / 0</div><div class="stat-note" id="mapping-note">Alias cache 0, lazy hit 0</div></article>
+        <article class="stat-card"><div class="stat-label">Market Eşleşmedi</div><div class="stat-value" id="market-not-mapped-rate">0%</div><div class="stat-note">Daha düşük daha iyi</div></article>
+        <article class="stat-card"><div class="stat-label">Nihai Karar</div><div class="stat-value" id="final-verdict">...</div><div class="stat-note" id="verdict-reason">Rapor bekleniyor</div></article>
     </section>
 
     <section class="grid">
-        <article class="panel panel-wide"><div class="panel-header"><h2>Recent Decisions</h2><span class="badge warn">Audit stream</span></div><p class="panel-copy">Latest reject, decision, execute, and exit events with source, reason, score, mapping stage, and trade size.</p><div id="recent-decisions"></div></article>
-        <article class="panel panel-half"><div class="panel-header"><h2>Open Positions</h2><span class="badge info">Venue exposure</span></div><div id="open-positions"></div></article>
-        <article class="panel panel-half"><div class="panel-header"><h2>Open Orders</h2><span class="badge info">Protection layer</span></div><div id="open-orders"></div></article>
-        <article class="panel panel-half"><div class="panel-header"><h2>Recent Trades</h2><span class="badge info">SQLite runtime history</span></div><div id="recent-trades"></div></article>
-        <article class="panel panel-half"><div class="panel-header"><h2>Venue Accounts</h2><span class="badge info">Paper balances</span></div><div id="venue-accounts"></div></article>
-        <article class="panel panel-third"><div class="panel-header"><h2>Mapping Health</h2><span class="badge info">Coverage</span></div><div class="metric-list" id="mapping-health"></div><div id="top-market-aliases" style="margin-top:14px;"></div></article>
-        <article class="panel panel-third"><div class="panel-header"><h2>Whale Source</h2><span class="badge info">Hybrid cache</span></div><div id="whale-wallet-counts"></div><div id="top-whales" style="margin-top:14px;"></div></article>
-        <article class="panel panel-third"><div class="panel-header"><h2>Performance Snapshot</h2><span class="badge warn">Evidence</span></div><div class="metric-list" id="performance-snapshot"></div></article>
-        <article class="panel panel-wide"><div class="panel-header"><h2>Service Log Excerpt</h2><span class="badge info">Best effort</span></div><pre id="service-log">Loading...</pre></article>
+        <article class="panel panel-wide"><div class="panel-header"><h2>Son Kararlar</h2><span class="badge warn">Denetim Akışı</span></div><p class="panel-copy">Kaynak, neden, skor, mapping aşaması ve işlem boyutuyla birlikte son red, karar, işlem ve çıkış olayları.</p><div id="recent-decisions"></div></article>
+        <article class="panel panel-half"><div class="panel-header"><h2>Açık Pozisyonlar</h2><span class="badge info">Venue Maruziyeti</span></div><div id="open-positions"></div></article>
+        <article class="panel panel-half"><div class="panel-header"><h2>Açık Emirler</h2><span class="badge info">Koruma Katmanı</span></div><div id="open-orders"></div></article>
+        <article class="panel panel-half"><div class="panel-header"><h2>Son İşlemler</h2><span class="badge info">SQLite Çalışma Geçmişi</span></div><div id="recent-trades"></div></article>
+        <article class="panel panel-half"><div class="panel-header"><h2>Venue Hesapları</h2><span class="badge info">Paper Bakiyeleri</span></div><div id="venue-accounts"></div></article>
+        <article class="panel panel-third">
+            <div class="panel-header"><h2>Mapping Sağlığı</h2><span class="badge info">Kapsam</span></div>
+            <div class="metric-list" id="mapping-health"></div>
+            <div class="subsection-title">Alias Kaynakları</div>
+            <div id="market-alias-counts"></div>
+            <div class="subsection-title">En Güçlü Alias Cache</div>
+            <div id="top-market-aliases"></div>
+            <div class="subsection-title">En Sık Çözülemeyen Alias’lar</div>
+            <div id="top-unresolved-aliases"></div>
+            <div class="subsection-title">Son Çözülemeyen Alias Olayları</div>
+            <div id="recent-unresolved-aliases"></div>
+        </article>
+        <article class="panel panel-third"><div class="panel-header"><h2>Balina Kaynağı</h2><span class="badge info">Hibrit Cache</span></div><div id="whale-wallet-counts"></div><div id="top-whales" style="margin-top:14px;"></div></article>
+        <article class="panel panel-third"><div class="panel-header"><h2>Performans Özeti</h2><span class="badge warn">Kanıt</span></div><div class="metric-list" id="performance-snapshot"></div></article>
+        <article class="panel panel-wide"><div class="panel-header"><h2>Servis Log Özeti</h2><span class="badge info">Best Effort</span></div><pre id="service-log">Yükleniyor...</pre></article>
     </section>
 </div>
 <script>
 const refreshSeconds = <?= json_encode($refreshSeconds, JSON_UNESCAPED_SLASHES) ?>;
-function escapeHtml(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
-function formatNumber(value, digits = 1) { if (value === null || value === undefined || value === '' || Number.isNaN(Number(value))) { return 'n/a'; } return Number(value).toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: 0 }); }
-function badgeClass(label) { const text = String(label ?? '').toUpperCase(); if (text.includes('RUN') || text.includes('ACTIVE') || text.includes('GO')) { return 'ok'; } if (text.includes('REJECT') || text.includes('IMPROVE') || text.includes('WARN')) { return 'warn'; } if (text.includes('FAIL') || text.includes('ERROR') || text.includes('NO-GO')) { return 'danger'; } return 'info'; }
-function renderTable(targetId, columns, rows, emptyMessage) { const target = document.getElementById(targetId); if (!target) { return; } if (!Array.isArray(rows) || rows.length === 0) { target.innerHTML = `<div class="empty">${escapeHtml(emptyMessage)}</div>`; return; } const thead = columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join(''); const tbody = rows.map((row) => { const cells = columns.map((column) => { const raw = typeof column.render === 'function' ? column.render(row) : row[column.key]; return `<td class="${column.mono ? 'mono' : ''}">${raw ?? ''}</td>`; }).join(''); return `<tr>${cells}</tr>`; }).join(''); target.innerHTML = `<table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`; }
-function renderMetrics(targetId, items) { const target = document.getElementById(targetId); if (!target) { return; } if (!Array.isArray(items) || items.length === 0) { target.innerHTML = '<div class="empty">No metrics available.</div>'; return; } target.innerHTML = items.map((item) => `<div class="metric-item"><div class="metric-key">${escapeHtml(item.label)}</div><div class="metric-value">${escapeHtml(item.value)}</div></div>`).join(''); }
-function renderWarnings(warnings) { const panel = document.getElementById('warnings-panel'); const list = document.getElementById('warnings-list'); if (!panel || !list) { return; } if (!Array.isArray(warnings) || warnings.length === 0) { panel.style.display = 'none'; list.innerHTML = ''; return; } panel.style.display = 'block'; list.innerHTML = warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join(''); }
-function renderStatusBanner(service) { const banner = document.getElementById('status-banner'); if (!banner) { return; } if (service && service.active === false) { banner.style.display = 'block'; banner.textContent = 'Ghost Trader bot service is not active. Dashboard stays read-only, but runtime health is degraded.'; return; } banner.style.display = 'none'; banner.textContent = ''; }
-function updateHeader(payload) { const runtime = payload.runtime_summary || {}; const service = payload.service || {}; const verdictBlock = payload.swot_verdict?.final_verdict || {}; document.getElementById('service-status').textContent = service.active ? 'RUNNING' : 'DEGRADED'; document.getElementById('service-name').textContent = service.name || 'ghost-trader'; document.getElementById('total-trades').textContent = formatNumber(runtime.total_trades, 0); document.getElementById('tracked-whales').textContent = formatNumber(runtime.tracked_whales, 0); document.getElementById('mapped-orderflow').textContent = `${formatNumber(runtime.mapped_orderflow_events, 0)} / ${formatNumber(runtime.unmapped_orderflow_events, 0)}`; document.getElementById('mapping-note').textContent = `Alias cache ${formatNumber(runtime.alias_cache_hits, 0)}, lazy hits ${formatNumber(runtime.lazy_lookup_hits, 0)}`; document.getElementById('market-not-mapped-rate').textContent = `${formatNumber(runtime.market_not_mapped_rate, 1)}%`; document.getElementById('final-verdict').textContent = verdictBlock.verdict || 'N/A'; document.getElementById('verdict-reason').textContent = verdictBlock.reason || 'No SWOT verdict yet.'; document.getElementById('open-state-note').textContent = `${formatNumber(runtime.open_positions_count, 0)} open positions / ${formatNumber(runtime.open_orders_count, 0)} open orders`; document.getElementById('last-refresh-badge').textContent = `Last refresh ${new Date(payload.generated_at).toLocaleTimeString()}`; }
+
+function escapeHtml(value) {
+    return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+}
+
+function formatNumber(value, digits = 1) {
+    if (value === null || value === undefined || value === '' || Number.isNaN(Number(value))) {
+        return 'yok';
+    }
+    return Number(value).toLocaleString('tr-TR', { maximumFractionDigits: digits, minimumFractionDigits: 0 });
+}
+
+function translateCategory(value) {
+    const text = String(value ?? '').toUpperCase();
+    const map = { CRYPTO: 'KRİPTO', SPORTS: 'SPOR', POLITICS: 'POLİTİKA', OTHER: 'DİĞER', UNKNOWN: 'BİLİNMİYOR' };
+    return map[text] || String(value ?? 'yok');
+}
+
+function translateVerdict(value) {
+    const text = String(value ?? '').toUpperCase();
+    const map = {
+        'IMPROVE FIRST': 'ÖNCE İYİLEŞTİR',
+        'NO-GO': 'UYGUN DEĞİL',
+        'GO': 'DEVAM'
+    };
+    return map[text] || String(value ?? 'yok');
+}
+
+function translateAction(value) {
+    const text = String(value ?? '').toUpperCase();
+    const map = {
+        RUNNING: 'ÇALIŞIYOR',
+        DEGRADED: 'DEGRADE',
+        REJECT: 'RED',
+        DECISION: 'KARAR',
+        EXECUTE: 'İŞLENDİ',
+        EXECUTED: 'İŞLENDİ',
+        EXIT: 'ÇIKIŞ',
+        OPEN: 'AÇIK',
+        CLOSED_WIN: 'KAPANDI_KAZANÇ',
+        CLOSED_LOSS: 'KAPANDI_ZARAR',
+        CLOSED_FLAT: 'KAPANDI_NÖTR'
+    };
+    return map[text] || String(value ?? 'yok');
+}
+
+function badgeClass(label) {
+    const text = String(label ?? '').toUpperCase();
+    if (text.includes('RUN') || text.includes('ACTIVE') || text === 'GO') { return 'ok'; }
+    if (text.includes('REJECT') || text.includes('IMPROVE') || text.includes('WARN')) { return 'warn'; }
+    if (text.includes('FAIL') || text.includes('ERROR') || text.includes('NO-GO')) { return 'danger'; }
+    return 'info';
+}
+
+function renderTable(targetId, columns, rows, emptyMessage) {
+    const target = document.getElementById(targetId);
+    if (!target) { return; }
+    if (!Array.isArray(rows) || rows.length === 0) {
+        target.innerHTML = `<div class="empty">${escapeHtml(emptyMessage)}</div>`;
+        return;
+    }
+    const thead = columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join('');
+    const tbody = rows.map((row) => {
+        const cells = columns.map((column) => {
+            const raw = typeof column.render === 'function' ? column.render(row) : row[column.key];
+            return `<td class="${column.mono ? 'mono' : ''}">${raw ?? ''}</td>`;
+        }).join('');
+        return `<tr>${cells}</tr>`;
+    }).join('');
+    target.innerHTML = `<table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`;
+}
+
+function renderMetrics(targetId, items) {
+    const target = document.getElementById(targetId);
+    if (!target) { return; }
+    if (!Array.isArray(items) || items.length === 0) {
+        target.innerHTML = '<div class="empty">Gösterilecek metrik yok.</div>';
+        return;
+    }
+    target.innerHTML = items.map((item) => `<div class="metric-item"><div class="metric-key">${escapeHtml(item.label)}</div><div class="metric-value">${escapeHtml(item.value)}</div></div>`).join('');
+}
+
+function renderWarnings(warnings) {
+    const panel = document.getElementById('warnings-panel');
+    const list = document.getElementById('warnings-list');
+    if (!panel || !list) { return; }
+    if (!Array.isArray(warnings) || warnings.length === 0) {
+        panel.style.display = 'none';
+        list.innerHTML = '';
+        return;
+    }
+    panel.style.display = 'block';
+    list.innerHTML = warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('');
+}
+
+function renderStatusBanner(service) {
+    const banner = document.getElementById('status-banner');
+    if (!banner) { return; }
+    if (service && service.active === false) {
+        banner.style.display = 'block';
+        banner.textContent = 'Ghost Trader bot servisi aktif değil. Dashboard salt-okunur çalışmaya devam eder ama runtime sağlığı şu an degrade.';
+        return;
+    }
+    banner.style.display = 'none';
+    banner.textContent = '';
+}
+
+function updateHeader(payload) {
+    const runtime = payload.runtime_summary || {};
+    const service = payload.service || {};
+    const verdictBlock = payload.swot_verdict?.final_verdict || {};
+
+    document.getElementById('service-status').textContent = service.active ? 'ÇALIŞIYOR' : 'DEGRADE';
+    document.getElementById('service-name').textContent = service.name || 'ghost-trader';
+    document.getElementById('total-trades').textContent = formatNumber(runtime.total_trades, 0);
+    document.getElementById('tracked-whales').textContent = formatNumber(runtime.tracked_whales, 0);
+    document.getElementById('mapped-orderflow').textContent = `${formatNumber(runtime.mapped_orderflow_events, 0)} / ${formatNumber(runtime.unmapped_orderflow_events, 0)}`;
+    document.getElementById('mapping-note').textContent = `Alias cache ${formatNumber(runtime.alias_cache_hits, 0)}, lazy hit ${formatNumber(runtime.lazy_lookup_hits, 0)}`;
+    document.getElementById('market-not-mapped-rate').textContent = `${formatNumber(runtime.market_not_mapped_rate, 1)}%`;
+    document.getElementById('final-verdict').textContent = translateVerdict(verdictBlock.verdict || 'yok');
+    document.getElementById('verdict-reason').textContent = verdictBlock.reason || 'Henüz SWOT kararı yok.';
+    document.getElementById('open-state-note').textContent = `${formatNumber(runtime.open_positions_count, 0)} açık pozisyon / ${formatNumber(runtime.open_orders_count, 0)} açık emir`;
+    document.getElementById('last-refresh-badge').textContent = `Son yenileme ${new Date(payload.generated_at).toLocaleTimeString('tr-TR')}`;
+}
+
 function updatePanels(payload) {
-renderTable('recent-decisions', [{ key: 'occurred_at', label: 'Time', mono: true, render: (row) => escapeHtml(row.occurred_at || '') }, { key: 'source', label: 'Source', render: (row) => `<span class="badge ${badgeClass(row.action || row.raw_source_signal)}">${escapeHtml(row.raw_source_signal || row.signal_family || 'unknown')}</span>` }, { key: 'category', label: 'Category', render: (row) => escapeHtml(row.category || 'n/a') }, { key: 'action', label: 'Action', render: (row) => `<span class="badge ${badgeClass(row.action)}">${escapeHtml(row.action || 'n/a')}</span>` }, { key: 'reason', label: 'Reason', render: (row) => escapeHtml(row.reason || row.mapping_stage || 'n/a') }, { key: 'decision_score', label: 'Score', render: (row) => escapeHtml(formatNumber(row.decision_score, 2)) }, { key: 'trade_size', label: 'Trade Size', render: (row) => escapeHtml(formatNumber(row.trade_size, 2)) }], payload.recent_decisions, 'No decision audit rows yet.');
-renderTable('open-positions', [{ key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || 'n/a') }, { key: 'symbol_or_market_id', label: 'Symbol / Market', mono: true, render: (row) => escapeHtml(row.symbol_or_market_id || '') }, { key: 'side', label: 'Side', render: (row) => escapeHtml(row.side || '') }, { key: 'notional_usd', label: 'Notional', render: (row) => escapeHtml(formatNumber(row.notional_usd, 2)) }, { key: 'unrealized_pnl', label: 'U-PnL', render: (row) => escapeHtml(formatNumber(row.unrealized_pnl, 2)) }, { key: 'opened_at', label: 'Opened', mono: true, render: (row) => escapeHtml(row.opened_at || '') }], payload.open_positions, 'No open positions.');
-renderTable('open-orders', [{ key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || '') }, { key: 'symbol_or_market_id', label: 'Symbol / Market', mono: true, render: (row) => escapeHtml(row.symbol_or_market_id || '') }, { key: 'order_type', label: 'Type', render: (row) => escapeHtml(row.order_type || '') }, { key: 'side', label: 'Side', render: (row) => escapeHtml(row.side || '') }, { key: 'stop_price', label: 'Stop', render: (row) => escapeHtml(formatNumber(row.stop_price, 2)) }, { key: 'qty', label: 'Qty', render: (row) => escapeHtml(formatNumber(row.qty, 6)) }], payload.open_orders, 'No open orders.');
-renderTable('recent-trades', [{ key: 'timestamp', label: 'Time', mono: true, render: (row) => escapeHtml(row.timestamp || '') }, { key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || '') }, { key: 'market_id', label: 'Market', mono: true, render: (row) => escapeHtml(row.market_id || '') }, { key: 'side', label: 'Side', render: (row) => escapeHtml(row.side || '') }, { key: 'size', label: 'Size', render: (row) => escapeHtml(formatNumber(row.size, 2)) }, { key: 'status', label: 'Status', render: (row) => `<span class="badge ${badgeClass(row.status)}">${escapeHtml(row.status || '')}</span>` }], payload.recent_trades, 'No trades recorded yet.');
-renderTable('venue-accounts', [{ key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || '') }, { key: 'execution_mode', label: 'Mode', render: (row) => escapeHtml(row.execution_mode || '') }, { key: 'cash_balance', label: 'Cash', render: (row) => escapeHtml(formatNumber(row.cash_balance, 2)) }, { key: 'equity', label: 'Equity', render: (row) => escapeHtml(formatNumber(row.equity, 2)) }, { key: 'available_balance', label: 'Available', render: (row) => escapeHtml(formatNumber(row.available_balance, 2)) }], payload.venue_accounts, 'No venue accounts found.');
-renderTable('whale-wallet-counts', [{ key: 'source_type', label: 'Source', render: (row) => escapeHtml(row.source_type || '') }, { key: 'count', label: 'Count', render: (row) => escapeHtml(formatNumber(row.count, 0)) }], payload.whale_wallet_counts, 'No whale wallet counts available.');
-renderTable('top-whales', [{ key: 'address', label: 'Address', mono: true, render: (row) => escapeHtml(row.address || '') }, { key: 'source_type', label: 'Source', render: (row) => escapeHtml(row.source_type || '') }, { key: 'discovery_score', label: 'Score', render: (row) => escapeHtml(formatNumber(row.discovery_score, 3)) }, { key: 'event_count_24h', label: '24h Events', render: (row) => escapeHtml(formatNumber(row.event_count_24h, 0)) }], payload.top_whales, 'No whales ranked yet.');
-renderTable('top-market-aliases', [{ key: 'alias', label: 'Alias', mono: true, render: (row) => escapeHtml(row.alias || '') }, { key: 'alias_type', label: 'Type', render: (row) => escapeHtml(row.alias_type || '') }, { key: 'category', label: 'Category', render: (row) => escapeHtml(row.category || '') }, { key: 'source', label: 'Source', render: (row) => escapeHtml(row.source || '') }], payload.top_market_aliases, 'No market aliases cached yet.');
-const runtime = payload.runtime_summary || {}; renderMetrics('mapping-health', [{ label: 'Mapped orderflow events', value: formatNumber(runtime.mapped_orderflow_events, 0) }, { label: 'Unmapped orderflow events', value: formatNumber(runtime.unmapped_orderflow_events, 0) }, { label: 'Alias cache hits', value: formatNumber(runtime.alias_cache_hits, 0) }, { label: 'Lazy lookup hits', value: formatNumber(runtime.lazy_lookup_hits, 0) }, { label: 'Market not mapped rate', value: `${formatNumber(runtime.market_not_mapped_rate, 1)}%` }]);
-const performance = payload.performance_summary || {}; const evidence = performance.evidence || {}; const core = performance.core || {}; const verdict = payload.swot_verdict?.final_verdict || {}; renderMetrics('performance-snapshot', [{ label: 'Live paper closed', value: formatNumber(evidence.live_paper_closed, 0) }, { label: 'Synthetic samples', value: formatNumber(evidence.synthetic_total, 0) }, { label: 'Core expectancy', value: core.expectancy === null || core.expectancy === undefined ? 'n/a' : formatNumber(core.expectancy, 4) }, { label: 'Final verdict', value: verdict.verdict || 'n/a' }, { label: 'Verdict reason', value: verdict.reason || 'No verdict yet' }]);
-const logLines = Array.isArray(payload.service_log_excerpt) ? payload.service_log_excerpt : []; document.getElementById('service-log').textContent = logLines.length > 0 ? logLines.join('\n') : 'Service log unavailable.'; }
-async function refreshDashboard() { try { const response = await fetch(`api.php?view=full&_=${Date.now()}`, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin', cache: 'no-store' }); if (!response.ok) { throw new Error(`API returned ${response.status}`); } const payload = await response.json(); renderWarnings(payload.warnings || []); renderStatusBanner(payload.service || {}); updateHeader(payload); updatePanels(payload); } catch (error) { renderWarnings([`dashboard refresh failed: ${error.message}`]); } }
-refreshDashboard(); setInterval(refreshDashboard, refreshSeconds * 1000);
+    renderTable('recent-decisions', [
+        { key: 'occurred_at', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.occurred_at || '') },
+        { key: 'source', label: 'Kaynak', render: (row) => `<span class="badge ${badgeClass(row.action || row.raw_source_signal)}">${escapeHtml(row.raw_source_signal || row.signal_family || 'unknown')}</span>` },
+        { key: 'category', label: 'Kategori', render: (row) => escapeHtml(translateCategory(row.category)) },
+        { key: 'action', label: 'Aksiyon', render: (row) => `<span class="badge ${badgeClass(row.action)}">${escapeHtml(translateAction(row.action || 'n/a'))}</span>` },
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(row.reason || row.mapping_stage || 'yok') },
+        { key: 'decision_score', label: 'Skor', render: (row) => escapeHtml(formatNumber(row.decision_score, 2)) },
+        { key: 'trade_size', label: 'İşlem Boyutu', render: (row) => escapeHtml(formatNumber(row.trade_size, 2)) }
+    ], payload.recent_decisions, 'Henüz karar denetim kaydı yok.');
+
+    renderTable('open-positions', [
+        { key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || 'yok') },
+        { key: 'symbol_or_market_id', label: 'Sembol / Market', mono: true, render: (row) => escapeHtml(row.symbol_or_market_id || '') },
+        { key: 'side', label: 'Yön', render: (row) => escapeHtml(row.side || '') },
+        { key: 'notional_usd', label: 'Notional', render: (row) => escapeHtml(formatNumber(row.notional_usd, 2)) },
+        { key: 'unrealized_pnl', label: 'Gerç. Olmayan PnL', render: (row) => escapeHtml(formatNumber(row.unrealized_pnl, 2)) },
+        { key: 'opened_at', label: 'Açılış', mono: true, render: (row) => escapeHtml(row.opened_at || '') }
+    ], payload.open_positions, 'Açık pozisyon yok.');
+
+    renderTable('open-orders', [
+        { key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || '') },
+        { key: 'symbol_or_market_id', label: 'Sembol / Market', mono: true, render: (row) => escapeHtml(row.symbol_or_market_id || '') },
+        { key: 'order_type', label: 'Tür', render: (row) => escapeHtml(row.order_type || '') },
+        { key: 'side', label: 'Yön', render: (row) => escapeHtml(row.side || '') },
+        { key: 'stop_price', label: 'Stop', render: (row) => escapeHtml(formatNumber(row.stop_price, 2)) },
+        { key: 'qty', label: 'Miktar', render: (row) => escapeHtml(formatNumber(row.qty, 6)) }
+    ], payload.open_orders, 'Açık emir yok.');
+
+    renderTable('recent-trades', [
+        { key: 'timestamp', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.timestamp || '') },
+        { key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || '') },
+        { key: 'market_id', label: 'Market', mono: true, render: (row) => escapeHtml(row.market_id || '') },
+        { key: 'side', label: 'Yön', render: (row) => escapeHtml(row.side || '') },
+        { key: 'size', label: 'Boyut', render: (row) => escapeHtml(formatNumber(row.size, 2)) },
+        { key: 'status', label: 'Durum', render: (row) => `<span class="badge ${badgeClass(row.status)}">${escapeHtml(translateAction(row.status || ''))}</span>` }
+    ], payload.recent_trades, 'Henüz kaydedilmiş işlem yok.');
+
+    renderTable('venue-accounts', [
+        { key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || '') },
+        { key: 'execution_mode', label: 'Mod', render: (row) => escapeHtml(row.execution_mode || '') },
+        { key: 'cash_balance', label: 'Nakit', render: (row) => escapeHtml(formatNumber(row.cash_balance, 2)) },
+        { key: 'equity', label: 'Özsermaye', render: (row) => escapeHtml(formatNumber(row.equity, 2)) },
+        { key: 'available_balance', label: 'Kullanılabilir', render: (row) => escapeHtml(formatNumber(row.available_balance, 2)) }
+    ], payload.venue_accounts, 'Venue hesabı bulunamadı.');
+
+    renderTable('whale-wallet-counts', [
+        { key: 'source_type', label: 'Kaynak', render: (row) => escapeHtml(row.source_type || '') },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.whale_wallet_counts, 'Balina kaynak sayısı yok.');
+
+    renderTable('top-whales', [
+        { key: 'address', label: 'Adres', mono: true, render: (row) => escapeHtml(row.address || '') },
+        { key: 'source_type', label: 'Kaynak', render: (row) => escapeHtml(row.source_type || '') },
+        { key: 'discovery_score', label: 'Skor', render: (row) => escapeHtml(formatNumber(row.discovery_score, 3)) },
+        { key: 'event_count_24h', label: '24s Event', render: (row) => escapeHtml(formatNumber(row.event_count_24h, 0)) }
+    ], payload.top_whales, 'Henüz sıralı balina verisi yok.');
+
+    renderTable('market-alias-counts', [
+        { key: 'source', label: 'Kaynak', render: (row) => escapeHtml(row.source || '') },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.market_alias_counts, 'Alias kaynak sayısı yok.');
+
+    renderTable('top-market-aliases', [
+        { key: 'alias', label: 'Alias', mono: true, render: (row) => escapeHtml(row.alias || '') },
+        { key: 'alias_type', label: 'Tür', render: (row) => escapeHtml(row.alias_type || '') },
+        { key: 'category', label: 'Kategori', render: (row) => escapeHtml(translateCategory(row.category)) },
+        { key: 'source', label: 'Kaynak', render: (row) => escapeHtml(row.source || '') }
+    ], payload.top_market_aliases, 'Henüz cache’lenen market alias yok.');
+
+    renderTable('top-unresolved-aliases', [
+        { key: 'alias', label: 'Alias', mono: true, render: (row) => escapeHtml(row.alias || '') },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) },
+        { key: 'reason', label: 'Son Neden', render: (row) => escapeHtml(row.reason || 'yok') }
+    ], payload.top_unresolved_aliases, 'Henüz çözülemeyen alias özeti yok.');
+
+    renderTable('recent-unresolved-aliases', [
+        { key: 'occurred_at', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.occurred_at || '') },
+        { key: 'mapping_stage', label: 'Aşama', render: (row) => escapeHtml(row.mapping_stage || 'yok') },
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(row.reason || 'yok') },
+        { key: 'aliases', label: 'Alias Adayları', mono: true, render: (row) => escapeHtml(Array.isArray(row.aliases) ? row.aliases.join(', ') : '') }
+    ], payload.recent_unresolved_aliases, 'Son çözülemeyen alias olayı yok.');
+
+    const runtime = payload.runtime_summary || {};
+    renderMetrics('mapping-health', [
+        { label: 'Eşlenen orderflow event', value: formatNumber(runtime.mapped_orderflow_events, 0) },
+        { label: 'Eşlenemeyen orderflow event', value: formatNumber(runtime.unmapped_orderflow_events, 0) },
+        { label: 'Alias cache hit', value: formatNumber(runtime.alias_cache_hits, 0) },
+        { label: 'Lazy lookup hit', value: formatNumber(runtime.lazy_lookup_hits, 0) },
+        { label: 'Market eşleşmedi oranı', value: `${formatNumber(runtime.market_not_mapped_rate, 1)}%` }
+    ]);
+
+    const performance = payload.performance_summary || {};
+    const evidence = performance.evidence || {};
+    const core = performance.core || {};
+    const verdict = payload.swot_verdict?.final_verdict || {};
+    renderMetrics('performance-snapshot', [
+        { label: 'Kapanmış live paper', value: formatNumber(evidence.live_paper_closed, 0) },
+        { label: 'Sentetik örnek', value: formatNumber(evidence.synthetic_total, 0) },
+        { label: 'Ana expectancy', value: core.expectancy === null || core.expectancy === undefined ? 'yok' : formatNumber(core.expectancy, 4) },
+        { label: 'Nihai karar', value: translateVerdict(verdict.verdict || 'yok') },
+        { label: 'Karar nedeni', value: verdict.reason || 'Henüz karar yok' }
+    ]);
+
+    const logLines = Array.isArray(payload.service_log_excerpt) ? payload.service_log_excerpt : [];
+    document.getElementById('service-log').textContent = logLines.length > 0 ? logLines.join('\n') : 'Servis logu alınamadı.';
+}
+
+async function refreshDashboard() {
+    try {
+        const response = await fetch(`api.php?view=full&_=${Date.now()}`, {
+            headers: { 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            cache: 'no-store'
+        });
+        if (!response.ok) {
+            throw new Error(`API ${response.status} döndü`);
+        }
+        const payload = await response.json();
+        renderWarnings(payload.warnings || []);
+        renderStatusBanner(payload.service || {});
+        updateHeader(payload);
+        updatePanels(payload);
+    } catch (error) {
+        renderWarnings([`dashboard yenilemesi başarısız oldu: ${error.message}`]);
+    }
+}
+
+refreshDashboard();
+setInterval(refreshDashboard, refreshSeconds * 1000);
 </script>
 </body>
 </html>

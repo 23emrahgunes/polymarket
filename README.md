@@ -153,6 +153,7 @@ Role split:
 ## Ops Dashboard
 
 A read-only PHP dashboard is available for browser-based runtime monitoring.
+The v1 UI is Turkish-first while the JSON API keeps stable English field names.
 
 What it shows:
 
@@ -186,6 +187,7 @@ Main env keys:
 - `DASHBOARD_PASSWORD_HASH=...`
 - `DASHBOARD_REFRESH_SECONDS=5`
 - `DASHBOARD_LOG_LINES=40`
+- `MARKET_LOOKUP_LIMIT=5000`
 
 The dashboard runs as a separate service:
 
@@ -535,4 +537,3 @@ sudo systemctl status ghost-trader
 sudo journalctl -u ghost-trader -f
 ./scripts/check_runtime.sh ghost-trader
 ```
-

@@ -51,6 +51,7 @@ class CopyTrader:
             "amount": float(whale_action.get("amount", 0.0) or 0.0),
             "price": whale_action.get("price"),
             "source": "whale_tracker",
+            "alias_candidates": whale_action.get("alias_candidates"),
         }
         return await self._evaluate_orderflow_event(normalized_event)
 
