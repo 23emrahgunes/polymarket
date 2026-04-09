@@ -195,7 +195,12 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
             <div class="subsection-title">Son Çözülemeyen Alias Olayları</div>
             <div id="recent-unresolved-aliases"></div>
         </article>
-        <article class="panel panel-third"><div class="panel-header"><h2>Balina Kaynağı</h2><span class="badge info">Hibrit Cache</span></div><div id="whale-wallet-counts"></div><div id="top-whales" style="margin-top:14px;"></div></article>
+        <article class="panel panel-third">
+            <div class="panel-header"><h2>Balina Kaynağı</h2><span class="badge info">Hibrit Cache</span></div>
+            <p class="panel-copy">Keşif skoru, whale adresini sıralamak için kullanılır; başarı oranı değildir. Güven skoru ve kazanma oranı yalnızca kapanmış canlı işlemlerden öğrenilir.</p>
+            <div id="whale-wallet-counts"></div>
+            <div id="top-whales" style="margin-top:14px;"></div>
+        </article>
         <article class="panel panel-third"><div class="panel-header"><h2>Performans Özeti</h2><span class="badge warn">Kanıt</span></div><div class="metric-list" id="performance-snapshot"></div></article>
         <article class="panel panel-wide"><div class="panel-header"><h2>Servis Log Özeti</h2><span class="badge info">Best Effort</span></div><pre id="service-log">Yükleniyor...</pre></article>
     </section>
@@ -445,10 +450,35 @@ function updatePanels(payload) {
     ], payload.whale_wallet_counts, 'Balina kaynak sayısı yok.');
 
     renderTable('top-whales', [
-        { key: 'address', label: 'Adres', mono: true, render: (row) => truncateHtml(row.address || '', 28) },
+        { key: 'address', label: 'Adres', mono: true, render: (row) => truncateHtml(row.address || '', 22) },
         { key: 'source_type', label: 'Kaynak', render: (row) => escapeHtml(row.source_type || '') },
-        { key: 'discovery_score', label: 'Skor', render: (row) => escapeHtml(formatNumber(row.discovery_score, 3)) },
-        { key: 'event_count_24h', label: '24s Event', render: (row) => escapeHtml(formatNumber(row.event_count_24h, 0)) }
+        { key: 'discovery_score', label: 'Keşif Skoru', render: (row) => escapeHtml(formatNumber(row.discovery_score, 3)) },
+        {
+            key: 'trust_score',
+            label: 'Güven Skoru',
+            render: (row) => {
+                const title = Number(row.total_trades || 0) > 0
+                    ? 'Kapanmış whale geçmişinden öğrenilen güven skoru.'
+                    : 'Henüz kapanmış whale geçmişi yok; nötr güven.';
+                return `<span title="${escapeHtml(title)}">${escapeHtml(formatNumber(row.trust_score, 3))}</span>`;
+            }
+        },
+        { key: 'event_count_24h', label: '24s Event', render: (row) => escapeHtml(formatNumber(row.event_count_24h, 0)) },
+        { key: 'total_trades', label: 'Kapanmış İşlem', render: (row) => escapeHtml(formatNumber(row.total_trades, 0)) },
+        {
+            key: 'win_rate',
+            label: 'Kazanma Oranı',
+            render: (row) => Number(row.total_trades || 0) > 0
+                ? escapeHtml(`%${formatNumber(row.win_rate, 1)}`)
+                : '&mdash;'
+        },
+        {
+            key: 'total_pnl',
+            label: 'Toplam PnL',
+            render: (row) => Number(row.total_trades || 0) > 0
+                ? escapeHtml(formatNumber(row.total_pnl, 2))
+                : '&mdash;'
+        }
     ], payload.top_whales, 'Henüz sıralı balina verisi yok.');
 
     renderTable('market-alias-counts', [

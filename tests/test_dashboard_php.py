@@ -73,6 +73,13 @@ def _create_dashboard_db(path: Path) -> None:
         ],
     )
     cur.execute(
+        'CREATE TABLE whale_stats (address TEXT PRIMARY KEY, total_trades INTEGER DEFAULT 0, wins INTEGER DEFAULT 0, total_pnl REAL DEFAULT 0, trust_score REAL DEFAULT 0.5, last_active TEXT)'
+    )
+    cur.execute(
+        'INSERT INTO whale_stats VALUES (?, ?, ?, ?, ?, ?)',
+        ('0xaaa', 4, 3, 12.5, 0.75, '2026-04-09 11:00:00'),
+    )
+    cur.execute(
         'CREATE TABLE decision_audit (id INTEGER PRIMARY KEY, occurred_at TEXT, venue TEXT, market_id TEXT, category TEXT, signal_family TEXT, strategy_profile TEXT, raw_source_signal TEXT, action TEXT, reason TEXT, decision_score REAL, threshold REAL, trade_size REAL, confidence REAL, mapping_stage TEXT, lazy_lookup_attempted INTEGER, lazy_lookup_hit INTEGER, alias_candidates_json TEXT, hot_window_promoted INTEGER DEFAULT 0)'
     )
     cur.executemany(
@@ -246,6 +253,16 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['recent_trades'][0]['market_id'] == 'market-2'
     assert payload['recent_decisions'][0]['strategy_profile'] == 'sampling_relaxed'
     assert payload['open_positions'][0]['symbol_or_market_id'] == 'BTC/USDT:USDT'
+    assert payload['top_whales'][0]['address'] == '0xaaa'
+    assert payload['top_whales'][0]['trust_score'] == 0.75
+    assert payload['top_whales'][0]['total_trades'] == 4
+    assert payload['top_whales'][0]['wins'] == 3
+    assert payload['top_whales'][0]['total_pnl'] == 12.5
+    assert payload['top_whales'][0]['win_rate'] == 75.0
+    assert payload['top_whales'][1]['address'] == '0xbbb'
+    assert payload['top_whales'][1]['trust_score'] == 0.5
+    assert payload['top_whales'][1]['total_trades'] == 0
+    assert payload['top_whales'][1]['win_rate'] is None
     assert payload['top_unresolved_aliases'][0]['alias'] == 'mystery-token'
     assert payload['recent_unresolved_aliases'][0]['aliases'][0] == 'mystery-token'
     assert payload['recent_decisions'][0]['hot_window_promoted'] == 1
@@ -262,6 +279,13 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Ghost Trader Operasyon Paneli' in html
     assert 'Son Kararlar' in html
     assert 'Sampling modu' in html
+    assert 'Keşif skoru, whale adresini sıralamak için kullanılır; başarı oranı değildir.' in html
+    assert 'Keşif Skoru' in html
+    assert 'Güven Skoru' in html
+    assert 'Kazanma Oranı' in html
+    assert 'Toplam PnL' in html
+    assert 'Henüz kapanmış whale geçmişi yok; nötr güven.' in html
+    assert '&mdash;' in html
 
 
 def test_dashboard_api_degrades_without_runtime_files(tmp_path: Path):

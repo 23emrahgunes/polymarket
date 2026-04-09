@@ -296,7 +296,29 @@ function dashboard_fetch_runtime_collections(PDO $pdo): array
         ),
         'top_whales' => dashboard_fetch_all(
             $pdo,
-            'SELECT address, source_type, discovery_score, last_event_amount, event_count_24h, failure_streak, last_seen_at FROM whale_wallets WHERE enabled = 1 ORDER BY discovery_score DESC, last_event_amount DESC LIMIT 12'
+            "
+            SELECT
+                whale_wallets.address,
+                whale_wallets.source_type,
+                whale_wallets.discovery_score,
+                whale_wallets.last_event_amount,
+                whale_wallets.event_count_24h,
+                whale_wallets.failure_streak,
+                whale_wallets.last_seen_at,
+                COALESCE(whale_stats.trust_score, 0.5) AS trust_score,
+                COALESCE(whale_stats.total_trades, 0) AS total_trades,
+                COALESCE(whale_stats.wins, 0) AS wins,
+                COALESCE(whale_stats.total_pnl, 0) AS total_pnl,
+                CASE
+                    WHEN COALESCE(whale_stats.total_trades, 0) > 0 THEN ROUND((CAST(whale_stats.wins AS REAL) / whale_stats.total_trades) * 100.0, 1)
+                    ELSE NULL
+                END AS win_rate
+            FROM whale_wallets
+            LEFT JOIN whale_stats ON whale_stats.address = whale_wallets.address
+            WHERE whale_wallets.enabled = 1
+            ORDER BY whale_wallets.discovery_score DESC, whale_wallets.last_event_amount DESC
+            LIMIT 12
+            "
         ),
         'market_alias_counts' => dashboard_fetch_all(
             $pdo,
