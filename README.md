@@ -191,6 +191,41 @@ Main env keys:
 - `ORDERFLOW_HOT_WINDOW_ENABLED=true`
 - `ORDERFLOW_HOT_WINDOW_LIMIT=150`
 - `ORDERFLOW_HOT_WINDOW_TTL_SECONDS=900`
+- `PAPER_SAMPLING_MODE=false`
+- `PAPER_SAMPLING_TARGET_CLOSED_TRADES=20`
+
+## Paper Sampling Mode
+
+Sampling mode is an opt-in, paper-only experiment that helps the bot collect
+non-synthetic orderflow samples faster without mixing those results into the
+baseline alpha verdict.
+
+Behavior:
+
+- baseline strategy stays unchanged
+- `sampling_relaxed` applies only to Polymarket orderflow in `SPORTS`, `POLITICS`, and `OTHER`
+- sampling is active only in `live_paper`
+- sampling automatically stops after the configured number of closed live paper trades
+- sampling analytics are reported separately from baseline performance
+
+Recommended env values:
+
+```bash
+PAPER_SAMPLING_MODE=true
+PAPER_SAMPLING_TARGET_CLOSED_TRADES=20
+```
+
+Dashboard visibility:
+
+- `Sampling modu`
+- `Sampling profili`
+- `Sampling ilerlemesi`
+- `Sampling win rate`
+- `Sampling expectancy`
+- `Sampling toplam PnL`
+
+Sampling results are operational evidence only; they are not treated as core proof
+that the baseline strategy has edge.
 
 Resolver / sıcak pencere notları:
 

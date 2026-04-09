@@ -18,6 +18,7 @@ from src.database import Database
 from src.decision_engine import DecisionEngine, DecisionInputs, classify_market_category
 from src.explorer import MarketExplorer
 from src.evaluation_utils import infer_sample_kind, normalize_signal_family, slippage_proxy_bps_from_spread
+from src.evaluation_utils import STRATEGY_PROFILE_SAMPLING_RELAXED
 from src.gamma_client import GammaApiClient
 from src.logic import calculate_annualized_volatility, calculate_black_scholes_prob, calculate_edge, calculate_rsi
 from src.market_config import BINANCE_FUTURES_MAPPINGS, EXCHANGE_MAPPINGS, resolve_binance_futures_symbol, resolve_crypto_symbol
@@ -56,6 +57,8 @@ class RuntimeSettings:
     verify_required_category: Optional[str] = None
     market_limit: int = 200
     market_lookup_limit: int = 5000
+    paper_sampling_mode: bool = False
+    paper_sampling_target_closed_trades: int = 20
     orderflow_hot_window_enabled: bool = True
     orderflow_hot_window_limit: int = 150
     orderflow_hot_window_ttl_seconds: float = 900.0
@@ -83,6 +86,8 @@ class RuntimeSettings:
             verify_required_venues=_env_csv("VERIFY_REQUIRED_VENUES"),
             verify_required_category=(os.getenv("VERIFY_REQUIRED_CATEGORY", "").strip().upper() or None),
             market_lookup_limit=max(int(os.getenv("MARKET_LOOKUP_LIMIT", "5000") or 5000), 200),
+            paper_sampling_mode=_env_flag("PAPER_SAMPLING_MODE", False),
+            paper_sampling_target_closed_trades=max(int(os.getenv("PAPER_SAMPLING_TARGET_CLOSED_TRADES", "20") or 20), 1),
             orderflow_hot_window_enabled=_env_flag("ORDERFLOW_HOT_WINDOW_ENABLED", True),
             orderflow_hot_window_limit=max(int(os.getenv("ORDERFLOW_HOT_WINDOW_LIMIT", "150") or 150), 1),
             orderflow_hot_window_ttl_seconds=max(float(os.getenv("ORDERFLOW_HOT_WINDOW_TTL_SECONDS", "900") or 900), 60.0),
@@ -129,6 +134,9 @@ class GhostBotRuntime:
         self.hot_window_promotions = 0
         self.hot_window_expiry_events = 0
         self.active_window_misses = 0
+        self.sampling_enabled = bool(settings.paper_sampling_mode and self.sample_kind == "live_paper")
+        self.sampling_closed_trades = 0
+        self.sampling_stop_reason: Optional[str] = None
 
         self.scanner: Optional[MarketScanner] = None
         self.db: Optional[Database] = None
@@ -197,6 +205,8 @@ class GhostBotRuntime:
             mapping_event_callback=self.record_mapping_event,
             market_promotion_callback=self.promote_hot_window_market,
         )
+        await self.refresh_sampling_state()
+        self._publish_sampling_state()
 
         self.polymarket_venue = PolymarketVenue(
             self.settings.venue_configs["polymarket"],
@@ -252,6 +262,7 @@ class GhostBotRuntime:
             market_id=decision.market_id,
             category=decision.category,
             signal_family=normalize_signal_family(decision.source),
+            strategy_profile=decision.strategy_profile,
             raw_source_signal=decision.source,
             sample_kind=self.sample_kind,
             is_synthetic=self.sample_kind != "live_paper",
@@ -270,6 +281,47 @@ class GhostBotRuntime:
             lazy_lookup_attempted=bool(decision.inputs.get("lazy_lookup_attempted", False)),
             lazy_lookup_hit=bool(decision.inputs.get("lazy_lookup_hit", False)),
             hot_window_promoted=bool(decision.inputs.get("hot_window_promoted", False)),
+        )
+
+    async def refresh_sampling_state(self) -> None:
+        if self.db is None:
+            return
+
+        if self.sample_kind != "live_paper" or not self.settings.paper_sampling_mode:
+            self.sampling_enabled = False
+            self.sampling_closed_trades = 0
+            self.sampling_stop_reason = None
+            self._publish_sampling_state()
+            return
+
+        closed_trades = await self.db.count_closed_trades(
+            sample_kind="live_paper",
+            strategy_profile=STRATEGY_PROFILE_SAMPLING_RELAXED,
+            is_synthetic=False,
+            venue="polymarket",
+        )
+        self.sampling_closed_trades = closed_trades
+        if closed_trades >= self.settings.paper_sampling_target_closed_trades:
+            self.sampling_enabled = False
+            self.sampling_stop_reason = "target_reached"
+        else:
+            self.sampling_enabled = True
+            self.sampling_stop_reason = None
+        self._publish_sampling_state()
+
+    def _publish_sampling_state(self) -> None:
+        if self.copy_trader is None:
+            return
+        self.copy_trader.update_sampling_state(
+            enabled=self.sampling_enabled,
+            target_reached=bool(
+                self.settings.paper_sampling_mode
+                and self.sample_kind == "live_paper"
+                and self.sampling_closed_trades >= self.settings.paper_sampling_target_closed_trades
+            ),
+            closed_trades=self.sampling_closed_trades,
+            target_closed_trades=self.settings.paper_sampling_target_closed_trades,
+            stop_reason=self.sampling_stop_reason,
         )
 
     async def bootstrap_market_context(self) -> None:
@@ -388,6 +440,7 @@ class GhostBotRuntime:
         if self.db is None:
             return
 
+        await self.refresh_sampling_state()
         total, wins, win_rate, total_pnl = await self.db.get_bot_performance()
         futures_realized, futures_unrealized = await self.db.get_venue_performance("binance_futures")
         futures_balance = await self.db.get_balance("binance_futures", self.settings.venue_configs["binance_futures"].mode)
@@ -405,8 +458,9 @@ class GhostBotRuntime:
         active_window_miss_rate = (
             (self.active_window_misses / total_orderflow_events) * 100.0 if total_orderflow_events else 0.0
         )
+        sampling_mode = "enabled" if self.sampling_enabled else ("target_reached" if self.sampling_stop_reason == "target_reached" else "disabled")
         logger.info(
-            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s mapped_orderflow_events=%s unmapped_orderflow_events=%s alias_cache_hits=%s lazy_lookup_hits=%s hot_window_markets=%s hot_window_hits=%s hot_window_promotions=%s hot_window_expiries=%s active_window_misses=%s resolver_hit_rate=%.1f active_window_miss_rate=%.1f market_not_mapped_rate=%.1f scan_time=%.2fs",
+            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s mapped_orderflow_events=%s unmapped_orderflow_events=%s alias_cache_hits=%s lazy_lookup_hits=%s hot_window_markets=%s hot_window_hits=%s hot_window_promotions=%s hot_window_expiries=%s active_window_misses=%s resolver_hit_rate=%.1f active_window_miss_rate=%.1f market_not_mapped_rate=%.1f sampling_mode=%s sampling_closed_trades=%s sampling_target_closed_trades=%s sampling_stop_reason=%s scan_time=%.2fs",
             active_markets_count,
             len(whale_tracker.top_whales if whale_tracker else []),
             getattr(whale_tracker, "leaderboard_wallets_count", 0),
@@ -437,6 +491,10 @@ class GhostBotRuntime:
             resolver_hit_rate,
             active_window_miss_rate,
             market_not_mapped_rate,
+            sampling_mode,
+            self.sampling_closed_trades,
+            self.settings.paper_sampling_target_closed_trades,
+            self.sampling_stop_reason or "none",
             cycle_duration,
         )
 
@@ -776,12 +834,14 @@ class GhostBotRuntime:
     async def handle_whale_action(self, action: Dict) -> None:
         if self.copy_trader is None:
             return
+        await self.refresh_sampling_state()
         self._record_crypto_orderflow_hint(action, source="whale_tracker")
         await self.copy_trader.evaluate_signal(action)
 
     async def handle_activity_event(self, event: Dict) -> None:
         if self.copy_trader is None:
             return
+        await self.refresh_sampling_state()
         self._record_crypto_orderflow_hint(event, source=event.get("source", "activity"))
         await self.copy_trader.evaluate_activity_event(event)
 
@@ -992,10 +1052,16 @@ class GhostBotRuntime:
         hot_context["hot_window_stage"] = stage
         hot_context["hot_window_promoted_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-        self.hot_window_market_context[market_id] = hot_context
-        self.hot_window_expiries[market_id] = time.time() + self.settings.orderflow_hot_window_ttl_seconds
+        hot_window_limit = self.settings.orderflow_hot_window_limit
+        hot_window_ttl_seconds = self.settings.orderflow_hot_window_ttl_seconds
+        if self.sampling_enabled:
+            hot_window_limit = max(hot_window_limit, 300)
+            hot_window_ttl_seconds = max(hot_window_ttl_seconds, 1800.0)
 
-        while len(self.hot_window_market_context) > self.settings.orderflow_hot_window_limit:
+        self.hot_window_market_context[market_id] = hot_context
+        self.hot_window_expiries[market_id] = time.time() + hot_window_ttl_seconds
+
+        while len(self.hot_window_market_context) > hot_window_limit:
             oldest_market_id = min(
                 self.hot_window_expiries,
                 key=lambda key: (self.hot_window_expiries.get(key, 0.0), key),

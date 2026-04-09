@@ -13,6 +13,7 @@ from src.evaluation_utils import (
     infer_sample_kind_from_db_path,
     is_synthetic_sample,
     normalize_signal_family,
+    normalize_strategy_profile,
 )
 
 
@@ -83,19 +84,31 @@ def analyze_dataset(
         positions = positions[positions["is_synthetic"] == 0].copy()
         audits = audits[audits["is_synthetic"] == 0].copy()
 
+    baseline_trades = trades[trades["strategy_profile"] == "baseline"].copy()
+    baseline_positions = positions[positions["strategy_profile"] == "baseline"].copy()
+    baseline_audits = audits[audits["strategy_profile"] == "baseline"].copy()
+
     summary = {
         "db_paths": dataset.db_paths,
         "sample_counts": _sample_counts(dataset.trades),
-        "what_was_measurable": _what_was_measurable(trades, audits),
-        "what_was_not_measurable": _what_was_not_measurable(trades),
+        "what_was_measurable": _what_was_measurable(baseline_trades, baseline_audits),
+        "what_was_not_measurable": _what_was_not_measurable(baseline_trades),
     }
-    summary["core"] = _core_metrics(trades, positions)
-    summary["venue_comparison"] = _group_pnl_summary(trades, positions, "venue")
-    summary["category_comparison"] = _group_pnl_summary(trades, positions, "category")
-    summary["signal_source_comparison"] = _group_pnl_summary(trades, positions, "signal_family")
-    summary["confidence_bucket_performance"] = _bucket_performance(trades, "confidence", DEFAULT_CONFIDENCE_BUCKETS)
-    summary["whale_trust_bucket_performance"] = _bucket_performance(trades, "whale_trust_at_entry", DEFAULT_WHALE_TRUST_BUCKETS, include_unknown=True)
-    summary["rejection_counts_by_reason"] = _rejection_counts(audits)
+    summary["core"] = _core_metrics(baseline_trades, baseline_positions)
+    summary["venue_comparison"] = _group_pnl_summary(baseline_trades, baseline_positions, "venue")
+    summary["category_comparison"] = _group_pnl_summary(baseline_trades, baseline_positions, "category")
+    summary["signal_source_comparison"] = _group_pnl_summary(baseline_trades, baseline_positions, "signal_family")
+    summary["strategy_profile_comparison"] = _group_pnl_summary(trades, positions, "strategy_profile")
+    summary["sampling_summary"] = {
+        "strategy_profile": "sampling_relaxed",
+        "core_metrics": _core_metrics(
+            trades[trades["strategy_profile"] == "sampling_relaxed"].copy(),
+            positions[positions["strategy_profile"] == "sampling_relaxed"].copy(),
+        ),
+    }
+    summary["confidence_bucket_performance"] = _bucket_performance(baseline_trades, "confidence", DEFAULT_CONFIDENCE_BUCKETS)
+    summary["whale_trust_bucket_performance"] = _bucket_performance(baseline_trades, "whale_trust_at_entry", DEFAULT_WHALE_TRUST_BUCKETS, include_unknown=True)
+    summary["rejection_counts_by_reason"] = _rejection_counts(baseline_audits)
     summary["synthetic_appendix"] = {
         "trade_count": int(len(synthetic_trades)),
         "position_count": int(len(synthetic_positions)),
@@ -149,6 +162,7 @@ def _normalize_trades(frame: pd.DataFrame) -> pd.DataFrame:
                 "category",
                 "signal_family",
                 "sample_kind",
+                "strategy_profile",
                 "is_synthetic",
                 "status",
                 "pnl",
@@ -173,6 +187,7 @@ def _normalize_trades(frame: pd.DataFrame) -> pd.DataFrame:
             "category": None,
             "signal_family": None,
             "sample_kind": None,
+            "strategy_profile": None,
             "is_synthetic": None,
             "debug_profile": None,
             "entry_spread_pct": None,
@@ -193,6 +208,10 @@ def _normalize_trades(frame: pd.DataFrame) -> pd.DataFrame:
     )
     frame["sample_kind"] = frame.apply(
         lambda row: row["sample_kind"] if _nonempty(row["sample_kind"]) else infer_sample_kind_from_db_path(row["db_path"]),
+        axis=1,
+    )
+    frame["strategy_profile"] = frame.apply(
+        lambda row: normalize_strategy_profile(row["strategy_profile"]),
         axis=1,
     )
     frame["is_synthetic"] = frame.apply(
@@ -219,6 +238,7 @@ def _normalize_positions(frame: pd.DataFrame) -> pd.DataFrame:
                 "category",
                 "signal_family",
                 "sample_kind",
+                "strategy_profile",
                 "is_synthetic",
                 "status",
                 "notional_usd",
@@ -240,6 +260,7 @@ def _normalize_positions(frame: pd.DataFrame) -> pd.DataFrame:
             "category": None,
             "signal_family": None,
             "sample_kind": None,
+            "strategy_profile": None,
             "is_synthetic": None,
             "debug_profile": None,
             "entry_spread_pct": None,
@@ -260,6 +281,10 @@ def _normalize_positions(frame: pd.DataFrame) -> pd.DataFrame:
         lambda row: row["sample_kind"] if _nonempty(row["sample_kind"]) else infer_sample_kind_from_db_path(row["db_path"]),
         axis=1,
     )
+    frame["strategy_profile"] = frame.apply(
+        lambda row: normalize_strategy_profile(row["strategy_profile"]),
+        axis=1,
+    )
     frame["is_synthetic"] = frame.apply(
         lambda row: int(row["is_synthetic"]) if pd.notna(row["is_synthetic"]) else int(is_synthetic_sample(row["sample_kind"])),
         axis=1,
@@ -277,6 +302,7 @@ def _normalize_audits(frame: pd.DataFrame) -> pd.DataFrame:
                 "category",
                 "signal_family",
                 "sample_kind",
+                "strategy_profile",
                 "is_synthetic",
                 "action",
                 "reason",
@@ -293,6 +319,7 @@ def _normalize_audits(frame: pd.DataFrame) -> pd.DataFrame:
             "signal_family": None,
             "raw_source_signal": None,
             "sample_kind": None,
+            "strategy_profile": None,
             "is_synthetic": None,
             "action": None,
             "reason": None,
@@ -304,6 +331,10 @@ def _normalize_audits(frame: pd.DataFrame) -> pd.DataFrame:
     )
     frame["sample_kind"] = frame.apply(
         lambda row: row["sample_kind"] if _nonempty(row["sample_kind"]) else infer_sample_kind_from_db_path(row["db_path"]),
+        axis=1,
+    )
+    frame["strategy_profile"] = frame.apply(
+        lambda row: normalize_strategy_profile(row["strategy_profile"]),
         axis=1,
     )
     frame["is_synthetic"] = frame.apply(
@@ -365,25 +396,28 @@ def _group_pnl_summary(trades: pd.DataFrame, positions: pd.DataFrame, key: str) 
     if trades.empty and positions.empty:
         return []
 
-    trade_summary = pd.DataFrame(columns=[key, "trade_count", "closed_trades", "realized_pnl"])
+    trade_summary: list[dict] = []
     if not trades.empty:
         grouped = trades.groupby(trades[key].fillna("UNKNOWN"), dropna=False)
-        trade_summary = grouped.apply(
-            lambda group: pd.Series(
+        for raw_group_key, group in grouped:
+            group_key = _group_value_for_summary(key, raw_group_key)
+            entry_spreads = group["entry_spread_pct"].dropna()
+            slippage_proxies = group["slippage_proxy_bps"].dropna()
+            trade_summary.append(
                 {
-                    key: group[key].iloc[0] if key in group and pd.notna(group[key].iloc[0]) else "UNKNOWN",
+                    key: group_key,
                     "trade_count": len(group),
                     "closed_trades": int((group["status"] != "OPEN").sum()),
                     "realized_pnl": float(group[group["status"] != "OPEN"]["pnl"].sum()),
-                    "average_entry_spread": float(group["entry_spread_pct"].dropna().mean()) if not group["entry_spread_pct"].dropna().empty else None,
-                    "average_slippage_proxy": float(group["slippage_proxy_bps"].dropna().mean()) if not group["slippage_proxy_bps"].dropna().empty else None,
+                    "average_entry_spread": float(entry_spreads.mean()) if not entry_spreads.empty else None,
+                    "average_slippage_proxy": float(slippage_proxies.mean()) if not slippage_proxies.empty else None,
                 }
             )
-        ).reset_index(drop=True)
 
-    position_summary = {}
+    position_summary: Dict[str, Dict[str, float | int]] = {}
     if not positions.empty:
-        for group_key, group in positions.groupby(positions[key].fillna("UNKNOWN"), dropna=False):
+        for raw_group_key, group in positions.groupby(positions[key].fillna("UNKNOWN"), dropna=False):
+            group_key = _group_value_for_summary(key, raw_group_key)
             position_summary[group_key] = {
                 "unrealized_pnl": float(group[group["status"] == "OPEN"]["unrealized_pnl"].fillna(0).sum()),
                 "open_exposure": float(group[group["status"] == "OPEN"]["notional_usd"].fillna(0).sum()),
@@ -391,8 +425,8 @@ def _group_pnl_summary(trades: pd.DataFrame, positions: pd.DataFrame, key: str) 
             }
 
     rows: list[dict] = []
-    for _, row in trade_summary.iterrows():
-        row_key = row.get(key) or "UNKNOWN"
+    for row in trade_summary:
+        row_key = _group_value_for_summary(key, row.get(key))
         position_metrics = position_summary.get(row_key, {"unrealized_pnl": 0.0, "open_exposure": 0.0, "open_positions": 0})
         rows.append(
             {
@@ -626,6 +660,14 @@ def _round_or_none(value: Optional[float]) -> Optional[float]:
     if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
         return None
     return round(float(value), 4)
+
+
+def _group_value_for_summary(key: str, value: object) -> str:
+    if key == "strategy_profile":
+        return normalize_strategy_profile(value)
+    if not _nonempty(value):
+        return "UNKNOWN"
+    return str(value)
 
 
 def _nonempty(value: object) -> bool:

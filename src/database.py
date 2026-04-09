@@ -11,6 +11,7 @@ from src.evaluation_utils import (
     infer_sample_kind_from_db_path,
     is_synthetic_sample,
     normalize_signal_family,
+    normalize_strategy_profile,
 )
 from src.market_mapping import normalize_market_alias
 
@@ -61,6 +62,7 @@ class Database:
                 source_signal TEXT DEFAULT 'runtime',
                 category TEXT,
                 signal_family TEXT DEFAULT 'unknown',
+                strategy_profile TEXT DEFAULT 'baseline',
                 sample_kind TEXT DEFAULT 'live_paper',
                 is_synthetic INTEGER DEFAULT 0,
                 debug_profile TEXT,
@@ -120,6 +122,7 @@ class Database:
                 source_signal TEXT,
                 category TEXT,
                 signal_family TEXT DEFAULT 'unknown',
+                strategy_profile TEXT DEFAULT 'baseline',
                 sample_kind TEXT DEFAULT 'live_paper',
                 is_synthetic INTEGER DEFAULT 0,
                 debug_profile TEXT,
@@ -181,6 +184,7 @@ class Database:
                 market_id TEXT NOT NULL,
                 category TEXT,
                 signal_family TEXT DEFAULT 'unknown',
+                strategy_profile TEXT DEFAULT 'baseline',
                 raw_source_signal TEXT,
                 sample_kind TEXT DEFAULT 'live_paper',
                 is_synthetic INTEGER DEFAULT 0,
@@ -235,6 +239,7 @@ class Database:
             "ALTER TABLE trades ADD COLUMN source_signal TEXT DEFAULT 'runtime'",
             "ALTER TABLE trades ADD COLUMN category TEXT",
             "ALTER TABLE trades ADD COLUMN signal_family TEXT DEFAULT 'unknown'",
+            "ALTER TABLE trades ADD COLUMN strategy_profile TEXT DEFAULT 'baseline'",
             "ALTER TABLE trades ADD COLUMN sample_kind TEXT DEFAULT 'live_paper'",
             "ALTER TABLE trades ADD COLUMN is_synthetic INTEGER DEFAULT 0",
             "ALTER TABLE trades ADD COLUMN debug_profile TEXT",
@@ -248,6 +253,7 @@ class Database:
             "ALTER TABLE venue_positions ADD COLUMN source_signal TEXT",
             "ALTER TABLE venue_positions ADD COLUMN category TEXT",
             "ALTER TABLE venue_positions ADD COLUMN signal_family TEXT DEFAULT 'unknown'",
+            "ALTER TABLE venue_positions ADD COLUMN strategy_profile TEXT DEFAULT 'baseline'",
             "ALTER TABLE venue_positions ADD COLUMN sample_kind TEXT DEFAULT 'live_paper'",
             "ALTER TABLE venue_positions ADD COLUMN is_synthetic INTEGER DEFAULT 0",
             "ALTER TABLE venue_positions ADD COLUMN debug_profile TEXT",
@@ -269,6 +275,7 @@ class Database:
             "ALTER TABLE decision_audit ADD COLUMN lazy_lookup_attempted INTEGER DEFAULT 0",
             "ALTER TABLE decision_audit ADD COLUMN lazy_lookup_hit INTEGER DEFAULT 0",
             "ALTER TABLE decision_audit ADD COLUMN hot_window_promoted INTEGER DEFAULT 0",
+            "ALTER TABLE decision_audit ADD COLUMN strategy_profile TEXT DEFAULT 'baseline'",
         ]:
             try:
                 await self.conn.execute(statement)
@@ -307,6 +314,9 @@ class Database:
             (sample_kind,),
         )
         await self.conn.execute(
+            "UPDATE trades SET strategy_profile = COALESCE(NULLIF(strategy_profile, ''), 'baseline') WHERE strategy_profile IS NULL OR strategy_profile = ''"
+        )
+        await self.conn.execute(
             "UPDATE trades SET debug_profile = COALESCE(debug_profile, ?) WHERE debug_profile IS NULL",
             (debug_profile,),
         )
@@ -316,6 +326,9 @@ class Database:
         await self.conn.execute(
             "UPDATE venue_positions SET sample_kind = COALESCE(NULLIF(sample_kind, ''), ?) WHERE sample_kind IS NULL OR sample_kind = ''",
             (sample_kind,),
+        )
+        await self.conn.execute(
+            "UPDATE venue_positions SET strategy_profile = COALESCE(NULLIF(strategy_profile, ''), 'baseline') WHERE strategy_profile IS NULL OR strategy_profile = ''"
         )
         await self.conn.execute(
             "UPDATE venue_positions SET debug_profile = COALESCE(debug_profile, ?) WHERE debug_profile IS NULL",
@@ -359,6 +372,10 @@ class Database:
                 """,
                 (normalized, *source_signals),
             )
+
+        await self.conn.execute(
+            "UPDATE decision_audit SET strategy_profile = COALESCE(NULLIF(strategy_profile, ''), 'baseline') WHERE strategy_profile IS NULL OR strategy_profile = ''"
+        )
 
         await self.conn.commit()
 
@@ -430,6 +447,7 @@ class Database:
         execution_mode: str = "paper",
         category: str | None = None,
         signal_family: str | None = None,
+        strategy_profile: str | None = None,
         sample_kind: str | None = None,
         is_synthetic: bool | None = None,
         debug_profile: str | None = None,
@@ -441,6 +459,7 @@ class Database:
         hold_seconds: float | None = None,
     ) -> int:
         normalized_signal_family = signal_family or normalize_signal_family(source_signal)
+        normalized_strategy_profile = normalize_strategy_profile(strategy_profile)
         normalized_sample_kind = sample_kind or infer_sample_kind_from_db_path(self.db_path)
         normalized_is_synthetic = int(is_synthetic_sample(normalized_sample_kind) if is_synthetic is None else bool(is_synthetic))
         normalized_opened_at = opened_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -448,11 +467,11 @@ class Database:
             """
             INSERT INTO trades (
                 market_id, side, size, price, edge, confidence, status, whale_address,
-                venue, instrument_type, position_id, source_signal, category, signal_family,
+                venue, instrument_type, position_id, source_signal, category, signal_family, strategy_profile,
                 sample_kind, is_synthetic, debug_profile, entry_spread_pct, slippage_proxy_bps,
                 whale_trust_at_entry, execution_mode, opened_at, closed_at, hold_seconds
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 market_id,
@@ -469,6 +488,7 @@ class Database:
                 source_signal,
                 category,
                 normalized_signal_family,
+                normalized_strategy_profile,
                 normalized_sample_kind,
                 normalized_is_synthetic,
                 debug_profile,
@@ -918,6 +938,32 @@ class Database:
             win_rate = (wins / total * 100) if total > 0 else 0.0
             return total, wins, win_rate, float(total_pnl)
 
+    async def count_closed_trades(
+        self,
+        *,
+        sample_kind: str | None = None,
+        strategy_profile: str | None = None,
+        is_synthetic: bool | None = None,
+        venue: str | None = None,
+    ) -> int:
+        query = "SELECT COUNT(*) AS total FROM trades WHERE status != 'OPEN'"
+        params: list = []
+        if sample_kind is not None:
+            query += " AND sample_kind = ?"
+            params.append(sample_kind)
+        if strategy_profile is not None:
+            query += " AND strategy_profile = ?"
+            params.append(normalize_strategy_profile(strategy_profile))
+        if is_synthetic is not None:
+            query += " AND is_synthetic = ?"
+            params.append(1 if is_synthetic else 0)
+        if venue is not None:
+            query += " AND venue = ?"
+            params.append(venue)
+        async with self.conn.execute(query, params) as cursor:
+            row = await cursor.fetchone()
+            return int(row["total"] or 0)
+
     async def get_venue_performance(self, venue: str | None = None):
         query = """
             SELECT
@@ -966,6 +1012,7 @@ class Database:
         venue: str | None = None,
         category: str | None = None,
         signal_family: str | None = None,
+        strategy_profile: str | None = None,
         raw_source_signal: str | None = None,
         sample_kind: str | None = None,
         is_synthetic: bool | None = None,
@@ -986,17 +1033,18 @@ class Database:
         occurred_at: str | None = None,
     ) -> int:
         normalized_signal_family = signal_family or normalize_signal_family(raw_source_signal)
+        normalized_strategy_profile = normalize_strategy_profile(strategy_profile)
         normalized_sample_kind = sample_kind or infer_sample_kind_from_db_path(self.db_path)
         normalized_is_synthetic = int(is_synthetic_sample(normalized_sample_kind) if is_synthetic is None else bool(is_synthetic))
         cursor = await self.conn.execute(
             """
             INSERT INTO decision_audit (
-                occurred_at, venue, market_id, category, signal_family, raw_source_signal, sample_kind,
+                occurred_at, venue, market_id, category, signal_family, strategy_profile, raw_source_signal, sample_kind,
                 is_synthetic, decision_score, threshold, trade_size, action, reason, confidence,
                 whale_trust, spread_pct, slippage_proxy_bps, inputs_json, mapping_stage,
                 alias_candidates_json, lazy_lookup_attempted, lazy_lookup_hit, hot_window_promoted
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 occurred_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
@@ -1004,6 +1052,7 @@ class Database:
                 market_id,
                 category,
                 normalized_signal_family,
+                normalized_strategy_profile,
                 raw_source_signal,
                 normalized_sample_kind,
                 normalized_is_synthetic,
@@ -1041,6 +1090,7 @@ class Database:
         source_signal: str | None = None,
         category: str | None = None,
         signal_family: str | None = None,
+        strategy_profile: str | None = None,
         sample_kind: str | None = None,
         is_synthetic: bool | None = None,
         debug_profile: str | None = None,
@@ -1051,6 +1101,7 @@ class Database:
         status: str = "OPEN",
     ) -> int:
         normalized_signal_family = signal_family or normalize_signal_family(source_signal)
+        normalized_strategy_profile = normalize_strategy_profile(strategy_profile)
         normalized_sample_kind = sample_kind or infer_sample_kind_from_db_path(self.db_path)
         normalized_is_synthetic = int(is_synthetic_sample(normalized_sample_kind) if is_synthetic is None else bool(is_synthetic))
         cursor = await self.conn.execute(
@@ -1058,10 +1109,10 @@ class Database:
             INSERT INTO venue_positions (
                 venue, execution_mode, instrument_type, symbol_or_market_id, side, qty_or_shares,
                 entry_price, mark_price, notional_usd, leverage, status, source_signal, category,
-                signal_family, sample_kind, is_synthetic, debug_profile, entry_spread_pct,
+                signal_family, strategy_profile, sample_kind, is_synthetic, debug_profile, entry_spread_pct,
                 slippage_proxy_bps, whale_trust_at_entry, linked_market_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 venue,
@@ -1078,6 +1129,7 @@ class Database:
                 source_signal,
                 category,
                 normalized_signal_family,
+                normalized_strategy_profile,
                 normalized_sample_kind,
                 normalized_is_synthetic,
                 debug_profile,

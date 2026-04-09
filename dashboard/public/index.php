@@ -147,6 +147,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #market-alias-counts, #whale-wallet-counts { max-height: 160px; overflow: auto; }
         #top-market-aliases, #top-whales { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
+        #performance-snapshot { max-height: 420px; overflow: auto; }
         #service-log { max-height: 280px; }
         @media (max-width: 1100px) { .panel-half, .panel-third { grid-column: span 12; } }
     </style>
@@ -229,6 +230,25 @@ function translateVerdict(value) {
     return map[text] || String(value ?? 'yok');
 }
 
+function translateStrategyProfile(value) {
+    const text = String(value ?? '').toLowerCase();
+    const map = {
+        baseline: 'baseline',
+        sampling_relaxed: 'sampling_relaxed'
+    };
+    return map[text] || String(value ?? 'yok');
+}
+
+function translateSamplingMode(value) {
+    const text = String(value ?? '').toLowerCase();
+    const map = {
+        enabled: 'Açık',
+        disabled: 'Kapalı',
+        target_reached: 'Hedefe ulaştı'
+    };
+    return map[text] || String(value ?? 'yok');
+}
+
 function translateAction(value) {
     const text = String(value ?? '').toUpperCase();
     const map = {
@@ -270,7 +290,9 @@ function translateReason(value) {
         score_below_threshold: 'skor eşik altında',
         liquidity_guard_rejection: 'likidite koruması reddetti',
         slippage_guard_rejection: 'slippage koruması reddetti',
-        cluster_threshold_not_reached: 'cluster eşiği tutmadı'
+        cluster_threshold_not_reached: 'cluster eşiği tutmadı',
+        sampling_target_reached: 'sampling hedefi dolduğu için durduruldu',
+        none: 'yok'
     };
     return map[text] || String(value ?? 'yok');
 }
@@ -371,6 +393,7 @@ function updatePanels(payload) {
     renderTable('recent-decisions', [
         { key: 'occurred_at', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.occurred_at || '') },
         { key: 'source', label: 'Kaynak', render: (row) => `<span class="badge ${badgeClass(row.action || row.raw_source_signal)}" title="${escapeHtml(row.raw_source_signal || row.signal_family || 'unknown')}">${escapeHtml(row.raw_source_signal || row.signal_family || 'unknown')}</span>` },
+        { key: 'strategy_profile', label: 'Profil', render: (row) => escapeHtml(translateStrategyProfile(row.strategy_profile || 'baseline')) },
         { key: 'category', label: 'Kategori', render: (row) => escapeHtml(translateCategory(row.category)) },
         { key: 'action', label: 'Aksiyon', render: (row) => `<span class="badge ${badgeClass(row.action)}">${escapeHtml(translateAction(row.action || 'n/a'))}</span>` },
         { key: 'mapping_stage', label: 'Aşama', render: (row) => escapeHtml(translateMappingStage(row.mapping_stage || 'yok')) },
@@ -402,6 +425,7 @@ function updatePanels(payload) {
         { key: 'timestamp', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.timestamp || '') },
         { key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || '') },
         { key: 'market_id', label: 'Market', mono: true, render: (row) => truncateHtml(row.market_id || '', 30) },
+        { key: 'strategy_profile', label: 'Profil', render: (row) => escapeHtml(translateStrategyProfile(row.strategy_profile || 'baseline')) },
         { key: 'side', label: 'Yön', render: (row) => escapeHtml(row.side || '') },
         { key: 'size', label: 'Boyut', render: (row) => escapeHtml(formatNumber(row.size, 2)) },
         { key: 'status', label: 'Durum', render: (row) => `<span class="badge ${badgeClass(row.status)}">${escapeHtml(translateAction(row.status || ''))}</span>` }
@@ -471,13 +495,22 @@ function updatePanels(payload) {
     const performance = payload.performance_summary || {};
     const evidence = performance.evidence || {};
     const core = performance.core || {};
+    const sampling = payload.sampling_summary || {};
     const verdict = payload.swot_verdict?.final_verdict || {};
     renderMetrics('performance-snapshot', [
         { label: 'Kapanmış live paper', value: formatNumber(evidence.live_paper_closed, 0) },
         { label: 'Sentetik örnek', value: formatNumber(evidence.synthetic_total, 0) },
         { label: 'Ana expectancy', value: core.expectancy === null || core.expectancy === undefined ? 'yok' : formatNumber(core.expectancy, 4) },
+        { label: 'Sampling modu', value: translateSamplingMode(runtime.sampling_mode || 'disabled') },
+        { label: 'Sampling profili', value: translateStrategyProfile(sampling.strategy_profile || 'sampling_relaxed') },
+        { label: 'Sampling ilerlemesi', value: `${formatNumber(runtime.sampling_closed_trades, 0)} / ${formatNumber(runtime.sampling_target_closed_trades, 0)} kapanmış trade` },
+        { label: 'Sampling win rate', value: sampling.win_rate === null || sampling.win_rate === undefined ? 'yok' : `${formatNumber(sampling.win_rate, 1)}%` },
+        { label: 'Sampling expectancy', value: sampling.expectancy === null || sampling.expectancy === undefined ? 'yok' : formatNumber(sampling.expectancy, 4) },
+        { label: 'Sampling toplam PnL', value: sampling.total_pnl === null || sampling.total_pnl === undefined ? 'yok' : formatNumber(sampling.total_pnl, 2) },
+        { label: 'Sampling durma nedeni', value: translateReason(runtime.sampling_stop_reason || 'none') },
         { label: 'Nihai karar', value: translateVerdict(verdict.verdict || 'yok') },
-        { label: 'Karar nedeni', value: verdict.reason || 'Henüz karar yok', long: true }
+        { label: 'Karar nedeni', value: verdict.reason || 'Henüz karar yok', long: true },
+        { label: 'Sampling notu', value: 'Sampling sonuçları ana alpha kanıtı değildir; ayrı deney profili olarak izlenir.', long: true }
     ]);
 
     const logLines = Array.isArray(payload.service_log_excerpt) ? payload.service_log_excerpt : [];

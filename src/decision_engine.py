@@ -3,9 +3,14 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional
 
+from src.evaluation_utils import (
+    STRATEGY_PROFILE_BASELINE,
+    STRATEGY_PROFILE_SAMPLING_RELAXED,
+    normalize_strategy_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +67,7 @@ class DecisionInputs:
     lazy_lookup_hit: bool = False
     hot_window_hit: bool = False
     hot_window_promoted: bool = False
+    strategy_profile: str = STRATEGY_PROFILE_BASELINE
 
 
 @dataclass
@@ -77,6 +83,7 @@ class DecisionResult:
     inputs: Dict[str, Any]
     venue: Optional[str] = None
     direction: Optional[str] = None
+    strategy_profile: str = STRATEGY_PROFILE_BASELINE
 
 
 RISK_PROFILES: Dict[str, CategoryRiskProfile] = {
@@ -86,6 +93,27 @@ RISK_PROFILES: Dict[str, CategoryRiskProfile] = {
     "OTHER": CategoryRiskProfile("OTHER", 30_000.0, 1_500.0, 4, 0.05, 0.03, 0.78, 25.0),
 }
 
+SAMPLING_RELAXED_OVERRIDES: Dict[str, Dict[str, float | int]] = {
+    "SPORTS": {
+        "min_volume_24h": 15_000.0,
+        "min_whale_notional": 500.0,
+        "min_cluster_wallets": 2,
+        "min_score": 0.62,
+    },
+    "POLITICS": {
+        "min_volume_24h": 20_000.0,
+        "min_whale_notional": 600.0,
+        "min_cluster_wallets": 2,
+        "min_score": 0.64,
+    },
+    "OTHER": {
+        "min_volume_24h": 20_000.0,
+        "min_whale_notional": 750.0,
+        "min_cluster_wallets": 2,
+        "min_score": 0.66,
+    },
+}
+
 DISCOVERY_TRADE_CATEGORIES = {"CRYPTO"}
 
 
@@ -93,11 +121,18 @@ class DecisionEngine:
     def __init__(self, audit_sink: Optional[Callable[[DecisionResult], Any]] = None):
         self.audit_sink = audit_sink
 
-    def get_profile(self, category: str) -> CategoryRiskProfile:
-        return RISK_PROFILES.get(category or "OTHER", RISK_PROFILES["OTHER"])
+    def get_profile(self, category: str, strategy_profile: str = STRATEGY_PROFILE_BASELINE) -> CategoryRiskProfile:
+        base_profile = RISK_PROFILES.get(category or "OTHER", RISK_PROFILES["OTHER"])
+        if normalize_strategy_profile(strategy_profile) != STRATEGY_PROFILE_SAMPLING_RELAXED:
+            return base_profile
+        overrides = SAMPLING_RELAXED_OVERRIDES.get(base_profile.category)
+        if not overrides:
+            return base_profile
+        return replace(base_profile, **overrides)
 
     def reject(self, inputs: DecisionInputs, *reasons: str) -> DecisionResult:
-        profile = self.get_profile(inputs.category)
+        strategy_profile = normalize_strategy_profile(inputs.strategy_profile)
+        profile = self.get_profile(inputs.category, strategy_profile)
         return DecisionResult(
             source=inputs.source,
             category=inputs.category,
@@ -110,10 +145,12 @@ class DecisionEngine:
             inputs=self._inputs_for_log(inputs),
             venue=inputs.venue,
             direction=inputs.direction,
+            strategy_profile=strategy_profile,
         )
 
     def score_discovery(self, inputs: DecisionInputs) -> DecisionResult:
-        profile = self.get_profile(inputs.category)
+        strategy_profile = normalize_strategy_profile(inputs.strategy_profile)
+        profile = self.get_profile(inputs.category, strategy_profile)
         reasons: List[str] = []
 
         if inputs.category not in DISCOVERY_TRADE_CATEGORIES:
@@ -165,10 +202,12 @@ class DecisionEngine:
             ),
             venue=inputs.venue,
             direction=inputs.direction or ("LONG" if (inputs.edge or 0.0) >= 0 else "SHORT"),
+            strategy_profile=strategy_profile,
         )
 
     def score_orderflow(self, inputs: DecisionInputs) -> DecisionResult:
-        profile = self.get_profile(inputs.category)
+        strategy_profile = normalize_strategy_profile(inputs.strategy_profile)
+        profile = self.get_profile(inputs.category, strategy_profile)
         reasons: List[str] = []
 
         if not inputs.market_id:
@@ -236,17 +275,19 @@ class DecisionEngine:
             ),
             venue=inputs.venue,
             direction=inputs.direction,
+            strategy_profile=strategy_profile,
         )
 
     def log_result(self, decision: DecisionResult, runtime_logger: Optional[logging.Logger] = None) -> None:
         active_logger = runtime_logger or logger
         if decision.should_trade:
             active_logger.info(
-                "[DECISION] venue=%s source=%s category=%s market=%s score=%.2f threshold=%.2f trade_size=%.2f inputs=%s",
+                "[DECISION] venue=%s source=%s category=%s market=%s strategy_profile=%s score=%.2f threshold=%.2f trade_size=%.2f inputs=%s",
                 decision.venue or "unassigned",
                 decision.source,
                 decision.category,
                 decision.market_id,
+                decision.strategy_profile,
                 decision.score,
                 decision.threshold,
                 decision.trade_size,
@@ -256,11 +297,12 @@ class DecisionEngine:
             return
 
         active_logger.info(
-            "[REJECT] venue=%s source=%s category=%s market=%s reasons=%s score=%.2f threshold=%.2f inputs=%s",
+            "[REJECT] venue=%s source=%s category=%s market=%s strategy_profile=%s reasons=%s score=%.2f threshold=%.2f inputs=%s",
             decision.venue or "unassigned",
             decision.source,
             decision.category,
             decision.market_id,
+            decision.strategy_profile,
             ",".join(decision.reasons),
             decision.score,
             decision.threshold,
@@ -287,6 +329,7 @@ class DecisionEngine:
             "alias_candidates": inputs.alias_candidates,
             "lazy_lookup_attempted": inputs.lazy_lookup_attempted,
             "lazy_lookup_hit": inputs.lazy_lookup_hit,
+            "strategy_profile": normalize_strategy_profile(inputs.strategy_profile),
         }
         for key, value in extras.items():
             payload[key] = value

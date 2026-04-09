@@ -2,11 +2,16 @@ import logging
 from typing import Awaitable, Callable, Dict, Optional
 
 from src.decision_engine import DecisionEngine, DecisionInputs, classify_market_category
-from src.evaluation_utils import normalize_signal_family
+from src.evaluation_utils import (
+    STRATEGY_PROFILE_BASELINE,
+    STRATEGY_PROFILE_SAMPLING_RELAXED,
+    normalize_signal_family,
+)
 from src.market_mapping import collect_alias_candidates, event_is_meaningful_for_lazy_lookup, normalize_market_alias
 
 
 logger = logging.getLogger(__name__)
+SAMPLING_ELIGIBLE_CATEGORIES = {"SPORTS", "POLITICS", "OTHER"}
 
 
 class CopyTrader:
@@ -29,6 +34,11 @@ class CopyTrader:
         self.market_promotion_callback = market_promotion_callback
         self.market_context_by_id: Dict[str, Dict] = {}
         self.token_to_market_id: Dict[str, str] = {}
+        self.sampling_enabled = False
+        self.sampling_target_reached = False
+        self.sampling_closed_trades = 0
+        self.sampling_target_closed_trades = 20
+        self.sampling_stop_reason: Optional[str] = None
 
     def update_market_contexts(self, market_context_by_id: Dict[str, Dict], token_to_market_id: Dict[str, str]) -> None:
         self.market_context_by_id = {
@@ -42,6 +52,21 @@ class CopyTrader:
             normalized_market_id = normalize_market_alias(market_id)
             if normalized_alias and normalized_market_id:
                 self.token_to_market_id[normalized_alias] = normalized_market_id
+
+    def update_sampling_state(
+        self,
+        *,
+        enabled: bool,
+        target_reached: bool,
+        closed_trades: int,
+        target_closed_trades: int,
+        stop_reason: Optional[str] = None,
+    ) -> None:
+        self.sampling_enabled = enabled
+        self.sampling_target_reached = target_reached
+        self.sampling_closed_trades = closed_trades
+        self.sampling_target_closed_trades = target_closed_trades
+        self.sampling_stop_reason = stop_reason
 
     async def evaluate_signal(self, whale_action: Dict):
         normalized_event = {
@@ -117,6 +142,7 @@ class CopyTrader:
             lazy_lookup_hit=lazy_lookup_hit,
             hot_window_hit=hot_window_hit,
             hot_window_promoted=hot_window_promoted,
+            strategy_profile=STRATEGY_PROFILE_BASELINE,
         )
 
         if context is None:
@@ -166,30 +192,42 @@ class CopyTrader:
             stats = await self.db.get_whale_stats(wallet)
             whale_trust = float(stats["trust_score"]) if stats else 0.5
 
-        decision = self.decision_engine.score_orderflow(
-            DecisionInputs(
-                source=source,
-                category=category,
-                market_id=context["market_id"],
-                token_id=resolved_token_id,
-                event_type=event.get("type"),
-                question=question,
-                volume_24h=float(context.get("volume_24h", 0.0)),
-                mid_price=snapshot["mid_price"],
-                spread_pct=snapshot["spread_pct"],
-                event_amount=float(event.get("amount", 0.0) or 0.0),
-                wallets_count=int(event.get("wallets_count", 1) or 1),
-                whale_trust=whale_trust,
-                price_drift_pct=price_drift_pct,
-                venue="polymarket",
-                mapping_stage=mapping_stage,
-                alias_candidates=alias_candidates,
-                lazy_lookup_attempted=lazy_lookup_attempted,
-                lazy_lookup_hit=lazy_lookup_hit,
-                hot_window_hit=hot_window_hit,
-                hot_window_promoted=hot_window_promoted,
-            )
+        scored_inputs = DecisionInputs(
+            source=source,
+            category=category,
+            market_id=context["market_id"],
+            token_id=resolved_token_id,
+            event_type=event.get("type"),
+            question=question,
+            volume_24h=float(context.get("volume_24h", 0.0)),
+            mid_price=snapshot["mid_price"],
+            spread_pct=snapshot["spread_pct"],
+            event_amount=float(event.get("amount", 0.0) or 0.0),
+            wallets_count=int(event.get("wallets_count", 1) or 1),
+            whale_trust=whale_trust,
+            price_drift_pct=price_drift_pct,
+            venue="polymarket",
+            mapping_stage=mapping_stage,
+            alias_candidates=alias_candidates,
+            lazy_lookup_attempted=lazy_lookup_attempted,
+            lazy_lookup_hit=lazy_lookup_hit,
+            hot_window_hit=hot_window_hit,
+            hot_window_promoted=hot_window_promoted,
+            strategy_profile=STRATEGY_PROFILE_BASELINE,
         )
+        decision = self.decision_engine.score_orderflow(scored_inputs)
+
+        sampling_applicable = category in SAMPLING_ELIGIBLE_CATEGORIES
+        if not decision.should_trade and sampling_applicable:
+            if self.sampling_enabled:
+                decision = self.decision_engine.score_orderflow(
+                    DecisionInputs(**{**scored_inputs.__dict__, "strategy_profile": STRATEGY_PROFILE_SAMPLING_RELAXED})
+                )
+            elif self.sampling_target_reached:
+                decision = self.decision_engine.reject(
+                    DecisionInputs(**{**scored_inputs.__dict__, "strategy_profile": STRATEGY_PROFILE_SAMPLING_RELAXED}),
+                    *self._dedupe_reasons([*decision.reasons, "sampling_target_reached"]),
+                )
         self.decision_engine.log_result(decision, logger)
 
         if not decision.should_trade:
@@ -210,6 +248,7 @@ class CopyTrader:
             instrument_type="prediction",
             source_signal=source,
             signal_family=normalize_signal_family(source),
+            strategy_profile=decision.strategy_profile,
             entry_spread_pct=snapshot["spread_pct"],
             whale_trust_at_entry=whale_trust,
             execution_mode="paper",
@@ -362,3 +401,13 @@ class CopyTrader:
             active=bool(context.get("active", True)),
             source=source,
         )
+
+    @staticmethod
+    def _dedupe_reasons(reasons: list[str]) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for reason in reasons:
+            if reason and reason not in seen:
+                seen.add(reason)
+                ordered.append(reason)
+        return ordered

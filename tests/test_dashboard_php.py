@@ -38,18 +38,22 @@ def _create_dashboard_db(path: Path) -> None:
         ],
     )
     cur.execute(
-        'CREATE TABLE trades (id INTEGER PRIMARY KEY, venue TEXT, instrument_type TEXT, market_id TEXT, side TEXT, size REAL, price REAL, confidence REAL, source_signal TEXT, category TEXT, status TEXT, pnl REAL, whale_address TEXT, timestamp TEXT)'
+        'CREATE TABLE trades (id INTEGER PRIMARY KEY, venue TEXT, instrument_type TEXT, market_id TEXT, side TEXT, size REAL, price REAL, confidence REAL, source_signal TEXT, category TEXT, strategy_profile TEXT, sample_kind TEXT, is_synthetic INTEGER, status TEXT, pnl REAL, whale_address TEXT, timestamp TEXT)'
     )
     cur.execute(
-        'INSERT INTO trades VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        ('polymarket', 'prediction', 'market-1', 'YES', 40.0, 0.58, 0.73, 'activity', 'SPORTS', 'OPEN', 0.0, '0xabc', '2026-04-09 10:00:00'),
+        'INSERT INTO trades VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ('polymarket', 'prediction', 'market-1', 'YES', 40.0, 0.58, 0.73, 'activity', 'SPORTS', 'baseline', 'live_paper', 0, 'OPEN', 0.0, '0xabc', '2026-04-09 10:00:00'),
     )
     cur.execute(
-        'CREATE TABLE venue_positions (id INTEGER PRIMARY KEY, venue TEXT, instrument_type TEXT, symbol_or_market_id TEXT, side TEXT, entry_price REAL, mark_price REAL, notional_usd REAL, unrealized_pnl REAL, realized_pnl REAL, leverage INTEGER, status TEXT, opened_at TEXT)'
+        'INSERT INTO trades VALUES (2, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ('polymarket', 'prediction', 'market-2', 'YES', 35.0, 0.54, 0.69, 'whale_tracker', 'POLITICS', 'sampling_relaxed', 'live_paper', 0, 'CLOSED_WIN', 9.5, '0xdef', '2026-04-09 11:00:00'),
     )
     cur.execute(
-        'INSERT INTO venue_positions VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        ('binance_futures', 'futures', 'BTC/USDT:USDT', 'LONG', 100000.0, 100500.0, 100.0, 5.0, 0.0, 2, 'OPEN', '2026-04-09 10:00:00'),
+        'CREATE TABLE venue_positions (id INTEGER PRIMARY KEY, venue TEXT, instrument_type TEXT, symbol_or_market_id TEXT, side TEXT, entry_price REAL, mark_price REAL, notional_usd REAL, unrealized_pnl REAL, realized_pnl REAL, leverage INTEGER, strategy_profile TEXT, status TEXT, opened_at TEXT)'
+    )
+    cur.execute(
+        'INSERT INTO venue_positions VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ('binance_futures', 'futures', 'BTC/USDT:USDT', 'LONG', 100000.0, 100500.0, 100.0, 5.0, 0.0, 2, 'baseline', 'OPEN', '2026-04-09 10:00:00'),
     )
     cur.execute(
         'CREATE TABLE venue_orders (id INTEGER PRIMARY KEY, venue TEXT, symbol_or_market_id TEXT, order_type TEXT, side TEXT, qty REAL, price REAL, stop_price REAL, reduce_only INTEGER, status TEXT, created_at TEXT)'
@@ -69,14 +73,14 @@ def _create_dashboard_db(path: Path) -> None:
         ],
     )
     cur.execute(
-        'CREATE TABLE decision_audit (id INTEGER PRIMARY KEY, occurred_at TEXT, venue TEXT, market_id TEXT, category TEXT, signal_family TEXT, raw_source_signal TEXT, action TEXT, reason TEXT, decision_score REAL, threshold REAL, trade_size REAL, confidence REAL, mapping_stage TEXT, lazy_lookup_attempted INTEGER, lazy_lookup_hit INTEGER, alias_candidates_json TEXT, hot_window_promoted INTEGER DEFAULT 0)'
+        'CREATE TABLE decision_audit (id INTEGER PRIMARY KEY, occurred_at TEXT, venue TEXT, market_id TEXT, category TEXT, signal_family TEXT, strategy_profile TEXT, raw_source_signal TEXT, action TEXT, reason TEXT, decision_score REAL, threshold REAL, trade_size REAL, confidence REAL, mapping_stage TEXT, lazy_lookup_attempted INTEGER, lazy_lookup_hit INTEGER, alias_candidates_json TEXT, hot_window_promoted INTEGER DEFAULT 0)'
     )
     cur.executemany(
-        'INSERT INTO decision_audit VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO decision_audit VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
-            (1, '2026-04-09 10:00:00', 'polymarket', 'market-1', 'SPORTS', 'activity_orderflow', 'activity', 'reject', 'liquidity_guard', 0.67, 0.72, 40.0, 0.67, 'alias_cache', 0, 0, '["token-1","condition-1"]', 0),
-            (2, '2026-04-09 10:01:00', 'polymarket', 'market-2', 'OTHER', 'whale', 'whale_tracker', 'reject', 'market_not_mapped_active_window', 0.0, 0.78, 25.0, 0.0, 'active_window', 0, 0, '["mystery-token","mystery-market"]', 0),
-            (3, '2026-04-09 10:02:00', 'polymarket', 'market-3', 'SPORTS', 'whale', 'whale_tracker', 'decision', 'score_below_threshold', 0.71, 0.72, 40.0, 0.71, 'hot_window', 1, 1, '["hot-token","hot-market"]', 1),
+            (1, '2026-04-09 10:00:00', 'polymarket', 'market-1', 'SPORTS', 'activity_orderflow', 'baseline', 'activity', 'reject', 'liquidity_guard', 0.67, 0.72, 40.0, 0.67, 'alias_cache', 0, 0, '["token-1","condition-1"]', 0),
+            (2, '2026-04-09 10:01:00', 'polymarket', 'market-2', 'OTHER', 'whale', 'baseline', 'whale_tracker', 'reject', 'market_not_mapped_active_window', 0.0, 0.78, 25.0, 0.0, 'active_window', 0, 0, '["mystery-token","mystery-market"]', 0),
+            (3, '2026-04-09 10:02:00', 'polymarket', 'market-3', 'SPORTS', 'whale', 'sampling_relaxed', 'whale_tracker', 'decision', 'score_below_threshold', 0.71, 0.72, 40.0, 0.71, 'hot_window', 1, 1, '["hot-token","hot-market"]', 1),
         ],
     )
     cur.execute(
@@ -99,6 +103,15 @@ def _write_reports(summary_path: Path, swot_path: Path) -> None:
             {
                 'evidence': {'live_paper_closed': 3, 'synthetic_total': 6},
                 'core': {'expectancy': 0.0312},
+                'sampling_summary': {
+                    'strategy_profile': 'sampling_relaxed',
+                    'core_metrics': {
+                        'closed_trades': 1,
+                        'win_rate': 100.0,
+                        'expectancy': 9.5,
+                        'total_pnl': 9.5,
+                    },
+                },
             }
         ),
         encoding='utf-8',
@@ -221,18 +234,23 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
 
     assert payload['service']['name'] == 'ghost-trader'
     assert payload['runtime_summary']['tracked_whales'] == 2
-    assert payload['runtime_summary']['total_trades'] == 1
+    assert payload['runtime_summary']['total_trades'] == 2
     assert payload['runtime_summary']['unmapped_orderflow_events'] == 1
     assert payload['runtime_summary']['alias_cache_hits'] == 1
     assert payload['runtime_summary']['lazy_lookup_hits'] == 1
     assert payload['runtime_summary']['hot_window_hits'] == 1
     assert payload['runtime_summary']['hot_window_promotions'] == 1
     assert payload['runtime_summary']['active_window_misses'] == 1
-    assert payload['recent_trades'][0]['market_id'] == 'market-1'
+    assert payload['runtime_summary']['sampling_mode'] == 'disabled'
+    assert payload['runtime_summary']['sampling_target_closed_trades'] == 20
+    assert payload['recent_trades'][0]['market_id'] == 'market-2'
+    assert payload['recent_decisions'][0]['strategy_profile'] == 'sampling_relaxed'
     assert payload['open_positions'][0]['symbol_or_market_id'] == 'BTC/USDT:USDT'
     assert payload['top_unresolved_aliases'][0]['alias'] == 'mystery-token'
     assert payload['recent_unresolved_aliases'][0]['aliases'][0] == 'mystery-token'
     assert payload['recent_decisions'][0]['hot_window_promoted'] == 1
+    assert payload['sampling_summary']['strategy_profile'] == 'sampling_relaxed'
+    assert payload['sampling_summary']['closed_trades'] == 1
     assert payload['performance_summary']['evidence']['live_paper_closed'] == 3
     assert payload['swot_verdict']['final_verdict']['verdict'] == 'IMPROVE FIRST'
     assert isinstance(payload['warnings'], list)
@@ -243,6 +261,7 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     html = response.read().decode('utf-8')
     assert 'Ghost Trader Operasyon Paneli' in html
     assert 'Son Kararlar' in html
+    assert 'Sampling modu' in html
 
 
 def test_dashboard_api_degrades_without_runtime_files(tmp_path: Path):

@@ -8,7 +8,13 @@ from py_clob_client.client import ClobClient
 from py_clob_client.constants import POLYGON
 
 from src.env_utils import resolve_polygon_private_key
-from src.evaluation_utils import infer_sample_kind, normalize_signal_family, slippage_proxy_bps_from_spread
+from src.evaluation_utils import (
+    STRATEGY_PROFILE_BASELINE,
+    infer_sample_kind,
+    normalize_signal_family,
+    normalize_strategy_profile,
+    slippage_proxy_bps_from_spread,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -64,6 +70,7 @@ class TradeExecutor:
         source_signal: str = "runtime",
         execution_mode: str = "paper",
         signal_family: str | None = None,
+        strategy_profile: str = STRATEGY_PROFILE_BASELINE,
         sample_kind: str | None = None,
         debug_profile: str | None = None,
         entry_spread_pct: float | None = None,
@@ -73,6 +80,7 @@ class TradeExecutor:
         async with self.lock:
             normalized_sample_kind = sample_kind or self.sample_kind
             normalized_signal_family = signal_family or normalize_signal_family(source_signal)
+            normalized_strategy_profile = normalize_strategy_profile(strategy_profile)
             normalized_slippage_proxy = slippage_proxy_bps if slippage_proxy_bps is not None else slippage_proxy_bps_from_spread(entry_spread_pct)
             current_balance = await self.db.get_balance(venue, execution_mode)
             if current_balance < size:
@@ -81,6 +89,7 @@ class TradeExecutor:
                     market_id=market_id,
                     category=category,
                     signal_family=normalized_signal_family,
+                    strategy_profile=normalized_strategy_profile,
                     raw_source_signal=source_signal,
                     sample_kind=normalized_sample_kind,
                     decision_score=confidence,
@@ -109,6 +118,7 @@ class TradeExecutor:
                     market_id=market_id,
                     category=category,
                     signal_family=normalized_signal_family,
+                    strategy_profile=normalized_strategy_profile,
                     raw_source_signal=source_signal,
                     sample_kind=normalized_sample_kind,
                     decision_score=confidence,
@@ -155,6 +165,7 @@ class TradeExecutor:
                 source_signal=source_signal,
                 category=category,
                 signal_family=normalized_signal_family,
+                strategy_profile=normalized_strategy_profile,
                 sample_kind=normalized_sample_kind,
                 debug_profile=debug_profile or self.debug_profile,
                 entry_spread_pct=entry_spread_pct,
@@ -167,6 +178,7 @@ class TradeExecutor:
                 market_id=market_id,
                 category=category,
                 signal_family=normalized_signal_family,
+                strategy_profile=normalized_strategy_profile,
                 raw_source_signal=source_signal,
                 sample_kind=normalized_sample_kind,
                 decision_score=confidence,
@@ -210,6 +222,7 @@ class TradeExecutor:
                         "source_signal": source_signal,
                         "execution_mode": execution_mode,
                         "sample_kind": normalized_sample_kind,
+                        "strategy_profile": normalized_strategy_profile,
                     }
                 )
                 if inspect.isawaitable(callback_result):
@@ -250,6 +263,7 @@ class TradeExecutor:
                                 market_id=market_id,
                                 category=trade["category"] if "category" in trade.keys() else None,
                                 signal_family=trade["signal_family"] if "signal_family" in trade.keys() else None,
+                                strategy_profile=trade["strategy_profile"] if "strategy_profile" in trade.keys() else STRATEGY_PROFILE_BASELINE,
                                 raw_source_signal=trade["source_signal"] if "source_signal" in trade.keys() else "runtime",
                                 sample_kind=trade["sample_kind"] if "sample_kind" in trade.keys() else self.sample_kind,
                                 decision_score=trade["confidence"],

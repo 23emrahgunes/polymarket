@@ -16,6 +16,8 @@ SIGNAL_FAMILY_ACTIVITY = {"activity", "cluster_detected"}
 SAMPLE_KIND_LIVE_PAPER = "live_paper"
 SAMPLE_KIND_SYNTHETIC_VERIFY = "synthetic_verify"
 SAMPLE_KIND_REPLAY = "replay"
+STRATEGY_PROFILE_BASELINE = "baseline"
+STRATEGY_PROFILE_SAMPLING_RELAXED = "sampling_relaxed"
 
 
 def normalize_signal_family(raw_source_signal: Optional[str]) -> str:
@@ -69,3 +71,10 @@ def slippage_proxy_bps_from_spread(spread_pct: Optional[float]) -> Optional[floa
     if spread_pct is None:
         return None
     return round(float(spread_pct) * 10_000 / 2.0, 4)
+
+
+def normalize_strategy_profile(raw_strategy_profile: Optional[str]) -> str:
+    normalized = (raw_strategy_profile or STRATEGY_PROFILE_BASELINE).strip().lower()
+    if normalized == STRATEGY_PROFILE_SAMPLING_RELAXED:
+        return STRATEGY_PROFILE_SAMPLING_RELAXED
+    return STRATEGY_PROFILE_BASELINE

@@ -3,6 +3,7 @@ import pytest
 from src.copy_trader import CopyTrader
 from src.database import Database
 from src.decision_engine import DecisionEngine
+from src.evaluation_utils import STRATEGY_PROFILE_SAMPLING_RELAXED
 from src.runtime import GhostBotRuntime, RuntimeSettings
 
 
@@ -221,6 +222,50 @@ async def test_copy_trader_promotes_market_after_successful_lazy_lookup(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_copy_trader_uses_sampling_profile_when_baseline_rejects(tmp_path):
+    db_path = str(tmp_path / "sampling_profile_trade.db")
+    db = Database(db_path)
+    await db.connect()
+    await db.upsert_market_aliases(
+        market_id="0xMARKETS",
+        aliases=["0xMARKETS", "0xTOKENS"],
+        question="Will Team Sample win the championship?",
+        category="SPORTS",
+        volume_24h=16_000.0,
+        active=True,
+        source="explorer",
+    )
+
+    trader = _FakeTrader()
+    copy_trader = CopyTrader(trader, _FakeScanner(), db, DecisionEngine())
+    copy_trader.update_sampling_state(
+        enabled=True,
+        target_reached=False,
+        closed_trades=0,
+        target_closed_trades=20,
+    )
+
+    success = await copy_trader.evaluate_activity_event(
+        {
+            "type": "CLUSTER_DETECTED",
+            "token_id": "0xTOKENS",
+            "side": "BUY",
+            "amount": 600.0,
+            "wallets_count": 2,
+            "wallet": "0xWHALE-SAMPLE",
+            "source": "activity",
+            "alias_candidates": ["0xMARKETS", "0xTOKENS"],
+        }
+    )
+
+    await db.close()
+
+    assert success is True
+    assert len(trader.calls) == 1
+    assert trader.calls[0]["kwargs"]["strategy_profile"] == STRATEGY_PROFILE_SAMPLING_RELAXED
+
+
+@pytest.mark.asyncio
 async def test_copy_trader_skips_lazy_lookup_for_tiny_unmapped_cluster(tmp_path):
     db_path = str(tmp_path / "tiny_unmapped.db")
     db = Database(db_path)
@@ -427,3 +472,41 @@ async def test_runtime_promotes_and_expires_hot_window_market(tmp_path):
     await runtime.close()
 
     assert "0xlookup2" not in runtime.hot_window_market_context
+
+
+@pytest.mark.asyncio
+async def test_runtime_sampling_state_disables_after_target_closed_trades(tmp_path):
+    db_path = str(tmp_path / "runtime_sampling_state.db")
+    runtime = GhostBotRuntime(
+        RuntimeSettings(
+            exchange_id="coinbase",
+            db_path=db_path,
+            debug_signal_mode=False,
+            runtime_verify_once=False,
+            paper_sampling_mode=True,
+            paper_sampling_target_closed_trades=1,
+        )
+    )
+    await runtime.initialize()
+
+    trade_id = await runtime.db.add_trade(
+        "SAMPLE-MARKET",
+        "YES",
+        35.0,
+        0.55,
+        0.0,
+        0.69,
+        venue="polymarket",
+        source_signal="whale_tracker",
+        category="POLITICS",
+        sample_kind="live_paper",
+        strategy_profile=STRATEGY_PROFILE_SAMPLING_RELAXED,
+    )
+    await runtime.db.update_trade_resolution(trade_id, "CLOSED_WIN", 7.5)
+
+    await runtime.refresh_sampling_state()
+    await runtime.close()
+
+    assert runtime.sampling_closed_trades == 1
+    assert runtime.sampling_enabled is False
+    assert runtime.sampling_stop_reason == "target_reached"

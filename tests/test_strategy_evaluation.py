@@ -9,6 +9,7 @@ from scripts.analyze_performance import analyze_performance
 from scripts.run_backtest import run_backtest
 from scripts.swot_report import build_swot_report
 from src.database import Database
+from src.evaluation_utils import STRATEGY_PROFILE_SAMPLING_RELAXED
 
 
 @pytest.mark.asyncio
@@ -75,6 +76,7 @@ async def test_evaluation_attribution_persists_to_db(tmp_path):
     assert trade["category"] == "CRYPTO"
     assert trade["signal_family"] == "discovery"
     assert trade["sample_kind"] == "live_paper"
+    assert trade["strategy_profile"] == "baseline"
     assert trade["entry_spread_pct"] == 0.001
     assert trade["slippage_proxy_bps"] == 5.0
     assert trade["whale_trust_at_entry"] == 0.55
@@ -82,10 +84,12 @@ async def test_evaluation_attribution_persists_to_db(tmp_path):
     assert position["category"] == "CRYPTO"
     assert position["signal_family"] == "discovery"
     assert position["sample_kind"] == "live_paper"
+    assert position["strategy_profile"] == "baseline"
     assert position["slippage_proxy_bps"] == 5.0
 
     assert audit["signal_family"] == "discovery"
     assert audit["sample_kind"] == "live_paper"
+    assert audit["strategy_profile"] == "baseline"
     assert audit["action"] == "decision"
     await db.close()
 
@@ -140,6 +144,52 @@ async def test_analyze_performance_excludes_synthetic_by_default(tmp_path):
     assert summary["core"]["closed_trades"] == 1
     assert summary["synthetic_appendix"]["trade_count"] == 1
     assert summary["rejection_counts_by_reason"][0]["reason"] == "cluster_threshold_not_reached"
+
+
+@pytest.mark.asyncio
+async def test_analyze_performance_separates_sampling_profile_from_baseline(tmp_path):
+    db_path = tmp_path / "sampling_performance.db"
+    db = Database(str(db_path))
+    await db.connect()
+
+    baseline_trade_id = await db.add_trade(
+        "BASELINE-1",
+        "YES",
+        40.0,
+        0.60,
+        0.03,
+        0.74,
+        source_signal="activity",
+        category="SPORTS",
+        sample_kind="live_paper",
+    )
+    await db.update_trade_resolution(baseline_trade_id, "CLOSED_WIN", 12.0)
+
+    sampling_trade_id = await db.add_trade(
+        "SAMPLE-1",
+        "YES",
+        35.0,
+        0.54,
+        0.01,
+        0.69,
+        source_signal="whale_tracker",
+        category="POLITICS",
+        sample_kind="live_paper",
+        strategy_profile=STRATEGY_PROFILE_SAMPLING_RELAXED,
+    )
+    await db.update_trade_resolution(sampling_trade_id, "CLOSED_LOSS", -4.0)
+    await db.close()
+
+    summary = analyze_performance(db_paths=[str(db_path)], output_dir=str(tmp_path / "reports"))
+
+    assert summary["core"]["closed_trades"] == 1
+    assert summary["core"]["realized_pnl"] == 12.0
+    assert summary["sampling_summary"]["strategy_profile"] == STRATEGY_PROFILE_SAMPLING_RELAXED
+    assert summary["sampling_summary"]["core_metrics"]["closed_trades"] == 1
+    assert summary["sampling_summary"]["core_metrics"]["realized_pnl"] == -4.0
+    profiles = {row["strategy_profile"]: row for row in summary["strategy_profile_comparison"]}
+    assert profiles["baseline"]["closed_trades"] == 1
+    assert profiles[STRATEGY_PROFILE_SAMPLING_RELAXED]["closed_trades"] == 1
 
 
 def test_run_backtest_reports_insufficient_evidence_without_dataset(tmp_path):

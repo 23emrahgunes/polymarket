@@ -147,6 +147,10 @@ function dashboard_runtime_summary_from_db(PDO $pdo): array
     $tradeCount = dashboard_fetch_one($pdo, 'SELECT COUNT(*) AS count FROM trades');
     $openPositions = dashboard_fetch_one($pdo, "SELECT COUNT(*) AS count FROM venue_positions WHERE status = 'OPEN'");
     $openOrders = dashboard_fetch_one($pdo, "SELECT COUNT(*) AS count FROM venue_orders WHERE status = 'OPEN'");
+    $samplingClosed = dashboard_fetch_one(
+        $pdo,
+        "SELECT COUNT(*) AS count FROM trades WHERE venue = 'polymarket' AND sample_kind = 'live_paper' AND is_synthetic = 0 AND strategy_profile = 'sampling_relaxed' AND status != 'OPEN'"
+    );
     $whales = dashboard_fetch_all(
         $pdo,
         "SELECT source_type, COUNT(*) AS count FROM whale_wallets WHERE enabled = 1 GROUP BY source_type ORDER BY source_type"
@@ -173,6 +177,13 @@ function dashboard_runtime_summary_from_db(PDO $pdo): array
     $unmappedOrderflow = (int) ($decisionStats['unmapped_orderflow'] ?? 0);
     $mappedOrderflow = max($totalOrderflow - $unmappedOrderflow, 0);
     $marketNotMappedRate = $totalOrderflow > 0 ? ($unmappedOrderflow / $totalOrderflow) * 100.0 : 0.0;
+    $samplingTarget = max(dashboard_int_env('PAPER_SAMPLING_TARGET_CLOSED_TRADES', 20), 1);
+    $samplingMode = 'disabled';
+    $samplingStopReason = 'none';
+    if (dashboard_bool_env('PAPER_SAMPLING_MODE', false)) {
+        $samplingMode = ((int) ($samplingClosed['count'] ?? 0) >= $samplingTarget) ? 'target_reached' : 'enabled';
+        $samplingStopReason = $samplingMode === 'target_reached' ? 'target_reached' : 'none';
+    }
 
     return [
         'wallet_balance' => isset($wallet['balance']) ? (float) $wallet['balance'] : null,
@@ -185,6 +196,10 @@ function dashboard_runtime_summary_from_db(PDO $pdo): array
         'total_trades' => isset($tradeCount['count']) ? (int) $tradeCount['count'] : 0,
         'open_positions_count' => isset($openPositions['count']) ? (int) $openPositions['count'] : 0,
         'open_orders_count' => isset($openOrders['count']) ? (int) $openOrders['count'] : 0,
+        'sampling_mode' => $samplingMode,
+        'sampling_closed_trades' => isset($samplingClosed['count']) ? (int) $samplingClosed['count'] : 0,
+        'sampling_target_closed_trades' => $samplingTarget,
+        'sampling_stop_reason' => $samplingStopReason,
     ];
 }
 
@@ -200,6 +215,10 @@ function dashboard_merge_runtime_summary(array $dbSummary, array $statusMetrics)
         'lazy_lookup_hits',
         'market_not_mapped_rate',
         'total_trades',
+        'sampling_mode',
+        'sampling_closed_trades',
+        'sampling_target_closed_trades',
+        'sampling_stop_reason',
     ];
 
     foreach ($keys as $key) {
@@ -215,6 +234,39 @@ function dashboard_merge_runtime_summary(array $dbSummary, array $statusMetrics)
     return $summary;
 }
 
+function dashboard_sampling_summary_from_db(PDO $pdo): array
+{
+    $row = dashboard_fetch_one(
+        $pdo,
+        "
+        SELECT
+            COUNT(*) AS total_trades,
+            COALESCE(SUM(CASE WHEN status != 'OPEN' THEN 1 ELSE 0 END), 0) AS closed_trades,
+            COALESCE(SUM(CASE WHEN status = 'OPEN' THEN 1 ELSE 0 END), 0) AS open_trades,
+            COALESCE(SUM(CASE WHEN status != 'OPEN' AND pnl > 0 THEN 1 ELSE 0 END), 0) AS winning_trades,
+            COALESCE(SUM(CASE WHEN status != 'OPEN' THEN pnl ELSE 0 END), 0) AS realized_pnl
+        FROM trades
+        WHERE venue = 'polymarket' AND sample_kind = 'live_paper' AND is_synthetic = 0 AND strategy_profile = 'sampling_relaxed'
+        "
+    ) ?: [];
+
+    $totalTrades = (int) ($row['total_trades'] ?? 0);
+    $closedTrades = (int) ($row['closed_trades'] ?? 0);
+    $openTrades = (int) ($row['open_trades'] ?? 0);
+    $winningTrades = (int) ($row['winning_trades'] ?? 0);
+    $realizedPnl = (float) ($row['realized_pnl'] ?? 0.0);
+
+    return [
+        'strategy_profile' => 'sampling_relaxed',
+        'total_trades' => $totalTrades,
+        'closed_trades' => $closedTrades,
+        'open_trades' => $openTrades,
+        'win_rate' => $closedTrades > 0 ? round(($winningTrades / $closedTrades) * 100.0, 1) : null,
+        'expectancy' => $closedTrades > 0 ? round($realizedPnl / $closedTrades, 4) : null,
+        'total_pnl' => round($realizedPnl, 2),
+    ];
+}
+
 function dashboard_fetch_runtime_collections(PDO $pdo): array
 {
     return [
@@ -224,11 +276,11 @@ function dashboard_fetch_runtime_collections(PDO $pdo): array
         ),
         'recent_trades' => dashboard_fetch_all(
             $pdo,
-            'SELECT id, venue, instrument_type, market_id, side, size, price, confidence, source_signal, category, status, pnl, whale_address, timestamp FROM trades ORDER BY id DESC LIMIT 12'
+            'SELECT id, venue, instrument_type, market_id, side, size, price, confidence, source_signal, category, strategy_profile, status, pnl, whale_address, timestamp FROM trades ORDER BY id DESC LIMIT 12'
         ),
         'open_positions' => dashboard_fetch_all(
             $pdo,
-            "SELECT id, venue, instrument_type, symbol_or_market_id, side, entry_price, mark_price, notional_usd, unrealized_pnl, realized_pnl, leverage, status, opened_at FROM venue_positions WHERE status = 'OPEN' ORDER BY id DESC LIMIT 12"
+            "SELECT id, venue, instrument_type, symbol_or_market_id, side, entry_price, mark_price, notional_usd, unrealized_pnl, realized_pnl, leverage, strategy_profile, status, opened_at FROM venue_positions WHERE status = 'OPEN' ORDER BY id DESC LIMIT 12"
         ),
         'open_orders' => dashboard_fetch_all(
             $pdo,
@@ -236,7 +288,7 @@ function dashboard_fetch_runtime_collections(PDO $pdo): array
         ),
         'recent_decisions' => dashboard_fetch_all(
             $pdo,
-            'SELECT occurred_at, venue, market_id, category, signal_family, raw_source_signal, action, reason, decision_score, threshold, trade_size, confidence, mapping_stage, lazy_lookup_attempted, lazy_lookup_hit FROM decision_audit ORDER BY id DESC LIMIT 20'
+            'SELECT occurred_at, venue, market_id, category, signal_family, strategy_profile, raw_source_signal, action, reason, decision_score, threshold, trade_size, confidence, mapping_stage, lazy_lookup_attempted, lazy_lookup_hit, hot_window_promoted FROM decision_audit ORDER BY id DESC LIMIT 20'
         ),
         'whale_wallet_counts' => dashboard_fetch_all(
             $pdo,
@@ -275,6 +327,10 @@ function dashboard_build_payload(string $view = 'full'): array
         'total_trades' => 0,
         'open_positions_count' => 0,
         'open_orders_count' => 0,
+        'sampling_mode' => dashboard_bool_env('PAPER_SAMPLING_MODE', false) ? 'enabled' : 'disabled',
+        'sampling_closed_trades' => 0,
+        'sampling_target_closed_trades' => max(dashboard_int_env('PAPER_SAMPLING_TARGET_CLOSED_TRADES', 20), 1),
+        'sampling_stop_reason' => 'none',
     ];
 
     $collections = [
@@ -296,6 +352,17 @@ function dashboard_build_payload(string $view = 'full'): array
 
     $summaryReport = dashboard_load_report('DASHBOARD_SUMMARY_PATH', 'reports/performance/summary.json', 'performance report', $warnings);
     $swotReport = dashboard_load_report('DASHBOARD_SWOT_PATH', 'reports/performance/swot_report.json', 'SWOT report', $warnings);
+    $samplingSummary = $pdo !== null
+        ? dashboard_sampling_summary_from_db($pdo)
+        : [
+            'strategy_profile' => 'sampling_relaxed',
+            'total_trades' => 0,
+            'closed_trades' => 0,
+            'open_trades' => 0,
+            'win_rate' => null,
+            'expectancy' => null,
+            'total_pnl' => 0.0,
+        ];
 
     return [
         'generated_at' => gmdate('c'),
@@ -316,6 +383,7 @@ function dashboard_build_payload(string $view = 'full'): array
         'market_alias_counts' => $collections['market_alias_counts'],
         'top_market_aliases' => $collections['top_market_aliases'],
         'performance_summary' => $summaryReport,
+        'sampling_summary' => $samplingSummary,
         'swot_verdict' => $swotReport,
         'service_log_excerpt' => $service['log_lines'],
         'warnings' => $warnings,

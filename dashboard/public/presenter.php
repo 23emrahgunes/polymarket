@@ -215,7 +215,7 @@ function dashboard_augment_recent_decisions(PDO $pdo, array $payload): array
 
     $payload['recent_decisions'] = dashboard_fetch_all(
         $pdo,
-        'SELECT occurred_at, venue, market_id, category, signal_family, raw_source_signal, action, reason, decision_score, threshold, trade_size, confidence, mapping_stage, lazy_lookup_attempted, lazy_lookup_hit, hot_window_promoted FROM decision_audit ORDER BY id DESC LIMIT 20'
+        'SELECT occurred_at, venue, market_id, category, signal_family, strategy_profile, raw_source_signal, action, reason, decision_score, threshold, trade_size, confidence, mapping_stage, lazy_lookup_attempted, lazy_lookup_hit, hot_window_promoted FROM decision_audit ORDER BY id DESC LIMIT 20'
     );
     return $payload;
 }
