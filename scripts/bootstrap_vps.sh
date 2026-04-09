@@ -72,7 +72,7 @@ ensure_env_file() {
   run_as_app_user "grep -q '^DASHBOARD_HOST=' '$ENV_FILE' || echo 'DASHBOARD_HOST=0.0.0.0' >> '$ENV_FILE'"
   run_as_app_user "grep -q '^DASHBOARD_PORT=' '$ENV_FILE' || echo 'DASHBOARD_PORT=8081' >> '$ENV_FILE'"
   run_as_app_user "grep -q '^DASHBOARD_USER=' '$ENV_FILE' || echo 'DASHBOARD_USER=admin' >> '$ENV_FILE'"
-  run_as_app_user "grep -q '^DASHBOARD_PASSWORD_HASH=' '$ENV_FILE' || echo 'DASHBOARD_PASSWORD_HASH=$DASHBOARD_DEFAULT_HASH' >> '$ENV_FILE'"
+  run_as_app_user "grep -q '^DASHBOARD_PASSWORD_HASH=' '$ENV_FILE' || printf \"DASHBOARD_PASSWORD_HASH='%s'\\n\" '$DASHBOARD_DEFAULT_HASH' >> '$ENV_FILE'"
   run_as_app_user "grep -q '^DASHBOARD_REFRESH_SECONDS=' '$ENV_FILE' || echo 'DASHBOARD_REFRESH_SECONDS=5' >> '$ENV_FILE'"
   run_as_app_user "grep -q '^DASHBOARD_LOG_LINES=' '$ENV_FILE' || echo 'DASHBOARD_LOG_LINES=40' >> '$ENV_FILE'"
 }
