@@ -82,3 +82,33 @@ def test_sampling_relaxed_orderflow_can_pass_when_baseline_rejects():
     assert "cluster_threshold_not_reached" in baseline.reasons
     assert sampling.should_trade is True
     assert sampling.strategy_profile == STRATEGY_PROFILE_SAMPLING_RELAXED
+
+
+def test_sampling_relaxed_applies_spread_multiplier_without_changing_baseline():
+    engine = DecisionEngine()
+    baseline_inputs = DecisionInputs(
+        source="activity",
+        category="SPORTS",
+        market_id="market-sports-spread",
+        token_id="token-sports-spread",
+        event_type="CLUSTER_DETECTED",
+        question="Will Team Y win the championship?",
+        volume_24h=20_000.0,
+        mid_price=0.61,
+        spread_pct=0.045,
+        event_amount=1_000.0,
+        wallets_count=2,
+        whale_trust=0.9,
+        price_drift_pct=0.01,
+    )
+
+    baseline = engine.score_orderflow(baseline_inputs)
+    sampling = engine.score_orderflow(
+        DecisionInputs(**{**baseline_inputs.__dict__, "strategy_profile": STRATEGY_PROFILE_SAMPLING_RELAXED})
+    )
+
+    assert baseline.should_trade is False
+    assert "slippage_guard_rejection" in baseline.reasons
+    assert sampling.should_trade is True
+    assert sampling.strategy_profile == STRATEGY_PROFILE_SAMPLING_RELAXED
+    assert sampling.inputs["effective_max_spread_pct"] == pytest.approx(0.048, rel=1e-4)

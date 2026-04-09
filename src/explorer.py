@@ -7,7 +7,7 @@ from typing import Dict, List
 import requests
 
 from src.decision_engine import classify_market_category
-from src.market_mapping import build_market_aliases
+from src.market_mapping import build_market_aliases, normalize_market_alias
 
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ class MarketExplorer:
     async def fetch_active_markets(self, limit: int = 200) -> List[Dict]:
         return await self._fetch_markets(limit=limit, active_only=True)
 
-    async def fetch_market_lookup_universe(self, limit: int = 5000) -> List[Dict]:
+    async def fetch_market_lookup_universe(self, limit: int = 15000) -> List[Dict]:
         return await self._fetch_markets(limit=limit, active_only=False)
 
     async def _fetch_markets(self, limit: int, active_only: bool) -> List[Dict]:
@@ -74,7 +74,7 @@ class MarketExplorer:
             logger.error("Explorer: failed to fetch active markets - %s", exc)
             return []
 
-    async def find_market_by_alias(self, aliases: List[str], limit: int = 1000) -> Dict | None:
+    async def find_market_by_alias(self, aliases: List[str], limit: int = 15000) -> Dict | None:
         if not aliases:
             return None
 
@@ -88,11 +88,15 @@ class MarketExplorer:
 
     @staticmethod
     def _match_market_by_alias(markets: List[Dict], aliases: List[str]) -> Dict | None:
-        alias_set = {alias for alias in aliases if alias}
+        alias_set = {normalized for alias in aliases if (normalized := normalize_market_alias(alias))}
         if not alias_set:
             return None
         for market in markets:
-            market_aliases = set(market.get("alias_candidates", []))
+            market_aliases = {
+                normalized
+                for alias in market.get("alias_candidates", [])
+                if (normalized := normalize_market_alias(alias))
+            }
             if market_aliases.intersection(alias_set):
                 return market
         return None

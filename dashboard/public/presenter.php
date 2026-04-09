@@ -207,6 +207,45 @@ function dashboard_build_hot_window_summary(PDO $pdo, array $statusMetrics): arr
     return $summary;
 }
 
+function dashboard_build_sampling_reject_breakdown(PDO $pdo): array
+{
+    $rows = dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT reason
+        FROM decision_audit
+        WHERE strategy_profile = 'sampling_relaxed' AND action = 'reject'
+        ORDER BY id DESC
+        LIMIT 250
+        "
+    );
+
+    $counts = [];
+    foreach ($rows as $row) {
+        $reasonText = trim((string) ($row['reason'] ?? ''));
+        if ($reasonText === '') {
+            continue;
+        }
+        foreach (explode(',', $reasonText) as $reason) {
+            $reason = trim($reason);
+            if ($reason === '') {
+                continue;
+            }
+            $counts[$reason] = ($counts[$reason] ?? 0) + 1;
+        }
+    }
+
+    arsort($counts);
+    $items = [];
+    foreach (array_slice($counts, 0, 8, true) as $reason => $count) {
+        $items[] = [
+            'reason' => $reason,
+            'count' => $count,
+        ];
+    }
+    return $items;
+}
+
 function dashboard_augment_recent_decisions(PDO $pdo, array $payload): array
 {
     if (!dashboard_table_has_column($pdo, 'decision_audit', 'hot_window_promoted')) {
@@ -231,10 +270,12 @@ function dashboard_augment_payload(array $payload): array
             $payload['runtime_summary'] ?? [],
             dashboard_build_hot_window_summary($pdo, $statusMetrics)
         );
+        $payload['sampling_reject_breakdown'] = dashboard_build_sampling_reject_breakdown($pdo);
         $payload = dashboard_augment_recent_decisions($pdo, $payload);
     } else {
         $payload['top_unresolved_aliases'] = [];
         $payload['recent_unresolved_aliases'] = [];
+        $payload['sampling_reject_breakdown'] = [];
         $payload['runtime_summary'] = array_merge(
             $payload['runtime_summary'] ?? [],
             [

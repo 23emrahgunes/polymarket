@@ -89,6 +89,26 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
             gap: 16px;
             align-items: start;
         }
+        .section-marker {
+            grid-column: span 12;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: 6px;
+        }
+        .section-marker::after {
+            content: "";
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, rgba(77, 199, 176, 0.28), rgba(132, 181, 205, 0.06));
+        }
+        .section-label {
+            color: var(--muted);
+            font-size: 0.82rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
         .panel {
             background: rgba(7, 18, 28, 0.98);
             border-radius: 18px;
@@ -102,15 +122,85 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .panel-wide { grid-column: span 12; }
         .panel-half { grid-column: span 6; }
         .panel-third { grid-column: span 4; }
+        .panel-tertiary { grid-column: span 3; }
+        .panel-primary { grid-column: span 5; }
+        .panel-secondary { grid-column: span 7; }
         .panel-header { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 14px; }
         .panel h2 { margin: 0; font-size: 1rem; letter-spacing: 0.03em; text-transform: uppercase; }
         .panel-copy { margin: 0 0 14px; color: var(--muted); line-height: 1.5; font-size: 0.94rem; }
+        .panel-subgrid {
+            display: grid;
+            gap: 12px;
+            align-content: start;
+        }
+        .panel-inline-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+            align-items: start;
+        }
+        .subcard {
+            border: 1px solid rgba(132, 181, 205, 0.12);
+            background: rgba(13, 29, 41, 0.9);
+            border-radius: 14px;
+            padding: 14px;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .subcard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .subcard-title {
+            margin: 0;
+            color: var(--muted);
+            font-size: 0.8rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .subcard-copy {
+            margin: 0 0 10px;
+            color: var(--muted);
+            line-height: 1.45;
+            font-size: 0.9rem;
+        }
+        .subcard-scroll {
+            min-height: 0;
+            overflow: auto;
+        }
+        .subcard .subsection-title {
+            margin-top: 0;
+        }
+        .subcard .panel-copy {
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+        }
         .subsection-title {
             margin: 16px 0 8px;
             color: var(--muted);
             font-size: 0.8rem;
             letter-spacing: 0.08em;
             text-transform: uppercase;
+        }
+        #market-alias-counts,
+        #top-market-aliases,
+        #top-unresolved-aliases,
+        #recent-unresolved-aliases,
+        #whale-wallet-counts,
+        #top-whales,
+        #performance-snapshot,
+        #sampling-reject-breakdown {
+            border: 1px solid rgba(132, 181, 205, 0.12);
+            background: rgba(13, 29, 41, 0.9);
+            border-radius: 14px;
+            padding: 12px;
+        }
+        #top-whales,
+        #sampling-reject-breakdown {
+            margin-top: 12px;
         }
         .badge {
             display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px; font-size: 0.78rem;
@@ -148,8 +238,17 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #top-market-aliases, #top-whales { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
         #performance-snapshot { max-height: 420px; overflow: auto; }
+        #sampling-reject-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
-        @media (max-width: 1100px) { .panel-half, .panel-third { grid-column: span 12; } }
+        #recent-decisions table { min-width: 1040px; table-layout: auto; }
+        #top-whales table { min-width: 900px; table-layout: auto; }
+        #top-market-aliases table,
+        #recent-unresolved-aliases table,
+        #sampling-reject-breakdown table { min-width: 560px; table-layout: auto; }
+        @media (max-width: 1100px) {
+            .panel-half, .panel-third, .panel-tertiary, .panel-primary, .panel-secondary { grid-column: span 12; }
+            .panel-inline-grid { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
@@ -168,6 +267,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
     <div class="status-banner" id="status-banner"></div>
     <div class="warnings" id="warnings-panel"><strong>Uyarılar</strong><ul id="warnings-list"></ul></div>
 
+    <div class="section-marker"><span class="section-label">Özet</span></div>
     <section class="stats">
         <article class="stat-card"><div class="stat-label">Servis</div><div class="stat-value" id="service-status">...</div><div class="stat-note" id="service-name">ghost-trader</div></article>
         <article class="stat-card"><div class="stat-label">Toplam İşlem</div><div class="stat-value" id="total-trades">0</div><div class="stat-note" id="open-state-note">0 açık pozisyon / 0 açık emir</div></article>
@@ -178,12 +278,14 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
     </section>
 
     <section class="grid">
+        <div class="section-marker"><span class="section-label">İşlem ve Karar Akışı</span></div>
         <article class="panel panel-wide"><div class="panel-header"><h2>Son Kararlar</h2><span class="badge warn">Denetim Akışı</span></div><p class="panel-copy">Kaynak, neden, skor, mapping aşaması ve işlem boyutuyla birlikte son red, karar, işlem ve çıkış olayları.</p><div id="recent-decisions"></div></article>
         <article class="panel panel-half"><div class="panel-header"><h2>Açık Pozisyonlar</h2><span class="badge info">Venue Maruziyeti</span></div><div id="open-positions"></div></article>
         <article class="panel panel-half"><div class="panel-header"><h2>Açık Emirler</h2><span class="badge info">Koruma Katmanı</span></div><div id="open-orders"></div></article>
         <article class="panel panel-half"><div class="panel-header"><h2>Son İşlemler</h2><span class="badge info">SQLite Çalışma Geçmişi</span></div><div id="recent-trades"></div></article>
         <article class="panel panel-half"><div class="panel-header"><h2>Venue Hesapları</h2><span class="badge info">Paper Bakiyeleri</span></div><div id="venue-accounts"></div></article>
-        <article class="panel panel-third">
+        <div class="section-marker"><span class="section-label">Teşhis ve Kanıt</span></div>
+        <article class="panel panel-primary">
             <div class="panel-header"><h2>Mapping Sağlığı</h2><span class="badge info">Kapsam</span></div>
             <div class="metric-list" id="mapping-health"></div>
             <div class="subsection-title">Alias Kaynakları</div>
@@ -287,6 +389,13 @@ function translateMappingStage(value) {
 
 function translateReason(value) {
     const text = String(value ?? '');
+    if (text.includes(',')) {
+        return text
+            .split(',')
+            .map((part) => translateReason(part.trim()))
+            .filter(Boolean)
+            .join(', ');
+    }
     const map = {
         route_whale_orderflow_only: 'yalnızca whale/orderflow rotası',
         market_not_mapped_active_window: 'aktif pencere dışında kaldı',
@@ -362,6 +471,31 @@ function renderWarnings(warnings) {
     }
     panel.style.display = 'block';
     list.innerHTML = warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('');
+}
+
+function ensureSamplingRejectPanel() {
+    const metrics = document.getElementById('performance-snapshot');
+    if (!metrics) { return null; }
+    const panel = metrics.closest('.panel');
+    if (!panel) { return null; }
+
+    let title = document.getElementById('sampling-reject-breakdown-title');
+    if (!title) {
+        title = document.createElement('div');
+        title.id = 'sampling-reject-breakdown-title';
+        title.className = 'subsection-title';
+        title.textContent = 'Sampling Red Nedenleri';
+        panel.appendChild(title);
+    }
+
+    let breakdown = document.getElementById('sampling-reject-breakdown');
+    if (!breakdown) {
+        breakdown = document.createElement('div');
+        breakdown.id = 'sampling-reject-breakdown';
+        panel.appendChild(breakdown);
+    }
+
+    return breakdown;
 }
 
 function renderStatusBanner(service) {
@@ -542,6 +676,12 @@ function updatePanels(payload) {
         { label: 'Karar nedeni', value: verdict.reason || 'Henüz karar yok', long: true },
         { label: 'Sampling notu', value: 'Sampling sonuçları ana alpha kanıtı değildir; ayrı deney profili olarak izlenir.', long: true }
     ]);
+
+    ensureSamplingRejectPanel();
+    renderTable('sampling-reject-breakdown', [
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.sampling_reject_breakdown, 'Henüz sampling red nedeni birikmedi.');
 
     const logLines = Array.isArray(payload.service_log_excerpt) ? payload.service_log_excerpt : [];
     document.getElementById('service-log').textContent = logLines.length > 0 ? logLines.join('\n') : 'Servis logu alınamadı.';

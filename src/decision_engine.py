@@ -98,21 +98,24 @@ SAMPLING_RELAXED_OVERRIDES: Dict[str, Dict[str, float | int]] = {
         "min_volume_24h": 15_000.0,
         "min_whale_notional": 500.0,
         "min_cluster_wallets": 2,
-        "min_score": 0.62,
+        "min_score": 0.56,
     },
     "POLITICS": {
         "min_volume_24h": 20_000.0,
         "min_whale_notional": 600.0,
         "min_cluster_wallets": 2,
-        "min_score": 0.64,
+        "min_score": 0.58,
     },
     "OTHER": {
         "min_volume_24h": 20_000.0,
         "min_whale_notional": 750.0,
         "min_cluster_wallets": 2,
-        "min_score": 0.66,
+        "min_score": 0.60,
     },
 }
+
+SAMPLING_MAX_SPREAD_MULTIPLIER = 1.20
+SAMPLING_SLIPPAGE_MULTIPLIER = 1.20
 
 DISCOVERY_TRADE_CATEGORIES = {"CRYPTO"}
 
@@ -209,6 +212,11 @@ class DecisionEngine:
         strategy_profile = normalize_strategy_profile(inputs.strategy_profile)
         profile = self.get_profile(inputs.category, strategy_profile)
         reasons: List[str] = []
+        effective_max_spread_pct = profile.max_spread_pct
+        effective_spread_penalty_threshold = 0.75 * profile.max_spread_pct
+        if strategy_profile == STRATEGY_PROFILE_SAMPLING_RELAXED:
+            effective_max_spread_pct *= SAMPLING_MAX_SPREAD_MULTIPLIER
+            effective_spread_penalty_threshold *= SAMPLING_SLIPPAGE_MULTIPLIER
 
         if not inputs.market_id:
             reasons.append("market_not_mapped")
@@ -216,7 +224,7 @@ class DecisionEngine:
             reasons.append("invalid_orderbook_data")
         if inputs.volume_24h < profile.min_volume_24h:
             reasons.append("liquidity_guard_rejection")
-        if inputs.spread_pct is not None and inputs.spread_pct > profile.max_spread_pct:
+        if inputs.spread_pct is not None and inputs.spread_pct > effective_max_spread_pct:
             reasons.append("slippage_guard_rejection")
         if inputs.price_drift_pct is not None and inputs.price_drift_pct > profile.max_price_drift_pct:
             reasons.append("slippage_guard_rejection")
@@ -241,7 +249,7 @@ class DecisionEngine:
             drift_penalty = 0.15
 
         spread_penalty = 0.0
-        if inputs.spread_pct is not None and inputs.spread_pct > 0.75 * profile.max_spread_pct:
+        if inputs.spread_pct is not None and inputs.spread_pct > effective_spread_penalty_threshold:
             spread_penalty = 0.15
 
         score = (
@@ -272,6 +280,8 @@ class DecisionEngine:
                 trust_component=round(trust_component, 4),
                 drift_penalty=round(drift_penalty, 4),
                 spread_penalty=round(spread_penalty, 4),
+                effective_max_spread_pct=round(effective_max_spread_pct, 4),
+                effective_spread_penalty_threshold=round(effective_spread_penalty_threshold, 4),
             ),
             venue=inputs.venue,
             direction=inputs.direction,

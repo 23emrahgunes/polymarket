@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from src.copy_trader import CopyTrader
@@ -472,6 +474,52 @@ async def test_runtime_promotes_and_expires_hot_window_market(tmp_path):
     await runtime.close()
 
     assert "0xlookup2" not in runtime.hot_window_market_context
+
+
+@pytest.mark.asyncio
+async def test_runtime_sampling_extends_hot_window_ttl(tmp_path):
+    db_path = str(tmp_path / "runtime_sampling_hot_window.db")
+    runtime = GhostBotRuntime(
+        RuntimeSettings(
+            exchange_id="coinbase",
+            db_path=db_path,
+            debug_signal_mode=False,
+            runtime_verify_once=False,
+            paper_sampling_mode=True,
+            orderflow_hot_window_enabled=True,
+            orderflow_hot_window_limit=2,
+            orderflow_hot_window_ttl_seconds=120.0,
+        )
+    )
+    await runtime.initialize()
+
+    started = time.time()
+    promoted = await runtime.promote_hot_window_market(
+        context={
+            "market_id": "0xlookup-sampling",
+            "token_id": "0xtoken-sampling",
+            "token_ids": ["0xtoken-sampling"],
+            "alias_candidates": ["0xlookup-sampling", "0xtoken-sampling"],
+            "question": "Will Team Sample win?",
+            "category": "SPORTS",
+            "volume_24h": 90000.0,
+            "active": True,
+        },
+        event={
+            "type": "WHALE_EVENT",
+            "amount": 5000.0,
+            "wallet": "0xwhale",
+            "wallets_count": 2,
+        },
+        source="activity",
+        stage="lazy_lookup",
+    )
+    expiry = runtime.hot_window_expiries["0xlookup-sampling"]
+    await runtime.close()
+
+    assert promoted is True
+    assert expiry > started
+    assert expiry - started >= 1700.0
 
 
 @pytest.mark.asyncio

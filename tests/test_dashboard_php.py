@@ -88,6 +88,7 @@ def _create_dashboard_db(path: Path) -> None:
             (1, '2026-04-09 10:00:00', 'polymarket', 'market-1', 'SPORTS', 'activity_orderflow', 'baseline', 'activity', 'reject', 'liquidity_guard', 0.67, 0.72, 40.0, 0.67, 'alias_cache', 0, 0, '["token-1","condition-1"]', 0),
             (2, '2026-04-09 10:01:00', 'polymarket', 'market-2', 'OTHER', 'whale', 'baseline', 'whale_tracker', 'reject', 'market_not_mapped_active_window', 0.0, 0.78, 25.0, 0.0, 'active_window', 0, 0, '["mystery-token","mystery-market"]', 0),
             (3, '2026-04-09 10:02:00', 'polymarket', 'market-3', 'SPORTS', 'whale', 'sampling_relaxed', 'whale_tracker', 'decision', 'score_below_threshold', 0.71, 0.72, 40.0, 0.71, 'hot_window', 1, 1, '["hot-token","hot-market"]', 1),
+            (4, '2026-04-09 10:03:00', 'polymarket', 'market-4', 'POLITICS', 'whale', 'sampling_relaxed', 'activity', 'reject', 'slippage_guard_rejection,score_below_threshold', 0.48, 0.58, 35.0, 0.48, 'lazy_lookup', 1, 0, '["sampling-token","sampling-market"]', 0),
         ],
     )
     cur.execute(
@@ -265,7 +266,10 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['top_whales'][1]['win_rate'] is None
     assert payload['top_unresolved_aliases'][0]['alias'] == 'mystery-token'
     assert payload['recent_unresolved_aliases'][0]['aliases'][0] == 'mystery-token'
-    assert payload['recent_decisions'][0]['hot_window_promoted'] == 1
+    assert any(row['hot_window_promoted'] == 1 for row in payload['recent_decisions'])
+    sampling_breakdown = {row['reason']: row['count'] for row in payload['sampling_reject_breakdown']}
+    assert sampling_breakdown['score_below_threshold'] == 1
+    assert sampling_breakdown['slippage_guard_rejection'] == 1
     assert payload['sampling_summary']['strategy_profile'] == 'sampling_relaxed'
     assert payload['sampling_summary']['closed_trades'] == 1
     assert payload['performance_summary']['evidence']['live_paper_closed'] == 3
@@ -279,11 +283,14 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Ghost Trader Operasyon Paneli' in html
     assert 'Son Kararlar' in html
     assert 'Sampling modu' in html
+    assert 'İşlem ve Karar Akışı' in html
+    assert 'Teşhis ve Kanıt' in html
     assert 'Keşif skoru, whale adresini sıralamak için kullanılır; başarı oranı değildir.' in html
     assert 'Keşif Skoru' in html
     assert 'Güven Skoru' in html
     assert 'Kazanma Oranı' in html
     assert 'Toplam PnL' in html
+    assert 'Sampling Red Nedenleri' in html
     assert 'Henüz kapanmış whale geçmişi yok; nötr güven.' in html
     assert '&mdash;' in html
 

@@ -56,7 +56,7 @@ class RuntimeSettings:
     verify_required_venues: Tuple[str, ...] = tuple()
     verify_required_category: Optional[str] = None
     market_limit: int = 200
-    market_lookup_limit: int = 5000
+    market_lookup_limit: int = 15000
     paper_sampling_mode: bool = False
     paper_sampling_target_closed_trades: int = 20
     orderflow_hot_window_enabled: bool = True
@@ -85,7 +85,7 @@ class RuntimeSettings:
             runtime_verify_once=_env_flag("RUNTIME_VERIFY_ONCE", False),
             verify_required_venues=_env_csv("VERIFY_REQUIRED_VENUES"),
             verify_required_category=(os.getenv("VERIFY_REQUIRED_CATEGORY", "").strip().upper() or None),
-            market_lookup_limit=max(int(os.getenv("MARKET_LOOKUP_LIMIT", "5000") or 5000), 200),
+            market_lookup_limit=max(int(os.getenv("MARKET_LOOKUP_LIMIT", "15000") or 15000), 200),
             paper_sampling_mode=_env_flag("PAPER_SAMPLING_MODE", False),
             paper_sampling_target_closed_trades=max(int(os.getenv("PAPER_SAMPLING_TARGET_CLOSED_TRADES", "20") or 20), 1),
             orderflow_hot_window_enabled=_env_flag("ORDERFLOW_HOT_WINDOW_ENABLED", True),
