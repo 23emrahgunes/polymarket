@@ -44,6 +44,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .hero-card, .stat-card, .panel {
             border: 1px solid var(--line);
             box-shadow: var(--shadow);
+            backdrop-filter: blur(10px);
         }
         .hero-card {
             background: linear-gradient(180deg, rgba(13, 27, 40, 0.95), rgba(9, 20, 30, 0.9));
@@ -70,12 +71,34 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
             border-radius: 18px;
             padding: 16px;
             min-height: 120px;
+            overflow: hidden;
         }
         .stat-label { color: var(--muted); font-size: 0.84rem; letter-spacing: 0.08em; text-transform: uppercase; }
         .stat-value { margin-top: 14px; font-size: 1.8rem; font-weight: 700; line-height: 1; }
         .stat-note { margin-top: 10px; color: var(--muted); font-size: 0.92rem; }
-        .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; }
-        .panel { background: var(--panel); border-radius: 18px; padding: 18px; }
+        #verdict-reason {
+            display: block;
+            max-height: 6.4em;
+            overflow: auto;
+            line-height: 1.45;
+            padding-right: 4px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(12, minmax(0, 1fr));
+            gap: 16px;
+            align-items: start;
+        }
+        .panel {
+            background: rgba(7, 18, 28, 0.98);
+            border-radius: 18px;
+            padding: 18px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            isolation: isolate;
+        }
         .panel-wide { grid-column: span 12; }
         .panel-half { grid-column: span 6; }
         .panel-third { grid-column: span 4; }
@@ -97,7 +120,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .badge.warn { color: var(--warn); border-color: rgba(240, 179, 90, 0.3); background: rgba(109, 76, 24, 0.24); }
         .badge.danger { color: #ffb0b0; border-color: rgba(239, 107, 107, 0.28); background: rgba(112, 36, 36, 0.28); }
         .badge.info { color: var(--accent); border-color: rgba(77, 199, 176, 0.28); background: rgba(14, 83, 74, 0.28); }
-        table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.92rem; table-layout: fixed; }
         th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
         th { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; }
         .mono { font-family: "IBM Plex Mono", "Cascadia Mono", "Consolas", monospace; font-size: 0.88rem; }
@@ -107,10 +130,24 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
             max-height: 360px; font-family: "IBM Plex Mono", "Cascadia Mono", "Consolas", monospace; font-size: 0.85rem; line-height: 1.55;
         }
         .metric-list { display: grid; gap: 10px; }
-        .metric-item { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+        .metric-item { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
         .metric-item:last-child { border-bottom: none; }
         .metric-key { color: var(--muted); }
-        .metric-value { font-weight: 700; }
+        .metric-value { font-weight: 700; max-width: 52%; text-align: right; }
+        .metric-item.stacked { flex-direction: column; }
+        .metric-item.stacked .metric-value { max-width: 100%; text-align: left; line-height: 1.45; font-weight: 600; }
+        .truncate-text {
+            display: block;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        #recent-decisions { max-height: 420px; overflow: auto; }
+        #market-alias-counts, #whale-wallet-counts { max-height: 160px; overflow: auto; }
+        #top-market-aliases, #top-whales { max-height: 320px; overflow: auto; }
+        #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
+        #service-log { max-height: 280px; }
         @media (max-width: 1100px) { .panel-half, .panel-third { grid-column: span 12; } }
     </style>
 </head>
@@ -210,12 +247,49 @@ function translateAction(value) {
     return map[text] || String(value ?? 'yok');
 }
 
+function translateMappingStage(value) {
+    const text = String(value ?? '').toLowerCase();
+    const map = {
+        active_context: 'aktif bağlam',
+        alias_cache: 'alias cache',
+        lazy_lookup: 'lazy lookup',
+        hot_window: 'sıcak pencere',
+        active_window: 'aktif pencere',
+        unknown_token: 'bilinmeyen token'
+    };
+    return map[text] || String(value ?? 'yok');
+}
+
+function translateReason(value) {
+    const text = String(value ?? '');
+    const map = {
+        route_whale_orderflow_only: 'yalnızca whale/orderflow rotası',
+        market_not_mapped_active_window: 'aktif pencere dışında kaldı',
+        market_not_mapped_lazy_lookup_failed: 'lazy lookup eşleme bulamadı',
+        market_not_mapped_unknown_token: 'token eşleşmesi bulunamadı',
+        score_below_threshold: 'skor eşik altında',
+        liquidity_guard_rejection: 'likidite koruması reddetti',
+        slippage_guard_rejection: 'slippage koruması reddetti',
+        cluster_threshold_not_reached: 'cluster eşiği tutmadı'
+    };
+    return map[text] || String(value ?? 'yok');
+}
+
 function badgeClass(label) {
     const text = String(label ?? '').toUpperCase();
     if (text.includes('RUN') || text.includes('ACTIVE') || text === 'GO') { return 'ok'; }
     if (text.includes('REJECT') || text.includes('IMPROVE') || text.includes('WARN')) { return 'warn'; }
     if (text.includes('FAIL') || text.includes('ERROR') || text.includes('NO-GO')) { return 'danger'; }
     return 'info';
+}
+
+function truncateHtml(value, max = 44) {
+    const text = String(value ?? '');
+    if (!text) {
+        return '';
+    }
+    const shortened = text.length > max ? `${text.slice(0, Math.max(max - 1, 1))}…` : text;
+    return `<span class="truncate-text" title="${escapeHtml(text)}">${escapeHtml(shortened)}</span>`;
 }
 
 function renderTable(targetId, columns, rows, emptyMessage) {
@@ -243,7 +317,11 @@ function renderMetrics(targetId, items) {
         target.innerHTML = '<div class="empty">Gösterilecek metrik yok.</div>';
         return;
     }
-    target.innerHTML = items.map((item) => `<div class="metric-item"><div class="metric-key">${escapeHtml(item.label)}</div><div class="metric-value">${escapeHtml(item.value)}</div></div>`).join('');
+    target.innerHTML = items.map((item) => {
+        const itemClass = item.long ? 'metric-item stacked' : 'metric-item';
+        const valueClass = item.long ? 'metric-value long' : 'metric-value';
+        return `<div class="${itemClass}"><div class="metric-key">${escapeHtml(item.label)}</div><div class="${valueClass}" title="${escapeHtml(item.value)}">${escapeHtml(item.value)}</div></div>`;
+    }).join('');
 }
 
 function renderWarnings(warnings) {
@@ -281,7 +359,7 @@ function updateHeader(payload) {
     document.getElementById('total-trades').textContent = formatNumber(runtime.total_trades, 0);
     document.getElementById('tracked-whales').textContent = formatNumber(runtime.tracked_whales, 0);
     document.getElementById('mapped-orderflow').textContent = `${formatNumber(runtime.mapped_orderflow_events, 0)} / ${formatNumber(runtime.unmapped_orderflow_events, 0)}`;
-    document.getElementById('mapping-note').textContent = `Alias cache ${formatNumber(runtime.alias_cache_hits, 0)}, lazy hit ${formatNumber(runtime.lazy_lookup_hits, 0)}`;
+    document.getElementById('mapping-note').textContent = `Alias cache ${formatNumber(runtime.alias_cache_hits, 0)}, lazy ${formatNumber(runtime.lazy_lookup_hits, 0)}, sıcak pencere ${formatNumber(runtime.hot_window_hits, 0)}`;
     document.getElementById('market-not-mapped-rate').textContent = `${formatNumber(runtime.market_not_mapped_rate, 1)}%`;
     document.getElementById('final-verdict').textContent = translateVerdict(verdictBlock.verdict || 'yok');
     document.getElementById('verdict-reason').textContent = verdictBlock.reason || 'Henüz SWOT kararı yok.';
@@ -292,17 +370,19 @@ function updateHeader(payload) {
 function updatePanels(payload) {
     renderTable('recent-decisions', [
         { key: 'occurred_at', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.occurred_at || '') },
-        { key: 'source', label: 'Kaynak', render: (row) => `<span class="badge ${badgeClass(row.action || row.raw_source_signal)}">${escapeHtml(row.raw_source_signal || row.signal_family || 'unknown')}</span>` },
+        { key: 'source', label: 'Kaynak', render: (row) => `<span class="badge ${badgeClass(row.action || row.raw_source_signal)}" title="${escapeHtml(row.raw_source_signal || row.signal_family || 'unknown')}">${escapeHtml(row.raw_source_signal || row.signal_family || 'unknown')}</span>` },
         { key: 'category', label: 'Kategori', render: (row) => escapeHtml(translateCategory(row.category)) },
         { key: 'action', label: 'Aksiyon', render: (row) => `<span class="badge ${badgeClass(row.action)}">${escapeHtml(translateAction(row.action || 'n/a'))}</span>` },
-        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(row.reason || row.mapping_stage || 'yok') },
+        { key: 'mapping_stage', label: 'Aşama', render: (row) => escapeHtml(translateMappingStage(row.mapping_stage || 'yok')) },
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || row.mapping_stage || 'yok')) },
         { key: 'decision_score', label: 'Skor', render: (row) => escapeHtml(formatNumber(row.decision_score, 2)) },
-        { key: 'trade_size', label: 'İşlem Boyutu', render: (row) => escapeHtml(formatNumber(row.trade_size, 2)) }
+        { key: 'trade_size', label: 'İşlem Boyutu', render: (row) => escapeHtml(formatNumber(row.trade_size, 2)) },
+        { key: 'hot_window_promoted', label: 'Sıcak Pencere', render: (row) => escapeHtml(row.hot_window_promoted ? 'terfi etti' : 'yok') }
     ], payload.recent_decisions, 'Henüz karar denetim kaydı yok.');
 
     renderTable('open-positions', [
         { key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || 'yok') },
-        { key: 'symbol_or_market_id', label: 'Sembol / Market', mono: true, render: (row) => escapeHtml(row.symbol_or_market_id || '') },
+        { key: 'symbol_or_market_id', label: 'Sembol / Market', mono: true, render: (row) => truncateHtml(row.symbol_or_market_id || '', 30) },
         { key: 'side', label: 'Yön', render: (row) => escapeHtml(row.side || '') },
         { key: 'notional_usd', label: 'Notional', render: (row) => escapeHtml(formatNumber(row.notional_usd, 2)) },
         { key: 'unrealized_pnl', label: 'Gerç. Olmayan PnL', render: (row) => escapeHtml(formatNumber(row.unrealized_pnl, 2)) },
@@ -311,7 +391,7 @@ function updatePanels(payload) {
 
     renderTable('open-orders', [
         { key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || '') },
-        { key: 'symbol_or_market_id', label: 'Sembol / Market', mono: true, render: (row) => escapeHtml(row.symbol_or_market_id || '') },
+        { key: 'symbol_or_market_id', label: 'Sembol / Market', mono: true, render: (row) => truncateHtml(row.symbol_or_market_id || '', 30) },
         { key: 'order_type', label: 'Tür', render: (row) => escapeHtml(row.order_type || '') },
         { key: 'side', label: 'Yön', render: (row) => escapeHtml(row.side || '') },
         { key: 'stop_price', label: 'Stop', render: (row) => escapeHtml(formatNumber(row.stop_price, 2)) },
@@ -321,7 +401,7 @@ function updatePanels(payload) {
     renderTable('recent-trades', [
         { key: 'timestamp', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.timestamp || '') },
         { key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || '') },
-        { key: 'market_id', label: 'Market', mono: true, render: (row) => escapeHtml(row.market_id || '') },
+        { key: 'market_id', label: 'Market', mono: true, render: (row) => truncateHtml(row.market_id || '', 30) },
         { key: 'side', label: 'Yön', render: (row) => escapeHtml(row.side || '') },
         { key: 'size', label: 'Boyut', render: (row) => escapeHtml(formatNumber(row.size, 2)) },
         { key: 'status', label: 'Durum', render: (row) => `<span class="badge ${badgeClass(row.status)}">${escapeHtml(translateAction(row.status || ''))}</span>` }
@@ -341,7 +421,7 @@ function updatePanels(payload) {
     ], payload.whale_wallet_counts, 'Balina kaynak sayısı yok.');
 
     renderTable('top-whales', [
-        { key: 'address', label: 'Adres', mono: true, render: (row) => escapeHtml(row.address || '') },
+        { key: 'address', label: 'Adres', mono: true, render: (row) => truncateHtml(row.address || '', 28) },
         { key: 'source_type', label: 'Kaynak', render: (row) => escapeHtml(row.source_type || '') },
         { key: 'discovery_score', label: 'Skor', render: (row) => escapeHtml(formatNumber(row.discovery_score, 3)) },
         { key: 'event_count_24h', label: '24s Event', render: (row) => escapeHtml(formatNumber(row.event_count_24h, 0)) }
@@ -353,23 +433,23 @@ function updatePanels(payload) {
     ], payload.market_alias_counts, 'Alias kaynak sayısı yok.');
 
     renderTable('top-market-aliases', [
-        { key: 'alias', label: 'Alias', mono: true, render: (row) => escapeHtml(row.alias || '') },
+        { key: 'alias', label: 'Alias', mono: true, render: (row) => truncateHtml(row.alias || '', 46) },
         { key: 'alias_type', label: 'Tür', render: (row) => escapeHtml(row.alias_type || '') },
         { key: 'category', label: 'Kategori', render: (row) => escapeHtml(translateCategory(row.category)) },
         { key: 'source', label: 'Kaynak', render: (row) => escapeHtml(row.source || '') }
     ], payload.top_market_aliases, 'Henüz cache’lenen market alias yok.');
 
     renderTable('top-unresolved-aliases', [
-        { key: 'alias', label: 'Alias', mono: true, render: (row) => escapeHtml(row.alias || '') },
+        { key: 'alias', label: 'Alias', mono: true, render: (row) => truncateHtml(row.alias || '', 42) },
         { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) },
-        { key: 'reason', label: 'Son Neden', render: (row) => escapeHtml(row.reason || 'yok') }
+        { key: 'reason', label: 'Son Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) }
     ], payload.top_unresolved_aliases, 'Henüz çözülemeyen alias özeti yok.');
 
     renderTable('recent-unresolved-aliases', [
         { key: 'occurred_at', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.occurred_at || '') },
-        { key: 'mapping_stage', label: 'Aşama', render: (row) => escapeHtml(row.mapping_stage || 'yok') },
-        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(row.reason || 'yok') },
-        { key: 'aliases', label: 'Alias Adayları', mono: true, render: (row) => escapeHtml(Array.isArray(row.aliases) ? row.aliases.join(', ') : '') }
+        { key: 'mapping_stage', label: 'Aşama', render: (row) => escapeHtml(translateMappingStage(row.mapping_stage || 'yok')) },
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
+        { key: 'aliases', label: 'Alias Adayları', mono: true, render: (row) => truncateHtml(Array.isArray(row.aliases) ? row.aliases.join(', ') : '', 56) }
     ], payload.recent_unresolved_aliases, 'Son çözülemeyen alias olayı yok.');
 
     const runtime = payload.runtime_summary || {};
@@ -378,6 +458,13 @@ function updatePanels(payload) {
         { label: 'Eşlenemeyen orderflow event', value: formatNumber(runtime.unmapped_orderflow_events, 0) },
         { label: 'Alias cache hit', value: formatNumber(runtime.alias_cache_hits, 0) },
         { label: 'Lazy lookup hit', value: formatNumber(runtime.lazy_lookup_hits, 0) },
+        { label: 'Sıcak pencere marketleri', value: formatNumber(runtime.hot_window_markets, 0) },
+        { label: 'Sıcak pencere hit', value: formatNumber(runtime.hot_window_hits, 0) },
+        { label: 'Hot-window promotion', value: formatNumber(runtime.hot_window_promotions, 0) },
+        { label: 'Hot-window expiry', value: formatNumber(runtime.hot_window_expiries, 0) },
+        { label: 'Active-window miss', value: formatNumber(runtime.active_window_misses, 0) },
+        { label: 'Active-window miss oranı', value: `${formatNumber(runtime.active_window_miss_rate, 1)}%` },
+        { label: 'Resolver hit oranı', value: `${formatNumber(runtime.resolver_hit_rate, 1)}%` },
         { label: 'Market eşleşmedi oranı', value: `${formatNumber(runtime.market_not_mapped_rate, 1)}%` }
     ]);
 
@@ -390,7 +477,7 @@ function updatePanels(payload) {
         { label: 'Sentetik örnek', value: formatNumber(evidence.synthetic_total, 0) },
         { label: 'Ana expectancy', value: core.expectancy === null || core.expectancy === undefined ? 'yok' : formatNumber(core.expectancy, 4) },
         { label: 'Nihai karar', value: translateVerdict(verdict.verdict || 'yok') },
-        { label: 'Karar nedeni', value: verdict.reason || 'Henüz karar yok' }
+        { label: 'Karar nedeni', value: verdict.reason || 'Henüz karar yok', long: true }
     ]);
 
     const logLines = Array.isArray(payload.service_log_excerpt) ? payload.service_log_excerpt : [];

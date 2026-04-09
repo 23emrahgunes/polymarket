@@ -188,6 +188,25 @@ Main env keys:
 - `DASHBOARD_REFRESH_SECONDS=5`
 - `DASHBOARD_LOG_LINES=40`
 - `MARKET_LOOKUP_LIMIT=5000`
+- `ORDERFLOW_HOT_WINDOW_ENABLED=true`
+- `ORDERFLOW_HOT_WINDOW_LIMIT=150`
+- `ORDERFLOW_HOT_WINDOW_TTL_SECONDS=900`
+
+Resolver / sıcak pencere notları:
+
+- discovery trade evreni varsayılan olarak üst `200` aktif markette kalır
+- resolver lookup evreni bundan ayrıdır ve `MARKET_LOOKUP_LIMIT` ile geniş tutulur
+- meaningful orderflow ile çözülen marketler kısa süreli `hot-window` içine alınabilir
+- `hot-window`, top-200 discovery’yi genişletmez; sadece orderflow ile çözülen marketlerin sınırlı süreyle trade değerlendirmesine girmesini sağlar
+- dashboard `Mapping Sağlığı` paneli artık:
+  - `Alias cache hit`
+  - `Lazy lookup hit`
+  - `Sıcak pencere marketleri`
+  - `Sıcak pencere hit`
+  - `Hot-window promotion`
+  - `Active-window miss`
+  - `Resolver hit oranı`
+  metriklerini gösterir
 
 The dashboard runs as a separate service:
 

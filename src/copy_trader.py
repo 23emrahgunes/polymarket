@@ -18,6 +18,7 @@ class CopyTrader:
         decision_engine: DecisionEngine,
         market_resolver: Optional[Callable[[list[str], str], Awaitable[Optional[Dict]]]] = None,
         mapping_event_callback: Optional[Callable[..., Awaitable[None]]] = None,
+        market_promotion_callback: Optional[Callable[..., Awaitable[bool]]] = None,
     ):
         self.trader = trader
         self.scanner = scanner
@@ -25,6 +26,7 @@ class CopyTrader:
         self.decision_engine = decision_engine
         self.market_resolver = market_resolver
         self.mapping_event_callback = mapping_event_callback
+        self.market_promotion_callback = market_promotion_callback
         self.market_context_by_id: Dict[str, Dict] = {}
         self.token_to_market_id: Dict[str, str] = {}
 
@@ -78,6 +80,21 @@ class CopyTrader:
             source=source,
             event=event,
         )
+        hot_window_hit = mapping_stage == "hot_window"
+        hot_window_promoted = False
+        if (
+            context is not None
+            and mapping_stage in {"alias_cache", "lazy_lookup"}
+            and self.market_promotion_callback is not None
+        ):
+            hot_window_promoted = bool(
+                await self.market_promotion_callback(
+                    context=context,
+                    event=event,
+                    source=source,
+                    stage=mapping_stage,
+                )
+            )
         category = context.get("category", "OTHER") if context else "OTHER"
         question = context.get("question", "") if context else ""
         resolved_market_id = context.get("market_id") if context else market_id
@@ -98,6 +115,8 @@ class CopyTrader:
             alias_candidates=alias_candidates,
             lazy_lookup_attempted=lazy_lookup_attempted,
             lazy_lookup_hit=lazy_lookup_hit,
+            hot_window_hit=hot_window_hit,
+            hot_window_promoted=hot_window_promoted,
         )
 
         if context is None:
@@ -167,6 +186,8 @@ class CopyTrader:
                 alias_candidates=alias_candidates,
                 lazy_lookup_attempted=lazy_lookup_attempted,
                 lazy_lookup_hit=lazy_lookup_hit,
+                hot_window_hit=hot_window_hit,
+                hot_window_promoted=hot_window_promoted,
             )
         )
         self.decision_engine.log_result(decision, logger)
@@ -214,9 +235,9 @@ class CopyTrader:
         if not alias_candidates:
             return None, "unknown_token", "market_not_mapped_unknown_token", False, False
 
-        context = self._resolve_from_memory(market_id, token_id, alias_candidates)
+        context, memory_stage = self._resolve_from_memory(market_id, token_id, alias_candidates)
         if context is not None:
-            return context, "active_context", "mapped", False, False
+            return context, memory_stage, "mapped", False, False
 
         cached_context = await self._resolve_from_alias_cache(alias_candidates)
         if cached_context is not None:
@@ -240,31 +261,39 @@ class CopyTrader:
         market_id: Optional[str],
         token_id: Optional[str],
         alias_candidates: list[str],
-    ) -> Optional[Dict]:
+    ) -> tuple[Optional[Dict], str]:
         normalized_market_id = normalize_market_alias(market_id)
         normalized_token_id = normalize_market_alias(token_id)
 
         if normalized_market_id and normalized_market_id in self.market_context_by_id:
-            return self.market_context_by_id[normalized_market_id]
+            context = self.market_context_by_id[normalized_market_id]
+            return context, str(context.get("trade_context_source", "active_context"))
 
         if normalized_token_id and normalized_token_id in self.token_to_market_id:
             resolved_market_id = self.token_to_market_id[normalized_token_id]
-            return self.market_context_by_id.get(resolved_market_id)
+            context = self.market_context_by_id.get(resolved_market_id)
+            if context is not None:
+                return context, str(context.get("trade_context_source", "active_context"))
 
         if normalized_market_id and normalized_token_id is None and normalized_market_id in self.token_to_market_id:
             resolved_market_id = self.token_to_market_id[normalized_market_id]
-            return self.market_context_by_id.get(resolved_market_id)
+            context = self.market_context_by_id.get(resolved_market_id)
+            if context is not None:
+                return context, str(context.get("trade_context_source", "active_context"))
 
         for alias in alias_candidates:
             normalized_alias = normalize_market_alias(alias)
             if not normalized_alias:
                 continue
             if normalized_alias in self.market_context_by_id:
-                return self.market_context_by_id[normalized_alias]
+                context = self.market_context_by_id[normalized_alias]
+                return context, str(context.get("trade_context_source", "active_context"))
             if normalized_alias in self.token_to_market_id:
                 resolved_market_id = self.token_to_market_id[normalized_alias]
-                return self.market_context_by_id.get(resolved_market_id)
-        return None
+                context = self.market_context_by_id.get(resolved_market_id)
+                if context is not None:
+                    return context, str(context.get("trade_context_source", "active_context"))
+        return None, "active_context"
 
     async def _resolve_from_alias_cache(self, alias_candidates: list[str]) -> Optional[Dict]:
         if self.db is None:

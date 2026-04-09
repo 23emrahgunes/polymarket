@@ -21,6 +21,12 @@ class MarketExplorer:
         self.debug_signal_profile = (debug_signal_profile or os.getenv("DEBUG_SIGNAL_PROFILE", "sports")).strip().lower()
 
     async def fetch_active_markets(self, limit: int = 200) -> List[Dict]:
+        return await self._fetch_markets(limit=limit, active_only=True)
+
+    async def fetch_market_lookup_universe(self, limit: int = 5000) -> List[Dict]:
+        return await self._fetch_markets(limit=limit, active_only=False)
+
+    async def _fetch_markets(self, limit: int, active_only: bool) -> List[Dict]:
         if self.debug_signal_mode:
             logger.info("Explorer: DEBUG_SIGNAL_MODE active. Using deterministic verification markets.")
             return self._get_debug_markets()
@@ -32,7 +38,10 @@ class MarketExplorer:
 
             while len(discovered_by_id) < limit:
                 request_limit = min(page_size, max(limit - len(discovered_by_id), 1))
-                url = f"{self.gamma_api_base}/markets?active=true&closed=false&limit={request_limit}&offset={offset}"
+                filters = [f"limit={request_limit}", f"offset={offset}", "closed=false"]
+                if active_only:
+                    filters.append("active=true")
+                url = f"{self.gamma_api_base}/markets?{'&'.join(filters)}"
                 response = await asyncio.to_thread(requests.get, url, timeout=10)
                 if response.status_code != 200:
                     logger.error("Explorer: Gamma API returned HTTP %s", response.status_code)
@@ -70,7 +79,12 @@ class MarketExplorer:
             return None
 
         active_markets = await self.fetch_active_markets(limit=limit)
-        return self._match_market_by_alias(active_markets, aliases)
+        matched_market = self._match_market_by_alias(active_markets, aliases)
+        if matched_market is not None:
+            return matched_market
+
+        lookup_markets = await self.fetch_market_lookup_universe(limit=max(limit, 1000))
+        return self._match_market_by_alias(lookup_markets, aliases)
 
     @staticmethod
     def _match_market_by_alias(markets: List[Dict], aliases: List[str]) -> Dict | None:

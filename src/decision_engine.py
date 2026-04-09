@@ -60,6 +60,8 @@ class DecisionInputs:
     alias_candidates: Optional[List[str]] = None
     lazy_lookup_attempted: bool = False
     lazy_lookup_hit: bool = False
+    hot_window_hit: bool = False
+    hot_window_promoted: bool = False
 
 
 @dataclass

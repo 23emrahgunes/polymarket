@@ -167,6 +167,60 @@ async def test_copy_trader_passes_whale_alias_candidates_into_lazy_lookup(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_copy_trader_promotes_market_after_successful_lazy_lookup(tmp_path):
+    db_path = str(tmp_path / "hot_window_promotion.db")
+    db = Database(db_path)
+    await db.connect()
+
+    trader = _FakeTrader()
+    promotion_calls = []
+
+    async def fake_lazy_resolver(alias_candidates, source):
+        return {
+            "market_id": "0xMARKET5",
+            "token_id": "0xTOKEN5",
+            "token_ids": ["0xTOKEN5"],
+            "question": "Will Team E win the championship?",
+            "category": "SPORTS",
+            "volume_24h": 99000.0,
+            "active": True,
+        }
+
+    async def fake_promotion_callback(**kwargs):
+        promotion_calls.append(kwargs)
+        return True
+
+    copy_trader = CopyTrader(
+        trader,
+        _FakeScanner(),
+        db,
+        DecisionEngine(),
+        market_resolver=fake_lazy_resolver,
+        market_promotion_callback=fake_promotion_callback,
+    )
+
+    success = await copy_trader.evaluate_signal(
+        {
+            "whale": "0xWHALE5",
+            "action": "BUY",
+            "market_id": "0xMARKET5",
+            "token_id": None,
+            "amount": 5000.0,
+            "price": 0.58,
+            "alias_candidates": ["0xMARKET5", "0xTOKEN5"],
+        }
+    )
+
+    await db.close()
+
+    assert success is True
+    assert len(promotion_calls) == 1
+    assert promotion_calls[0]["stage"] == "lazy_lookup"
+    assert promotion_calls[0]["source"] == "whale_tracker"
+    assert promotion_calls[0]["context"]["market_id"] == "0xMARKET5"
+
+
+@pytest.mark.asyncio
 async def test_copy_trader_skips_lazy_lookup_for_tiny_unmapped_cluster(tmp_path):
     db_path = str(tmp_path / "tiny_unmapped.db")
     db = Database(db_path)
@@ -232,6 +286,7 @@ async def test_runtime_bootstrap_persists_market_aliases(tmp_path):
         ]
 
     runtime.explorer.fetch_active_markets = fake_fetch_active_markets
+    runtime.explorer.fetch_market_lookup_universe = fake_fetch_active_markets
     await runtime.bootstrap_market_context()
 
     alias_row = await runtime.db.resolve_market_alias(["0xTOKEN3"])
@@ -256,42 +311,47 @@ async def test_runtime_separates_trade_and_lookup_contexts(tmp_path):
     )
     await runtime.initialize()
 
+    universe = [
+        {
+            "market_id": "0xTRADE1",
+            "token_id": "0xTOKENT1",
+            "token_ids": ["0xTOKENT1"],
+            "alias_candidates": ["0xTRADE1", "0xTOKENT1"],
+            "question": "Will Team A win?",
+            "category": "SPORTS",
+            "volume_24h": 100000.0,
+            "active": True,
+        },
+        {
+            "market_id": "0xLOOKUP2",
+            "token_id": "0xTOKENL2",
+            "token_ids": ["0xTOKENL2"],
+            "alias_candidates": ["0xLOOKUP2", "0xTOKENL2"],
+            "question": "Will Team B win?",
+            "category": "SPORTS",
+            "volume_24h": 90000.0,
+            "active": True,
+        },
+        {
+            "market_id": "0xLOOKUP3",
+            "token_id": "0xTOKENL3",
+            "token_ids": ["0xTOKENL3"],
+            "alias_candidates": ["0xLOOKUP3", "0xTOKENL3"],
+            "question": "Will Team C win?",
+            "category": "SPORTS",
+            "volume_24h": 80000.0,
+            "active": True,
+        },
+    ]
+
     async def fake_fetch_active_markets(limit=200):
-        universe = [
-            {
-                "market_id": "0xTRADE1",
-                "token_id": "0xTOKENT1",
-                "token_ids": ["0xTOKENT1"],
-                "alias_candidates": ["0xTRADE1", "0xTOKENT1"],
-                "question": "Will Team A win?",
-                "category": "SPORTS",
-                "volume_24h": 100000.0,
-                "active": True,
-            },
-            {
-                "market_id": "0xLOOKUP2",
-                "token_id": "0xTOKENL2",
-                "token_ids": ["0xTOKENL2"],
-                "alias_candidates": ["0xLOOKUP2", "0xTOKENL2"],
-                "question": "Will Team B win?",
-                "category": "SPORTS",
-                "volume_24h": 90000.0,
-                "active": True,
-            },
-            {
-                "market_id": "0xLOOKUP3",
-                "token_id": "0xTOKENL3",
-                "token_ids": ["0xTOKENL3"],
-                "alias_candidates": ["0xLOOKUP3", "0xTOKENL3"],
-                "question": "Will Team C win?",
-                "category": "SPORTS",
-                "volume_24h": 80000.0,
-                "active": True,
-            },
-        ]
+        return universe[:limit]
+
+    async def fake_fetch_lookup_markets(limit=5000):
         return universe[:limit]
 
     runtime.explorer.fetch_active_markets = fake_fetch_active_markets
+    runtime.explorer.fetch_market_lookup_universe = fake_fetch_lookup_markets
     await runtime.bootstrap_market_context()
 
     lookup_context = runtime._resolve_market_context("0xLOOKUP2", None, ["0xTOKENL2"])
@@ -301,3 +361,69 @@ async def test_runtime_separates_trade_and_lookup_contexts(tmp_path):
     assert len(runtime.lookup_market_context) == 3
     assert lookup_context is not None
     assert lookup_context["market_id"] == "0xlookup2"
+
+
+@pytest.mark.asyncio
+async def test_runtime_promotes_and_expires_hot_window_market(tmp_path):
+    db_path = str(tmp_path / "runtime_hot_window.db")
+    runtime = GhostBotRuntime(
+        RuntimeSettings(
+            exchange_id="coinbase",
+            db_path=db_path,
+            debug_signal_mode=False,
+            runtime_verify_once=False,
+            orderflow_hot_window_enabled=True,
+            orderflow_hot_window_limit=2,
+            orderflow_hot_window_ttl_seconds=120.0,
+        )
+    )
+    await runtime.initialize()
+
+    runtime.active_market_context = {
+        "0xtrade1": {
+            "market_id": "0xtrade1",
+            "token_id": "0xtokent1",
+            "token_ids": ["0xtokent1"],
+            "alias_candidates": ["0xtrade1", "0xtokent1"],
+            "question": "Will Team A win?",
+            "category": "SPORTS",
+            "volume_24h": 100000.0,
+            "active": True,
+            "trade_context_source": "active_context",
+        }
+    }
+    runtime._publish_trade_market_contexts()
+
+    promoted = await runtime.promote_hot_window_market(
+        context={
+            "market_id": "0xlookup2",
+            "token_id": "0xtokenl2",
+            "token_ids": ["0xtokenl2"],
+            "alias_candidates": ["0xlookup2", "0xtokenl2"],
+            "question": "Will Team B win?",
+            "category": "SPORTS",
+            "volume_24h": 90000.0,
+            "active": True,
+        },
+        event={
+            "type": "WHALE_EVENT",
+            "amount": 5000.0,
+            "wallet": "0xwhale",
+            "wallets_count": 1,
+        },
+        source="whale_tracker",
+        stage="lazy_lookup",
+    )
+
+    trade_universe = runtime._build_trade_market_universe(list(runtime.active_market_context.values()))
+
+    assert promoted is True
+    assert "0xlookup2" in runtime.hot_window_market_context
+    assert len(trade_universe) == 2
+    assert runtime.hot_window_promotions == 1
+
+    runtime.hot_window_expiries["0xlookup2"] = 0.0
+    await runtime._prune_hot_window()
+    await runtime.close()
+
+    assert "0xlookup2" not in runtime.hot_window_market_context

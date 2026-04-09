@@ -69,13 +69,14 @@ def _create_dashboard_db(path: Path) -> None:
         ],
     )
     cur.execute(
-        'CREATE TABLE decision_audit (id INTEGER PRIMARY KEY, occurred_at TEXT, venue TEXT, market_id TEXT, category TEXT, signal_family TEXT, raw_source_signal TEXT, action TEXT, reason TEXT, decision_score REAL, threshold REAL, trade_size REAL, confidence REAL, mapping_stage TEXT, lazy_lookup_attempted INTEGER, lazy_lookup_hit INTEGER, alias_candidates_json TEXT)'
+        'CREATE TABLE decision_audit (id INTEGER PRIMARY KEY, occurred_at TEXT, venue TEXT, market_id TEXT, category TEXT, signal_family TEXT, raw_source_signal TEXT, action TEXT, reason TEXT, decision_score REAL, threshold REAL, trade_size REAL, confidence REAL, mapping_stage TEXT, lazy_lookup_attempted INTEGER, lazy_lookup_hit INTEGER, alias_candidates_json TEXT, hot_window_promoted INTEGER DEFAULT 0)'
     )
     cur.executemany(
-        'INSERT INTO decision_audit VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO decision_audit VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
-            (1, '2026-04-09 10:00:00', 'polymarket', 'market-1', 'SPORTS', 'activity_orderflow', 'activity', 'reject', 'liquidity_guard', 0.67, 0.72, 40.0, 0.67, 'alias_cache', 0, 0, '["token-1","condition-1"]'),
-            (2, '2026-04-09 10:01:00', 'polymarket', 'market-2', 'OTHER', 'whale', 'whale_tracker', 'reject', 'market_not_mapped_unknown_token', 0.0, 0.78, 25.0, 0.0, 'lazy_lookup', 1, 0, '["mystery-token","mystery-market"]'),
+            (1, '2026-04-09 10:00:00', 'polymarket', 'market-1', 'SPORTS', 'activity_orderflow', 'activity', 'reject', 'liquidity_guard', 0.67, 0.72, 40.0, 0.67, 'alias_cache', 0, 0, '["token-1","condition-1"]', 0),
+            (2, '2026-04-09 10:01:00', 'polymarket', 'market-2', 'OTHER', 'whale', 'whale_tracker', 'reject', 'market_not_mapped_active_window', 0.0, 0.78, 25.0, 0.0, 'active_window', 0, 0, '["mystery-token","mystery-market"]', 0),
+            (3, '2026-04-09 10:02:00', 'polymarket', 'market-3', 'SPORTS', 'whale', 'whale_tracker', 'decision', 'score_below_threshold', 0.71, 0.72, 40.0, 0.71, 'hot_window', 1, 1, '["hot-token","hot-market"]', 1),
         ],
     )
     cur.execute(
@@ -222,10 +223,16 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['runtime_summary']['tracked_whales'] == 2
     assert payload['runtime_summary']['total_trades'] == 1
     assert payload['runtime_summary']['unmapped_orderflow_events'] == 1
+    assert payload['runtime_summary']['alias_cache_hits'] == 1
+    assert payload['runtime_summary']['lazy_lookup_hits'] == 1
+    assert payload['runtime_summary']['hot_window_hits'] == 1
+    assert payload['runtime_summary']['hot_window_promotions'] == 1
+    assert payload['runtime_summary']['active_window_misses'] == 1
     assert payload['recent_trades'][0]['market_id'] == 'market-1'
     assert payload['open_positions'][0]['symbol_or_market_id'] == 'BTC/USDT:USDT'
     assert payload['top_unresolved_aliases'][0]['alias'] == 'mystery-token'
     assert payload['recent_unresolved_aliases'][0]['aliases'][0] == 'mystery-token'
+    assert payload['recent_decisions'][0]['hot_window_promoted'] == 1
     assert payload['performance_summary']['evidence']['live_paper_closed'] == 3
     assert payload['swot_verdict']['final_verdict']['verdict'] == 'IMPROVE FIRST'
     assert isinstance(payload['warnings'], list)

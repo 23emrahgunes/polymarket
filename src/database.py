@@ -197,7 +197,8 @@ class Database:
                 mapping_stage TEXT,
                 alias_candidates_json TEXT,
                 lazy_lookup_attempted INTEGER DEFAULT 0,
-                lazy_lookup_hit INTEGER DEFAULT 0
+                lazy_lookup_hit INTEGER DEFAULT 0,
+                hot_window_promoted INTEGER DEFAULT 0
             )
             """
         )
@@ -267,6 +268,7 @@ class Database:
             "ALTER TABLE decision_audit ADD COLUMN alias_candidates_json TEXT",
             "ALTER TABLE decision_audit ADD COLUMN lazy_lookup_attempted INTEGER DEFAULT 0",
             "ALTER TABLE decision_audit ADD COLUMN lazy_lookup_hit INTEGER DEFAULT 0",
+            "ALTER TABLE decision_audit ADD COLUMN hot_window_promoted INTEGER DEFAULT 0",
         ]:
             try:
                 await self.conn.execute(statement)
@@ -980,6 +982,7 @@ class Database:
         alias_candidates_json: str | None = None,
         lazy_lookup_attempted: bool = False,
         lazy_lookup_hit: bool = False,
+        hot_window_promoted: bool = False,
         occurred_at: str | None = None,
     ) -> int:
         normalized_signal_family = signal_family or normalize_signal_family(raw_source_signal)
@@ -991,9 +994,9 @@ class Database:
                 occurred_at, venue, market_id, category, signal_family, raw_source_signal, sample_kind,
                 is_synthetic, decision_score, threshold, trade_size, action, reason, confidence,
                 whale_trust, spread_pct, slippage_proxy_bps, inputs_json, mapping_stage,
-                alias_candidates_json, lazy_lookup_attempted, lazy_lookup_hit
+                alias_candidates_json, lazy_lookup_attempted, lazy_lookup_hit, hot_window_promoted
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 occurred_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
@@ -1018,6 +1021,7 @@ class Database:
                 alias_candidates_json,
                 1 if lazy_lookup_attempted else 0,
                 1 if lazy_lookup_hit else 0,
+                1 if hot_window_promoted else 0,
             ),
         )
         await self.conn.commit()

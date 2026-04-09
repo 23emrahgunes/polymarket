@@ -21,7 +21,7 @@ from src.evaluation_utils import infer_sample_kind, normalize_signal_family, sli
 from src.gamma_client import GammaApiClient
 from src.logic import calculate_annualized_volatility, calculate_black_scholes_prob, calculate_edge, calculate_rsi
 from src.market_config import BINANCE_FUTURES_MAPPINGS, EXCHANGE_MAPPINGS, resolve_binance_futures_symbol, resolve_crypto_symbol
-from src.market_mapping import build_market_aliases, collect_alias_candidates, normalize_market_alias
+from src.market_mapping import build_market_aliases, collect_alias_candidates, event_is_meaningful_for_lazy_lookup, normalize_market_alias
 from src.parser import parse_polymarket_question
 from src.scanner import MarketScanner
 from src.scrapers.activity import ActivityHunter
@@ -56,6 +56,9 @@ class RuntimeSettings:
     verify_required_category: Optional[str] = None
     market_limit: int = 200
     market_lookup_limit: int = 5000
+    orderflow_hot_window_enabled: bool = True
+    orderflow_hot_window_limit: int = 150
+    orderflow_hot_window_ttl_seconds: float = 900.0
     discovery_interval_seconds: float = 5.0
     whale_interval_seconds: float = 15.0
     status_interval_seconds: float = 300.0
@@ -80,6 +83,9 @@ class RuntimeSettings:
             verify_required_venues=_env_csv("VERIFY_REQUIRED_VENUES"),
             verify_required_category=(os.getenv("VERIFY_REQUIRED_CATEGORY", "").strip().upper() or None),
             market_lookup_limit=max(int(os.getenv("MARKET_LOOKUP_LIMIT", "5000") or 5000), 200),
+            orderflow_hot_window_enabled=_env_flag("ORDERFLOW_HOT_WINDOW_ENABLED", True),
+            orderflow_hot_window_limit=max(int(os.getenv("ORDERFLOW_HOT_WINDOW_LIMIT", "150") or 150), 1),
+            orderflow_hot_window_ttl_seconds=max(float(os.getenv("ORDERFLOW_HOT_WINDOW_TTL_SECONDS", "900") or 900), 60.0),
             whale_target_count=max(int(os.getenv("WHALE_TARGET_COUNT", "50") or 50), 1),
             whale_discovery_min_event_usd=float(os.getenv("WHALE_DISCOVERY_MIN_EVENT_USD", "2500") or 2500),
             whale_discovery_min_events=max(int(os.getenv("WHALE_DISCOVERY_MIN_EVENTS", "2") or 2), 1),
@@ -110,12 +116,19 @@ class GhostBotRuntime:
         self.token_to_market_id: Dict[str, str] = {}
         self.lookup_market_context: Dict[str, Dict] = {}
         self.lookup_token_to_market_id: Dict[str, str] = {}
+        self.hot_window_market_context: Dict[str, Dict] = {}
+        self.hot_window_token_to_market_id: Dict[str, str] = {}
+        self.hot_window_expiries: Dict[str, float] = {}
         self.last_lookup_refresh_ts = 0.0
         self.crypto_orderflow_hints: Dict[str, Dict] = {}
         self.mapped_orderflow_events = 0
         self.unmapped_orderflow_events = 0
         self.lazy_lookup_hits = 0
         self.alias_cache_hits = 0
+        self.hot_window_hits = 0
+        self.hot_window_promotions = 0
+        self.hot_window_expiry_events = 0
+        self.active_window_misses = 0
 
         self.scanner: Optional[MarketScanner] = None
         self.db: Optional[Database] = None
@@ -182,6 +195,7 @@ class GhostBotRuntime:
             self.decision_engine,
             market_resolver=self.lazy_resolve_market_context,
             mapping_event_callback=self.record_mapping_event,
+            market_promotion_callback=self.promote_hot_window_market,
         )
 
         self.polymarket_venue = PolymarketVenue(
@@ -255,17 +269,19 @@ class GhostBotRuntime:
             alias_candidates_json=json.dumps(decision.inputs.get("alias_candidates", []), sort_keys=True, default=str),
             lazy_lookup_attempted=bool(decision.inputs.get("lazy_lookup_attempted", False)),
             lazy_lookup_hit=bool(decision.inputs.get("lazy_lookup_hit", False)),
+            hot_window_promoted=bool(decision.inputs.get("hot_window_promoted", False)),
         )
 
     async def bootstrap_market_context(self) -> None:
         if self.explorer is None or self.scanner is None or self.copy_trader is None:
             return
 
-        lookup_universe = await self.explorer.fetch_active_markets(limit=self.settings.market_lookup_limit)
+        lookup_universe = await self.explorer.fetch_market_lookup_universe(limit=self.settings.market_lookup_limit)
         await self._refresh_lookup_context(lookup_universe, source="explorer")
         self.last_lookup_refresh_ts = time.time()
         active_markets = await self.explorer.fetch_active_markets(limit=self.settings.market_limit)
         await self._refresh_active_market_context(active_markets)
+        await self._prune_hot_window()
         symbols = {
             resolve_crypto_symbol(market.get("question", ""), self.settings.exchange_id)
             for market in lookup_universe
@@ -318,7 +334,7 @@ class GhostBotRuntime:
         while not self.stop_event.is_set():
             cycle_started = time.time()
             if (time.time() - self.last_lookup_refresh_ts) >= self.settings.market_scan_interval_seconds or not self.lookup_market_context:
-                lookup_universe = await self.explorer.fetch_active_markets(limit=self.settings.market_lookup_limit)
+                lookup_universe = await self.explorer.fetch_market_lookup_universe(limit=self.settings.market_lookup_limit)
                 await self._refresh_lookup_context(lookup_universe, source="explorer")
                 self.last_lookup_refresh_ts = time.time()
             else:
@@ -326,8 +342,10 @@ class GhostBotRuntime:
 
             active_markets = await self.explorer.fetch_active_markets(limit=self.settings.market_limit)
             await self._refresh_active_market_context(active_markets)
+            await self._prune_hot_window()
+            trade_markets = self._build_trade_market_universe(active_markets)
 
-            if not active_markets:
+            if not trade_markets:
                 logger.info("[STATUS] No active Polymarket markets discovered in this cycle.")
             else:
                 symbols = {
@@ -336,7 +354,7 @@ class GhostBotRuntime:
                     if market.get("category") == "CRYPTO"
                 }
                 await self.scanner.update_monitored_symbols([symbol for symbol in symbols if symbol])
-                for market in active_markets:
+                for market in trade_markets:
                     await self.process_market(market)
                     if self.stop_event.is_set():
                         break
@@ -382,8 +400,13 @@ class GhostBotRuntime:
         market_not_mapped_rate = (
             (self.unmapped_orderflow_events / total_orderflow_events) * 100.0 if total_orderflow_events else 0.0
         )
+        resolver_hits = self.alias_cache_hits + self.lazy_lookup_hits
+        resolver_hit_rate = (resolver_hits / self.mapped_orderflow_events) * 100.0 if self.mapped_orderflow_events else 0.0
+        active_window_miss_rate = (
+            (self.active_window_misses / total_orderflow_events) * 100.0 if total_orderflow_events else 0.0
+        )
         logger.info(
-            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s mapped_orderflow_events=%s unmapped_orderflow_events=%s alias_cache_hits=%s lazy_lookup_hits=%s market_not_mapped_rate=%.1f scan_time=%.2fs",
+            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s mapped_orderflow_events=%s unmapped_orderflow_events=%s alias_cache_hits=%s lazy_lookup_hits=%s hot_window_markets=%s hot_window_hits=%s hot_window_promotions=%s hot_window_expiries=%s active_window_misses=%s resolver_hit_rate=%.1f active_window_miss_rate=%.1f market_not_mapped_rate=%.1f scan_time=%.2fs",
             active_markets_count,
             len(whale_tracker.top_whales if whale_tracker else []),
             getattr(whale_tracker, "leaderboard_wallets_count", 0),
@@ -406,6 +429,13 @@ class GhostBotRuntime:
             self.unmapped_orderflow_events,
             self.alias_cache_hits,
             self.lazy_lookup_hits,
+            len(self.hot_window_market_context),
+            self.hot_window_hits,
+            self.hot_window_promotions,
+            self.hot_window_expiry_events,
+            self.active_window_misses,
+            resolver_hit_rate,
+            active_window_miss_rate,
             market_not_mapped_rate,
             cycle_duration,
         )
@@ -785,6 +815,24 @@ class GhostBotRuntime:
             return {}
         return hint
 
+    def _build_trade_market_universe(self, active_markets: list[Dict]) -> list[Dict]:
+        trade_markets: list[Dict] = []
+        seen_market_ids: set[str] = set()
+
+        for market in active_markets:
+            normalized_market_id = normalize_market_alias(market.get("market_id"))
+            if not normalized_market_id or normalized_market_id in seen_market_ids:
+                continue
+            seen_market_ids.add(normalized_market_id)
+            trade_markets.append(market)
+
+        for market_id, market in self.hot_window_market_context.items():
+            if market_id in seen_market_ids:
+                continue
+            trade_markets.append(dict(market))
+
+        return trade_markets
+
     def _resolve_market_context(
         self,
         market_id: Optional[str],
@@ -817,22 +865,21 @@ class GhostBotRuntime:
             normalized_market = self._normalize_market_context(market)
             if normalized_market is None:
                 continue
+            normalized_market["trade_context_source"] = "active_context"
             self._cache_market_context(normalized_market, self.active_market_context, self.token_to_market_id)
+        self._publish_trade_market_contexts()
 
     async def _refresh_lookup_context(self, market_universe: list[Dict], source: str) -> None:
         self.lookup_market_context = {}
         self.lookup_token_to_market_id = {}
 
         for market in market_universe:
-            normalized_market = await self._register_market_context(
+            await self._register_market_context(
                 market,
                 source=source,
                 context_store=self.lookup_market_context,
                 token_store=self.lookup_token_to_market_id,
             )
-
-        if self.copy_trader is not None:
-            self.copy_trader.update_market_contexts(self.lookup_market_context, self.lookup_token_to_market_id)
 
     async def _register_market_context(
         self,
@@ -872,6 +919,7 @@ class GhostBotRuntime:
         normalized_market = dict(market)
         normalized_market["market_id"] = market_id
         normalized_market["category"] = market.get("category", classify_market_category(market.get("question", "")))
+        normalized_market["active"] = bool(market.get("active", True))
         alias_candidates = build_market_aliases(
             market_id=market_id,
             token_id=market.get("token_id"),
@@ -903,7 +951,7 @@ class GhostBotRuntime:
             limit=max(self.settings.market_limit, self.settings.market_lookup_limit),
         )
         if market is None:
-            refreshed_market_universe = await self.explorer.fetch_active_markets(limit=self.settings.market_lookup_limit)
+            refreshed_market_universe = await self.explorer.fetch_market_lookup_universe(limit=self.settings.market_lookup_limit)
             await self._refresh_lookup_context(refreshed_market_universe, source="lazy_lookup_refresh")
             self.last_lookup_refresh_ts = time.time()
             market = self._resolve_market_context(None, None, alias_candidates)
@@ -924,10 +972,96 @@ class GhostBotRuntime:
         )
         if normalized_market is None:
             return None
-        self._cache_market_context(normalized_market, self.active_market_context, self.token_to_market_id)
-        if self.copy_trader is not None:
-            self.copy_trader.update_market_contexts(self.lookup_market_context, self.lookup_token_to_market_id)
         return normalized_market
+
+    async def promote_hot_window_market(self, *, context: Dict, event: Dict, source: str, stage: str) -> bool:
+        if not self.settings.orderflow_hot_window_enabled:
+            return False
+        if not context or not bool(context.get("active", True)):
+            return False
+        if not event_is_meaningful_for_lazy_lookup(event):
+            return False
+
+        market_id = normalize_market_alias(context.get("market_id"))
+        if not market_id or market_id in self.active_market_context:
+            return False
+
+        hot_context = dict(context)
+        hot_context["trade_context_source"] = "hot_window"
+        hot_context["hot_window_source"] = source
+        hot_context["hot_window_stage"] = stage
+        hot_context["hot_window_promoted_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        self.hot_window_market_context[market_id] = hot_context
+        self.hot_window_expiries[market_id] = time.time() + self.settings.orderflow_hot_window_ttl_seconds
+
+        while len(self.hot_window_market_context) > self.settings.orderflow_hot_window_limit:
+            oldest_market_id = min(
+                self.hot_window_expiries,
+                key=lambda key: (self.hot_window_expiries.get(key, 0.0), key),
+            )
+            self.hot_window_market_context.pop(oldest_market_id, None)
+            self.hot_window_expiries.pop(oldest_market_id, None)
+            self.hot_window_expiry_events += 1
+
+        self._rebuild_hot_window_token_index()
+        self._publish_trade_market_contexts()
+        self.hot_window_promotions += 1
+        return True
+
+    async def _prune_hot_window(self) -> None:
+        if not self.hot_window_market_context:
+            return
+
+        now_ts = time.time()
+        expired_market_ids = [
+            market_id
+            for market_id, expires_at in self.hot_window_expiries.items()
+            if expires_at <= now_ts or not bool(self.hot_window_market_context.get(market_id, {}).get("active", True))
+        ]
+        if not expired_market_ids:
+            return
+
+        for market_id in expired_market_ids:
+            self.hot_window_market_context.pop(market_id, None)
+            self.hot_window_expiries.pop(market_id, None)
+            self.hot_window_expiry_events += 1
+
+        self._rebuild_hot_window_token_index()
+        self._publish_trade_market_contexts()
+
+    def _rebuild_hot_window_token_index(self) -> None:
+        self.hot_window_token_to_market_id = {}
+        for market_id, market in self.hot_window_market_context.items():
+            for alias in market.get("alias_candidates", []):
+                normalized_alias = normalize_market_alias(alias)
+                if normalized_alias and normalized_alias != market_id:
+                    self.hot_window_token_to_market_id[normalized_alias] = market_id
+
+    def _publish_trade_market_contexts(self) -> None:
+        if self.copy_trader is None:
+            return
+
+        published_market_context: Dict[str, Dict] = {}
+        published_token_index: Dict[str, str] = {}
+
+        for market_id, market in self.active_market_context.items():
+            published_market_context[market_id] = dict(market)
+            for alias in market.get("alias_candidates", []):
+                normalized_alias = normalize_market_alias(alias)
+                if normalized_alias and normalized_alias != market_id:
+                    published_token_index[normalized_alias] = market_id
+
+        for market_id, market in self.hot_window_market_context.items():
+            if market_id in published_market_context:
+                continue
+            published_market_context[market_id] = dict(market)
+            for alias in market.get("alias_candidates", []):
+                normalized_alias = normalize_market_alias(alias)
+                if normalized_alias and normalized_alias != market_id and normalized_alias not in published_token_index:
+                    published_token_index[normalized_alias] = market_id
+
+        self.copy_trader.update_market_contexts(published_market_context, published_token_index)
 
     async def record_mapping_event(self, *, mapped: bool, stage: str) -> None:
         if mapped:
@@ -936,7 +1070,11 @@ class GhostBotRuntime:
                 self.alias_cache_hits += 1
             elif stage == "lazy_lookup":
                 self.lazy_lookup_hits += 1
+            elif stage == "hot_window":
+                self.hot_window_hits += 1
             return
+        if stage == "active_window":
+            self.active_window_misses += 1
         self.unmapped_orderflow_events += 1
 
     async def _sleep_or_stop(self, seconds: float) -> None:
