@@ -189,6 +189,9 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #top-market-aliases,
         #top-unresolved-aliases,
         #recent-unresolved-aliases,
+        #routing-breakdown,
+        #sampling-decision-summary,
+        #mapping-miss-breakdown,
         #whale-wallet-counts,
         #top-whales,
         #performance-snapshot,
@@ -201,6 +204,23 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #top-whales,
         #sampling-reject-breakdown {
             margin-top: 12px;
+        }
+        .subcard #market-alias-counts,
+        .subcard #top-market-aliases,
+        .subcard #top-unresolved-aliases,
+        .subcard #recent-unresolved-aliases,
+        .subcard #routing-breakdown,
+        .subcard #sampling-decision-summary,
+        .subcard #mapping-miss-breakdown,
+        .subcard #whale-wallet-counts,
+        .subcard #top-whales,
+        .subcard #performance-snapshot,
+        .subcard #sampling-reject-breakdown {
+            border: 0;
+            background: transparent;
+            border-radius: 0;
+            padding: 0;
+            margin-top: 0;
         }
         .badge {
             display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px; font-size: 0.78rem;
@@ -287,23 +307,74 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         <div class="section-marker"><span class="section-label">Teşhis ve Kanıt</span></div>
         <article class="panel panel-primary">
             <div class="panel-header"><h2>Mapping Sağlığı</h2><span class="badge info">Kapsam</span></div>
-            <div class="metric-list" id="mapping-health"></div>
-            <div class="subsection-title">Alias Kaynakları</div>
-            <div id="market-alias-counts"></div>
-            <div class="subsection-title">En Güçlü Alias Cache</div>
-            <div id="top-market-aliases"></div>
-            <div class="subsection-title">En Sık Çözülemeyen Alias’lar</div>
-            <div id="top-unresolved-aliases"></div>
-            <div class="subsection-title">Son Çözülemeyen Alias Olayları</div>
-            <div id="recent-unresolved-aliases"></div>
+            <div class="panel-subgrid">
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Ana Metrikler</h3><span class="badge info">Resolver</span></div>
+                    <div class="metric-list" id="mapping-health"></div>
+                </div>
+                <div class="panel-inline-grid">
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Akış Ayrımı</h3><span class="badge info">Yol</span></div>
+                        <div id="routing-breakdown"></div>
+                    </div>
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Sampling Karar Özeti</h3><span class="badge warn">Paper</span></div>
+                        <div id="sampling-decision-summary"></div>
+                    </div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Mapping Miss Nedenleri</h3><span class="badge warn">Tanı</span></div>
+                    <div id="mapping-miss-breakdown"></div>
+                </div>
+                <div class="panel-inline-grid">
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Alias Kaynakları</h3><span class="badge info">Cache</span></div>
+                        <div id="market-alias-counts"></div>
+                    </div>
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">En Güçlü Alias Cache</h3><span class="badge info">Top</span></div>
+                        <div class="subcard-scroll"><div id="top-market-aliases"></div></div>
+                    </div>
+                </div>
+                <div class="panel-inline-grid">
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">En Sık Çözülemeyen Alias’lar</h3><span class="badge warn">Miss</span></div>
+                        <div class="subcard-scroll"><div id="top-unresolved-aliases"></div></div>
+                    </div>
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Son Çözülemeyen Alias Olayları</h3><span class="badge warn">Son Olaylar</span></div>
+                        <div class="subcard-scroll"><div id="recent-unresolved-aliases"></div></div>
+                    </div>
+                </div>
+            </div>
         </article>
         <article class="panel panel-third">
             <div class="panel-header"><h2>Balina Kaynağı</h2><span class="badge info">Hibrit Cache</span></div>
             <p class="panel-copy">Keşif skoru, whale adresini sıralamak için kullanılır; başarı oranı değildir. Güven skoru ve kazanma oranı yalnızca kapanmış canlı işlemlerden öğrenilir.</p>
-            <div id="whale-wallet-counts"></div>
-            <div id="top-whales" style="margin-top:14px;"></div>
+            <div class="panel-subgrid">
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Kaynak Sayıları</h3><span class="badge info">Havuz</span></div>
+                    <div id="whale-wallet-counts"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Balina Tablosu</h3><span class="badge info">Skor ve Güven</span></div>
+                    <div class="subcard-scroll"><div id="top-whales"></div></div>
+                </div>
+            </div>
         </article>
-        <article class="panel panel-third"><div class="panel-header"><h2>Performans Özeti</h2><span class="badge warn">Kanıt</span></div><div class="metric-list" id="performance-snapshot"></div></article>
+        <article class="panel panel-third">
+            <div class="panel-header"><h2>Performans Özeti</h2><span class="badge warn">Kanıt</span></div>
+            <div class="panel-subgrid">
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Strateji ve Sampling</h3><span class="badge warn">Özet</span></div>
+                    <div class="metric-list" id="performance-snapshot"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Sampling Red Nedenleri</h3><span class="badge warn">Blocker</span></div>
+                    <div id="sampling-reject-breakdown"></div>
+                </div>
+            </div>
+        </article>
         <article class="panel panel-wide"><div class="panel-header"><h2>Servis Log Özeti</h2><span class="badge info">Best Effort</span></div><pre id="service-log">Yükleniyor...</pre></article>
     </section>
 </div>
@@ -380,11 +451,23 @@ function translateMappingStage(value) {
         active_context: 'aktif bağlam',
         alias_cache: 'alias cache',
         lazy_lookup: 'lazy lookup',
+        unresolved_retry: 'yeniden deneme',
         hot_window: 'sıcak pencere',
         active_window: 'aktif pencere',
         unknown_token: 'bilinmeyen token'
     };
     return map[text] || String(value ?? 'yok');
+}
+
+function translateFlowClassification(value) {
+    const text = String(value ?? '').toLowerCase();
+    const map = {
+        'discovery-route-only': 'discovery-route-only',
+        'sampling-orderflow': 'sampling-orderflow',
+        'baseline-orderflow': 'baseline-orderflow',
+        other: 'diğer'
+    };
+    return map[text] || String(value ?? 'diğer');
 }
 
 function translateReason(value) {
@@ -532,6 +615,7 @@ function updatePanels(payload) {
     renderTable('recent-decisions', [
         { key: 'occurred_at', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.occurred_at || '') },
         { key: 'source', label: 'Kaynak', render: (row) => `<span class="badge ${badgeClass(row.action || row.raw_source_signal)}" title="${escapeHtml(row.raw_source_signal || row.signal_family || 'unknown')}">${escapeHtml(row.raw_source_signal || row.signal_family || 'unknown')}</span>` },
+        { key: 'flow_classification', label: 'Akış', render: (row) => escapeHtml(translateFlowClassification(row.flow_classification || 'other')) },
         { key: 'strategy_profile', label: 'Profil', render: (row) => escapeHtml(translateStrategyProfile(row.strategy_profile || 'baseline')) },
         { key: 'category', label: 'Kategori', render: (row) => escapeHtml(translateCategory(row.category)) },
         { key: 'action', label: 'Aksiyon', render: (row) => `<span class="badge ${badgeClass(row.action)}">${escapeHtml(translateAction(row.action || 'n/a'))}</span>` },
@@ -640,6 +724,21 @@ function updatePanels(payload) {
         { key: 'aliases', label: 'Alias Adayları', mono: true, render: (row) => truncateHtml(Array.isArray(row.aliases) ? row.aliases.join(', ') : '', 56) }
     ], payload.recent_unresolved_aliases, 'Son çözülemeyen alias olayı yok.');
 
+    renderTable('routing-breakdown', [
+        { key: 'flow_classification', label: 'Akış', render: (row) => escapeHtml(translateFlowClassification(row.flow_classification || 'other')) },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.routing_breakdown, 'Henüz akış ayrımı birikmedi.');
+
+    renderTable('sampling-decision-summary', [
+        { key: 'action', label: 'Aksiyon', render: (row) => `<span class="badge ${badgeClass(row.action)}">${escapeHtml(translateAction(row.action || 'n/a'))}</span>` },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.sampling_decision_summary, 'Henüz sampling karar özeti yok.');
+
+    renderTable('mapping-miss-breakdown', [
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.mapping_miss_breakdown, 'Henüz mapping miss nedeni yok.');
+
     const runtime = payload.runtime_summary || {};
     renderMetrics('mapping-health', [
         { label: 'Eşlenen orderflow event', value: formatNumber(runtime.mapped_orderflow_events, 0) },
@@ -677,7 +776,6 @@ function updatePanels(payload) {
         { label: 'Sampling notu', value: 'Sampling sonuçları ana alpha kanıtı değildir; ayrı deney profili olarak izlenir.', long: true }
     ]);
 
-    ensureSamplingRejectPanel();
     renderTable('sampling-reject-breakdown', [
         { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
         { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }

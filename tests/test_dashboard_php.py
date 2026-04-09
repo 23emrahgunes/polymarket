@@ -89,6 +89,7 @@ def _create_dashboard_db(path: Path) -> None:
             (2, '2026-04-09 10:01:00', 'polymarket', 'market-2', 'OTHER', 'whale', 'baseline', 'whale_tracker', 'reject', 'market_not_mapped_active_window', 0.0, 0.78, 25.0, 0.0, 'active_window', 0, 0, '["mystery-token","mystery-market"]', 0),
             (3, '2026-04-09 10:02:00', 'polymarket', 'market-3', 'SPORTS', 'whale', 'sampling_relaxed', 'whale_tracker', 'decision', 'score_below_threshold', 0.71, 0.72, 40.0, 0.71, 'hot_window', 1, 1, '["hot-token","hot-market"]', 1),
             (4, '2026-04-09 10:03:00', 'polymarket', 'market-4', 'POLITICS', 'whale', 'sampling_relaxed', 'activity', 'reject', 'slippage_guard_rejection,score_below_threshold', 0.48, 0.58, 35.0, 0.48, 'lazy_lookup', 1, 0, '["sampling-token","sampling-market"]', 0),
+            (5, '2026-04-09 10:04:00', 'polymarket', 'market-5', 'SPORTS', 'discovery', 'baseline', 'discovery', 'reject', 'route_whale_orderflow_only', 0.0, 0.72, 40.0, 0.0, 'active_context', 0, 0, '["route-only-market"]', 0),
         ],
     )
     cur.execute(
@@ -252,7 +253,7 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['runtime_summary']['sampling_mode'] == 'disabled'
     assert payload['runtime_summary']['sampling_target_closed_trades'] == 20
     assert payload['recent_trades'][0]['market_id'] == 'market-2'
-    assert payload['recent_decisions'][0]['strategy_profile'] == 'sampling_relaxed'
+    assert any(row['strategy_profile'] == 'sampling_relaxed' for row in payload['recent_decisions'])
     assert payload['open_positions'][0]['symbol_or_market_id'] == 'BTC/USDT:USDT'
     assert payload['top_whales'][0]['address'] == '0xaaa'
     assert payload['top_whales'][0]['trust_score'] == 0.75
@@ -267,9 +268,20 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['top_unresolved_aliases'][0]['alias'] == 'mystery-token'
     assert payload['recent_unresolved_aliases'][0]['aliases'][0] == 'mystery-token'
     assert any(row['hot_window_promoted'] == 1 for row in payload['recent_decisions'])
+    assert any(row['flow_classification'] == 'discovery-route-only' for row in payload['recent_decisions'])
     sampling_breakdown = {row['reason']: row['count'] for row in payload['sampling_reject_breakdown']}
     assert sampling_breakdown['score_below_threshold'] == 1
     assert sampling_breakdown['slippage_guard_rejection'] == 1
+    routing_breakdown = {row['flow_classification']: row['count'] for row in payload['routing_breakdown']}
+    assert routing_breakdown['discovery-route-only'] == 1
+    assert routing_breakdown['sampling-orderflow'] == 2
+    assert routing_breakdown['baseline-orderflow'] == 2
+    sampling_decision_summary = {row['action']: row['count'] for row in payload['sampling_decision_summary']}
+    assert sampling_decision_summary['decision'] == 1
+    assert sampling_decision_summary['reject'] == 1
+    assert sampling_decision_summary['execute'] == 1
+    mapping_miss_breakdown = {row['reason']: row['count'] for row in payload['mapping_miss_breakdown']}
+    assert mapping_miss_breakdown['market_not_mapped_active_window'] == 1
     assert payload['sampling_summary']['strategy_profile'] == 'sampling_relaxed'
     assert payload['sampling_summary']['closed_trades'] == 1
     assert payload['performance_summary']['evidence']['live_paper_closed'] == 3
@@ -291,6 +303,8 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Kazanma Oranı' in html
     assert 'Toplam PnL' in html
     assert 'Sampling Red Nedenleri' in html
+    assert 'Mapping Miss Nedenleri' in html
+    assert 'Sampling Karar' in html
     assert 'Henüz kapanmış whale geçmişi yok; nötr güven.' in html
     assert '&mdash;' in html
 

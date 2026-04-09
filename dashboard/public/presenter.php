@@ -246,6 +246,124 @@ function dashboard_build_sampling_reject_breakdown(PDO $pdo): array
     return $items;
 }
 
+function dashboard_classify_decision_flow(array $row): string
+{
+    $signalFamily = strtolower((string) ($row['signal_family'] ?? ''));
+    $rawSource = strtolower((string) ($row['raw_source_signal'] ?? ''));
+    $reason = strtolower((string) ($row['reason'] ?? ''));
+    $strategyProfile = strtolower((string) ($row['strategy_profile'] ?? 'baseline'));
+
+    if ($rawSource === 'discovery' && str_contains($reason, 'route_whale_orderflow_only')) {
+        return 'discovery-route-only';
+    }
+    if (in_array($signalFamily, ['activity_orderflow', 'whale'], true)) {
+        return $strategyProfile === 'sampling_relaxed' ? 'sampling-orderflow' : 'baseline-orderflow';
+    }
+    return 'other';
+}
+
+function dashboard_build_routing_breakdown(PDO $pdo): array
+{
+    $rows = dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT
+            CASE
+                WHEN raw_source_signal = 'discovery' AND reason = 'route_whale_orderflow_only' THEN 'discovery-route-only'
+                WHEN signal_family IN ('activity_orderflow', 'whale') AND strategy_profile = 'sampling_relaxed' THEN 'sampling-orderflow'
+                WHEN signal_family IN ('activity_orderflow', 'whale') THEN 'baseline-orderflow'
+                ELSE 'other'
+            END AS flow_classification,
+            COUNT(*) AS count
+        FROM decision_audit
+        GROUP BY flow_classification
+        HAVING flow_classification != 'other'
+        ORDER BY count DESC, flow_classification ASC
+        "
+    );
+
+    return array_map(
+        static fn (array $row): array => [
+            'flow_classification' => $row['flow_classification'] ?? 'other',
+            'count' => (int) ($row['count'] ?? 0),
+        ],
+        $rows
+    );
+}
+
+function dashboard_build_sampling_decision_summary(PDO $pdo): array
+{
+    $rows = dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT action, COUNT(*) AS count
+        FROM decision_audit
+        WHERE strategy_profile = 'sampling_relaxed'
+          AND signal_family IN ('activity_orderflow', 'whale')
+        GROUP BY action
+        ORDER BY count DESC, action ASC
+        "
+    );
+
+    $items = array_map(
+        static fn (array $row): array => [
+            'action' => strtolower((string) ($row['action'] ?? 'unknown')),
+            'count' => (int) ($row['count'] ?? 0),
+        ],
+        $rows
+    );
+
+    $executeQuery = "
+        SELECT COUNT(*) AS count
+        FROM trades
+        WHERE strategy_profile = 'sampling_relaxed'
+          AND venue = 'polymarket'
+    ";
+    if (dashboard_table_has_column($pdo, 'trades', 'signal_family')) {
+        $executeQuery .= " AND signal_family IN ('activity_orderflow', 'whale')";
+    }
+    $executeRow = dashboard_fetch_one($pdo, $executeQuery);
+    $items[] = [
+        'action' => 'execute',
+        'count' => (int) (($executeRow['count'] ?? 0)),
+    ];
+
+    usort(
+        $items,
+        static function (array $left, array $right): int {
+            $countCompare = ($right['count'] ?? 0) <=> ($left['count'] ?? 0);
+            if ($countCompare !== 0) {
+                return $countCompare;
+            }
+            return strcmp((string) ($left['action'] ?? ''), (string) ($right['action'] ?? ''));
+        }
+    );
+
+    return $items;
+}
+
+function dashboard_build_mapping_miss_breakdown(PDO $pdo): array
+{
+    $rows = dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT reason, COUNT(*) AS count
+        FROM decision_audit
+        WHERE reason LIKE 'market_not_mapped%'
+        GROUP BY reason
+        ORDER BY count DESC, reason ASC
+        "
+    );
+
+    return array_map(
+        static fn (array $row): array => [
+            'reason' => $row['reason'] ?? 'market_not_mapped_unknown_token',
+            'count' => (int) ($row['count'] ?? 0),
+        ],
+        $rows
+    );
+}
+
 function dashboard_augment_recent_decisions(PDO $pdo, array $payload): array
 {
     if (!dashboard_table_has_column($pdo, 'decision_audit', 'hot_window_promoted')) {
@@ -255,6 +373,13 @@ function dashboard_augment_recent_decisions(PDO $pdo, array $payload): array
     $payload['recent_decisions'] = dashboard_fetch_all(
         $pdo,
         'SELECT occurred_at, venue, market_id, category, signal_family, strategy_profile, raw_source_signal, action, reason, decision_score, threshold, trade_size, confidence, mapping_stage, lazy_lookup_attempted, lazy_lookup_hit, hot_window_promoted FROM decision_audit ORDER BY id DESC LIMIT 20'
+    );
+    $payload['recent_decisions'] = array_map(
+        static function (array $row): array {
+            $row['flow_classification'] = dashboard_classify_decision_flow($row);
+            return $row;
+        },
+        $payload['recent_decisions']
     );
     return $payload;
 }
@@ -270,11 +395,17 @@ function dashboard_augment_payload(array $payload): array
             $payload['runtime_summary'] ?? [],
             dashboard_build_hot_window_summary($pdo, $statusMetrics)
         );
+        $payload['routing_breakdown'] = dashboard_build_routing_breakdown($pdo);
+        $payload['sampling_decision_summary'] = dashboard_build_sampling_decision_summary($pdo);
+        $payload['mapping_miss_breakdown'] = dashboard_build_mapping_miss_breakdown($pdo);
         $payload['sampling_reject_breakdown'] = dashboard_build_sampling_reject_breakdown($pdo);
         $payload = dashboard_augment_recent_decisions($pdo, $payload);
     } else {
         $payload['top_unresolved_aliases'] = [];
         $payload['recent_unresolved_aliases'] = [];
+        $payload['routing_breakdown'] = [];
+        $payload['sampling_decision_summary'] = [];
+        $payload['mapping_miss_breakdown'] = [];
         $payload['sampling_reject_breakdown'] = [];
         $payload['runtime_summary'] = array_merge(
             $payload['runtime_summary'] ?? [],

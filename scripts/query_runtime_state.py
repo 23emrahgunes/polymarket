@@ -101,6 +101,56 @@ def main() -> int:
         ).fetchall()
     except sqlite3.OperationalError:
         decision_audit = []
+    try:
+        routing_breakdown = cursor.execute(
+            """
+            SELECT
+                CASE
+                    WHEN raw_source_signal = 'discovery' AND reason = 'route_whale_orderflow_only' THEN 'discovery_route_only'
+                    WHEN signal_family IN ('activity_orderflow', 'whale') AND strategy_profile = 'sampling_relaxed' THEN 'sampling_orderflow'
+                    WHEN signal_family IN ('activity_orderflow', 'whale') THEN 'baseline_orderflow'
+                    ELSE 'other'
+                END AS flow_classification,
+                COUNT(*) AS count
+            FROM decision_audit
+            GROUP BY flow_classification
+            HAVING flow_classification != 'other'
+            ORDER BY count DESC, flow_classification ASC
+            """
+        ).fetchall()
+        sampling_decision_summary = cursor.execute(
+            """
+            SELECT action, COUNT(*) AS count
+            FROM decision_audit
+            WHERE strategy_profile = 'sampling_relaxed'
+              AND signal_family IN ('activity_orderflow', 'whale')
+            GROUP BY action
+            ORDER BY count DESC, action ASC
+            """
+        ).fetchall()
+        sampling_execute_count = cursor.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM trades
+            WHERE strategy_profile = 'sampling_relaxed'
+              AND signal_family IN ('activity_orderflow', 'whale')
+              AND venue = 'polymarket'
+            """
+        ).fetchone()
+        mapping_miss_breakdown = cursor.execute(
+            """
+            SELECT reason, COUNT(*) AS count
+            FROM decision_audit
+            WHERE reason LIKE 'market_not_mapped%'
+            GROUP BY reason
+            ORDER BY count DESC, reason ASC
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        routing_breakdown = []
+        sampling_decision_summary = []
+        sampling_execute_count = (0,)
+        mapping_miss_breakdown = []
     connection.close()
 
     print(f"DB_PATH={db_path}")
@@ -132,6 +182,16 @@ def main() -> int:
     print("RECENT_DECISION_AUDIT")
     for audit_row in decision_audit:
         print(audit_row)
+    print("ROUTING_BREAKDOWN")
+    for row in routing_breakdown:
+        print(row)
+    print("SAMPLING_DECISION_SUMMARY")
+    for row in sampling_decision_summary:
+        print(row)
+    print(("execute", sampling_execute_count[0] if sampling_execute_count else 0))
+    print("MAPPING_MISS_BREAKDOWN")
+    for row in mapping_miss_breakdown:
+        print(row)
     return 0
 
 

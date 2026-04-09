@@ -1134,7 +1134,7 @@ class GhostBotRuntime:
             self.mapped_orderflow_events += 1
             if stage == "alias_cache":
                 self.alias_cache_hits += 1
-            elif stage == "lazy_lookup":
+            elif stage in {"lazy_lookup", "unresolved_retry"}:
                 self.lazy_lookup_hits += 1
             elif stage == "hot_window":
                 self.hot_window_hits += 1

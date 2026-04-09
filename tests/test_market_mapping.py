@@ -306,6 +306,125 @@ async def test_copy_trader_skips_lazy_lookup_for_tiny_unmapped_cluster(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_copy_trader_retries_repeated_unresolved_aliases_before_active_window_reject(tmp_path):
+    db_path = str(tmp_path / "unresolved_retry.db")
+    db = Database(db_path)
+    await db.connect()
+
+    lazy_calls = []
+
+    async def fake_lazy_resolver(alias_candidates, source):
+        lazy_calls.append((tuple(alias_candidates), source))
+        return {
+            "market_id": "0xMARKET-RETRY",
+            "token_id": "0xTOKEN-RETRY",
+            "token_ids": ["0xTOKEN-RETRY"],
+            "question": "Will Team Retry win the championship?",
+            "category": "SPORTS",
+            "volume_24h": 91000.0,
+            "active": True,
+        }
+
+    copy_trader = CopyTrader(
+        _FakeTrader(),
+        _FakeScanner(),
+        db,
+        DecisionEngine(),
+        market_resolver=fake_lazy_resolver,
+    )
+
+    first = await copy_trader.evaluate_activity_event(
+        {
+            "type": "WHALE_EVENT",
+            "market_id": "0xMARKET-RETRY",
+            "token_id": "0xTOKEN-RETRY",
+            "side": "BUY",
+            "amount": 50.0,
+            "wallet": "0xwallet-a",
+            "wallets_count": 1,
+            "source": "activity",
+            "alias_candidates": ["0xMARKET-RETRY", "0xTOKEN-RETRY"],
+        }
+    )
+    second = await copy_trader.evaluate_activity_event(
+        {
+            "type": "WHALE_EVENT",
+            "market_id": "0xMARKET-RETRY",
+            "token_id": "0xTOKEN-RETRY",
+            "side": "BUY",
+            "amount": 40.0,
+            "wallet": "0xwallet-b",
+            "wallets_count": 1,
+            "source": "activity",
+            "alias_candidates": ["0xMARKET-RETRY", "0xTOKEN-RETRY"],
+        }
+    )
+
+    await db.close()
+
+    assert first is False
+    assert second is False
+    assert lazy_calls == [(("0xmarket-retry", "0xtoken-retry"), "activity")]
+
+
+@pytest.mark.asyncio
+async def test_copy_trader_sampling_accumulates_market_orderflow_before_relaxed_retry(tmp_path):
+    db_path = str(tmp_path / "sampling_accumulator.db")
+    db = Database(db_path)
+    await db.connect()
+    await db.upsert_market_aliases(
+        market_id="0xMARKET-ACC",
+        aliases=["0xMARKET-ACC", "0xTOKEN-ACC"],
+        question="Will Team Aggregate win the championship?",
+        category="SPORTS",
+        volume_24h=16_000.0,
+        active=True,
+        source="explorer",
+    )
+
+    trader = _FakeTrader()
+    copy_trader = CopyTrader(trader, _FakeScanner(), db, DecisionEngine())
+    copy_trader.update_sampling_state(
+        enabled=True,
+        target_reached=False,
+        closed_trades=0,
+        target_closed_trades=20,
+    )
+
+    first = await copy_trader.evaluate_activity_event(
+        {
+            "type": "WHALE_EVENT",
+            "token_id": "0xTOKEN-ACC",
+            "side": "BUY",
+            "amount": 150.0,
+            "wallet": "0xagg-a",
+            "wallets_count": 1,
+            "source": "activity",
+            "alias_candidates": ["0xMARKET-ACC", "0xTOKEN-ACC"],
+        }
+    )
+    second = await copy_trader.evaluate_activity_event(
+        {
+            "type": "WHALE_EVENT",
+            "token_id": "0xTOKEN-ACC",
+            "side": "BUY",
+            "amount": 150.0,
+            "wallet": "0xagg-b",
+            "wallets_count": 1,
+            "source": "whale_tracker",
+            "alias_candidates": ["0xMARKET-ACC", "0xTOKEN-ACC"],
+        }
+    )
+
+    await db.close()
+
+    assert first is False
+    assert second is True
+    assert len(trader.calls) == 1
+    assert trader.calls[0]["kwargs"]["strategy_profile"] == STRATEGY_PROFILE_SAMPLING_RELAXED
+
+
+@pytest.mark.asyncio
 async def test_runtime_bootstrap_persists_market_aliases(tmp_path):
     db_path = str(tmp_path / "runtime_alias_cache.db")
     runtime = GhostBotRuntime(

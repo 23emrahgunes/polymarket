@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Awaitable, Callable, Dict, Optional
 
 from src.decision_engine import DecisionEngine, DecisionInputs, classify_market_category
@@ -12,6 +13,11 @@ from src.market_mapping import collect_alias_candidates, event_is_meaningful_for
 
 logger = logging.getLogger(__name__)
 SAMPLING_ELIGIBLE_CATEGORIES = {"SPORTS", "POLITICS", "OTHER"}
+UNRESOLVED_ALIAS_RETRY_WINDOW_SECONDS = 900.0
+UNRESOLVED_ALIAS_RETRY_MIN_EVENTS = 2
+UNRESOLVED_ALIAS_RETRY_MIN_TOTAL_AMOUNT = 250.0
+UNRESOLVED_ALIAS_RETRY_MIN_UNIQUE_WALLETS = 2
+SAMPLING_ORDERFLOW_WINDOW_SECONDS = 300.0
 
 
 class CopyTrader:
@@ -39,6 +45,8 @@ class CopyTrader:
         self.sampling_closed_trades = 0
         self.sampling_target_closed_trades = 20
         self.sampling_stop_reason: Optional[str] = None
+        self.unresolved_alias_retry_state: Dict[str, Dict] = {}
+        self.sampling_orderflow_state: Dict[str, Dict] = {}
 
     def update_market_contexts(self, market_context_by_id: Dict[str, Dict], token_to_market_id: Dict[str, str]) -> None:
         self.market_context_by_id = {
@@ -215,14 +223,31 @@ class CopyTrader:
             hot_window_promoted=hot_window_promoted,
             strategy_profile=STRATEGY_PROFILE_BASELINE,
         )
+        sampling_applicable = category in SAMPLING_ELIGIBLE_CATEGORIES
+        sampling_orderflow_summary = None
+        if sampling_applicable and self.sampling_enabled:
+            sampling_orderflow_summary = self._record_sampling_orderflow(
+                context=context,
+                event=event,
+                source=source,
+                wallet=wallet,
+                whale_trust=whale_trust,
+            )
         decision = self.decision_engine.score_orderflow(scored_inputs)
 
-        sampling_applicable = category in SAMPLING_ELIGIBLE_CATEGORIES
         if not decision.should_trade and sampling_applicable:
             if self.sampling_enabled:
-                decision = self.decision_engine.score_orderflow(
-                    DecisionInputs(**{**scored_inputs.__dict__, "strategy_profile": STRATEGY_PROFILE_SAMPLING_RELAXED})
-                )
+                sampling_inputs = self._build_sampling_orderflow_inputs(scored_inputs, sampling_orderflow_summary)
+                decision = self.decision_engine.score_orderflow(sampling_inputs)
+                if sampling_orderflow_summary is not None:
+                    decision.inputs.update(
+                        {
+                            "aggregated_orderflow_events": sampling_orderflow_summary["event_count"],
+                            "aggregated_total_notional": round(sampling_orderflow_summary["total_amount"], 4),
+                            "aggregated_unique_wallets": sampling_orderflow_summary["unique_wallets"],
+                            "aggregated_source_count": sampling_orderflow_summary["source_count"],
+                        }
+                    )
             elif self.sampling_target_reached:
                 decision = self.decision_engine.reject(
                     DecisionInputs(**{**scored_inputs.__dict__, "strategy_profile": STRATEGY_PROFILE_SAMPLING_RELAXED}),
@@ -280,20 +305,27 @@ class CopyTrader:
 
         cached_context = await self._resolve_from_alias_cache(alias_candidates)
         if cached_context is not None:
+            self._clear_unresolved_alias_retry(alias_candidates)
             self._cache_context(cached_context, alias_candidates)
             return cached_context, "alias_cache", "mapped", False, False
 
-        if not event_is_meaningful_for_lazy_lookup(event):
+        should_retry, retry_stage = self._should_attempt_unresolved_alias_retry(
+            alias_candidates=alias_candidates,
+            event=event,
+            source=source,
+        )
+        if not should_retry:
             return None, "active_window", "market_not_mapped_active_window", False, False
 
         if self.market_resolver is None:
-            return None, "lazy_lookup", "market_not_mapped_lazy_lookup_failed", False, False
+            return None, retry_stage, "market_not_mapped_lazy_lookup_failed", False, False
 
         lazy_context = await self.market_resolver(alias_candidates, source)
         if lazy_context is not None:
+            self._clear_unresolved_alias_retry(alias_candidates)
             self._cache_context(lazy_context, alias_candidates)
-            return lazy_context, "lazy_lookup", "mapped", True, True
-        return None, "lazy_lookup", "market_not_mapped_lazy_lookup_failed", True, False
+            return lazy_context, retry_stage, "mapped", True, True
+        return None, retry_stage, "market_not_mapped_lazy_lookup_failed", True, False
 
     def _resolve_from_memory(
         self,
@@ -306,18 +338,21 @@ class CopyTrader:
 
         if normalized_market_id and normalized_market_id in self.market_context_by_id:
             context = self.market_context_by_id[normalized_market_id]
+            self._clear_unresolved_alias_retry(alias_candidates)
             return context, str(context.get("trade_context_source", "active_context"))
 
         if normalized_token_id and normalized_token_id in self.token_to_market_id:
             resolved_market_id = self.token_to_market_id[normalized_token_id]
             context = self.market_context_by_id.get(resolved_market_id)
             if context is not None:
+                self._clear_unresolved_alias_retry(alias_candidates)
                 return context, str(context.get("trade_context_source", "active_context"))
 
         if normalized_market_id and normalized_token_id is None and normalized_market_id in self.token_to_market_id:
             resolved_market_id = self.token_to_market_id[normalized_market_id]
             context = self.market_context_by_id.get(resolved_market_id)
             if context is not None:
+                self._clear_unresolved_alias_retry(alias_candidates)
                 return context, str(context.get("trade_context_source", "active_context"))
 
         for alias in alias_candidates:
@@ -326,11 +361,13 @@ class CopyTrader:
                 continue
             if normalized_alias in self.market_context_by_id:
                 context = self.market_context_by_id[normalized_alias]
+                self._clear_unresolved_alias_retry(alias_candidates)
                 return context, str(context.get("trade_context_source", "active_context"))
             if normalized_alias in self.token_to_market_id:
                 resolved_market_id = self.token_to_market_id[normalized_alias]
                 context = self.market_context_by_id.get(resolved_market_id)
                 if context is not None:
+                    self._clear_unresolved_alias_retry(alias_candidates)
                     return context, str(context.get("trade_context_source", "active_context"))
         return None, "active_context"
 
@@ -401,6 +438,147 @@ class CopyTrader:
             active=bool(context.get("active", True)),
             source=source,
         )
+
+    def _should_attempt_unresolved_alias_retry(
+        self,
+        *,
+        alias_candidates: list[str],
+        event: Dict,
+        source: str,
+    ) -> tuple[bool, str]:
+        if event_is_meaningful_for_lazy_lookup(event):
+            self._register_unresolved_alias_retry(alias_candidates, event, source)
+            return True, "lazy_lookup"
+
+        state = self._register_unresolved_alias_retry(alias_candidates, event, source)
+        if state is None:
+            return False, "active_window"
+
+        retry_ready = (
+            state["count"] >= UNRESOLVED_ALIAS_RETRY_MIN_EVENTS
+            and (
+                state["total_amount"] >= UNRESOLVED_ALIAS_RETRY_MIN_TOTAL_AMOUNT
+                or len(state["wallets"]) >= UNRESOLVED_ALIAS_RETRY_MIN_UNIQUE_WALLETS
+                or int(state["max_wallets_count"]) >= UNRESOLVED_ALIAS_RETRY_MIN_UNIQUE_WALLETS
+                or len(state["sources"]) >= UNRESOLVED_ALIAS_RETRY_MIN_UNIQUE_WALLETS
+            )
+        )
+        return retry_ready, ("unresolved_retry" if retry_ready else "active_window")
+
+    def _register_unresolved_alias_retry(self, alias_candidates: list[str], event: Dict, source: str) -> Optional[Dict]:
+        signature = self._alias_signature(alias_candidates)
+        if signature is None:
+            return None
+
+        now_ts = time.time()
+        self._prune_unresolved_alias_retries(now_ts)
+        state = self.unresolved_alias_retry_state.setdefault(
+            signature,
+            {
+                "count": 0,
+                "total_amount": 0.0,
+                "wallets": set(),
+                "sources": set(),
+                "max_wallets_count": 1,
+                "last_seen_ts": now_ts,
+            },
+        )
+        state["count"] += 1
+        state["total_amount"] += float(event.get("amount", 0.0) or 0.0)
+        wallet = normalize_market_alias(event.get("wallet"))
+        if wallet:
+            state["wallets"].add(wallet)
+        state["sources"].add(str(source or event.get("source") or "unknown"))
+        state["max_wallets_count"] = max(int(state["max_wallets_count"]), int(event.get("wallets_count", 1) or 1))
+        state["last_seen_ts"] = now_ts
+        return state
+
+    def _clear_unresolved_alias_retry(self, alias_candidates: list[str]) -> None:
+        signature = self._alias_signature(alias_candidates)
+        if signature is not None:
+            self.unresolved_alias_retry_state.pop(signature, None)
+
+    def _prune_unresolved_alias_retries(self, now_ts: Optional[float] = None) -> None:
+        now_ts = now_ts or time.time()
+        expired_signatures = [
+            signature
+            for signature, state in self.unresolved_alias_retry_state.items()
+            if now_ts - float(state.get("last_seen_ts", 0.0)) > UNRESOLVED_ALIAS_RETRY_WINDOW_SECONDS
+        ]
+        for signature in expired_signatures:
+            self.unresolved_alias_retry_state.pop(signature, None)
+
+    def _record_sampling_orderflow(
+        self,
+        *,
+        context: Dict,
+        event: Dict,
+        source: str,
+        wallet: Optional[str],
+        whale_trust: float,
+    ) -> Dict:
+        market_id = normalize_market_alias(context.get("market_id"))
+        if not market_id:
+            return {
+                "event_count": 1,
+                "total_amount": float(event.get("amount", 0.0) or 0.0),
+                "unique_wallets": int(event.get("wallets_count", 1) or 1),
+                "source_count": 1,
+                "max_trust": whale_trust,
+                "max_wallets_count": int(event.get("wallets_count", 1) or 1),
+            }
+
+        now_ts = time.time()
+        state = self.sampling_orderflow_state.setdefault(market_id, {"events": []})
+        events = [
+            item
+            for item in state["events"]
+            if now_ts - float(item.get("ts", 0.0)) <= SAMPLING_ORDERFLOW_WINDOW_SECONDS
+        ]
+        events.append(
+            {
+                "ts": now_ts,
+                "amount": float(event.get("amount", 0.0) or 0.0),
+                "wallet": normalize_market_alias(wallet),
+                "source": str(source or event.get("source") or "unknown"),
+                "wallets_count": int(event.get("wallets_count", 1) or 1),
+                "trust": float(whale_trust),
+            }
+        )
+        state["events"] = events
+
+        wallets = {item["wallet"] for item in events if item.get("wallet")}
+        total_amount = sum(float(item.get("amount", 0.0) or 0.0) for item in events)
+        max_wallets_count = max(int(item.get("wallets_count", 1) or 1) for item in events)
+        return {
+            "event_count": len(events),
+            "total_amount": total_amount,
+            "unique_wallets": max(len(wallets), max_wallets_count),
+            "source_count": len({item.get("source") for item in events if item.get("source")}),
+            "max_trust": max(float(item.get("trust", whale_trust) or whale_trust) for item in events),
+            "max_wallets_count": max_wallets_count,
+        }
+
+    @staticmethod
+    def _build_sampling_orderflow_inputs(inputs: DecisionInputs, summary: Optional[Dict]) -> DecisionInputs:
+        if not summary:
+            return DecisionInputs(**{**inputs.__dict__, "strategy_profile": STRATEGY_PROFILE_SAMPLING_RELAXED})
+        return DecisionInputs(
+            **{
+                **inputs.__dict__,
+                "event_amount": max(float(inputs.event_amount or 0.0), float(summary["total_amount"])),
+                "wallets_count": max(int(inputs.wallets_count or 1), int(summary["unique_wallets"]), int(summary["max_wallets_count"])),
+                "whale_trust": max(float(inputs.whale_trust), float(summary["max_trust"])),
+                "strategy_profile": STRATEGY_PROFILE_SAMPLING_RELAXED,
+            }
+        )
+
+    @staticmethod
+    def _alias_signature(alias_candidates: list[str]) -> Optional[str]:
+        aliases = sorted({alias for alias in alias_candidates if normalize_market_alias(alias)})
+        if not aliases:
+            return None
+        return "|".join(aliases)
 
     @staticmethod
     def _dedupe_reasons(reasons: list[str]) -> list[str]:
