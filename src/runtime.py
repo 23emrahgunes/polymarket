@@ -202,6 +202,7 @@ class GhostBotRuntime:
             self.db,
             self.decision_engine,
             market_resolver=self.lazy_resolve_market_context,
+            lookup_context_resolver=self.resolve_lookup_market_context,
             mapping_event_callback=self.record_mapping_event,
             market_promotion_callback=self.promote_hot_window_market,
         )
@@ -459,8 +460,13 @@ class GhostBotRuntime:
             (self.active_window_misses / total_orderflow_events) * 100.0 if total_orderflow_events else 0.0
         )
         sampling_mode = "enabled" if self.sampling_enabled else ("target_reached" if self.sampling_stop_reason == "target_reached" else "disabled")
+        alias_integrity = await self.db.get_market_alias_integrity()
+        persisted_market_alias_rows = int(alias_integrity["alias_rows"] or 0) if alias_integrity else 0
+        lookup_universe_markets = len(self.lookup_market_context)
+        lookup_universe_aliases = self._count_lookup_universe_aliases()
+        alias_persistence_gap = max(lookup_universe_aliases - persisted_market_alias_rows, 0)
         logger.info(
-            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s mapped_orderflow_events=%s unmapped_orderflow_events=%s alias_cache_hits=%s lazy_lookup_hits=%s hot_window_markets=%s hot_window_hits=%s hot_window_promotions=%s hot_window_expiries=%s active_window_misses=%s resolver_hit_rate=%.1f active_window_miss_rate=%.1f market_not_mapped_rate=%.1f sampling_mode=%s sampling_closed_trades=%s sampling_target_closed_trades=%s sampling_stop_reason=%s scan_time=%.2fs",
+            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s mapped_orderflow_events=%s unmapped_orderflow_events=%s alias_cache_hits=%s lazy_lookup_hits=%s hot_window_markets=%s hot_window_hits=%s hot_window_promotions=%s hot_window_expiries=%s active_window_misses=%s resolver_hit_rate=%.1f active_window_miss_rate=%.1f market_not_mapped_rate=%.1f lookup_universe_markets=%s lookup_universe_aliases=%s persisted_market_alias_rows=%s alias_persistence_gap=%s sampling_mode=%s sampling_closed_trades=%s sampling_target_closed_trades=%s sampling_stop_reason=%s scan_time=%.2fs",
             active_markets_count,
             len(whale_tracker.top_whales if whale_tracker else []),
             getattr(whale_tracker, "leaderboard_wallets_count", 0),
@@ -491,6 +497,10 @@ class GhostBotRuntime:
             resolver_hit_rate,
             active_window_miss_rate,
             market_not_mapped_rate,
+            lookup_universe_markets,
+            lookup_universe_aliases,
+            persisted_market_alias_rows,
+            alias_persistence_gap,
             sampling_mode,
             self.sampling_closed_trades,
             self.settings.paper_sampling_target_closed_trades,
@@ -917,6 +927,9 @@ class GhostBotRuntime:
                 return self.lookup_market_context.get(resolved_market_id)
         return None
 
+    def resolve_lookup_market_context(self, alias_candidates: list[str]) -> Optional[Dict]:
+        return self._resolve_market_context(None, None, alias_candidates)
+
     async def _refresh_active_market_context(self, active_markets: list[Dict]) -> None:
         self.active_market_context = {}
         self.token_to_market_id = {}
@@ -1060,6 +1073,23 @@ class GhostBotRuntime:
 
         self.hot_window_market_context[market_id] = hot_context
         self.hot_window_expiries[market_id] = time.time() + hot_window_ttl_seconds
+        if self.db is not None:
+            await self.db.upsert_market_aliases(
+                market_id=market_id,
+                aliases=collect_alias_candidates(
+                    market_id,
+                    context.get("token_id"),
+                    event.get("asset"),
+                    event.get("conditionId"),
+                    event.get("slug"),
+                    extra=context.get("alias_candidates", []),
+                ),
+                question=hot_context.get("question"),
+                category=hot_context.get("category"),
+                volume_24h=float(hot_context.get("volume_24h", 0.0) or 0.0),
+                active=bool(hot_context.get("active", True)),
+                source="hot_window_promotion",
+            )
 
         while len(self.hot_window_market_context) > hot_window_limit:
             oldest_market_id = min(
@@ -1134,7 +1164,7 @@ class GhostBotRuntime:
             self.mapped_orderflow_events += 1
             if stage == "alias_cache":
                 self.alias_cache_hits += 1
-            elif stage in {"lazy_lookup", "unresolved_retry"}:
+            elif stage in {"lazy_lookup", "unresolved_retry", "lookup_universe"}:
                 self.lazy_lookup_hits += 1
             elif stage == "hot_window":
                 self.hot_window_hits += 1
@@ -1142,6 +1172,9 @@ class GhostBotRuntime:
         if stage == "active_window":
             self.active_window_misses += 1
         self.unmapped_orderflow_events += 1
+
+    def _count_lookup_universe_aliases(self) -> int:
+        return len(set(self.lookup_market_context.keys()) | set(self.lookup_token_to_market_id.keys()))
 
     async def _sleep_or_stop(self, seconds: float) -> None:
         try:

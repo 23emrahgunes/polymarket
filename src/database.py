@@ -699,6 +699,17 @@ class Database:
         ) as cursor:
             return await cursor.fetchall()
 
+    async def get_market_alias_integrity(self) -> Optional[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT
+                COUNT(*) AS alias_rows,
+                COUNT(DISTINCT market_id) AS market_rows
+            FROM market_aliases
+            """
+        ) as cursor:
+            return await cursor.fetchone()
+
     async def upsert_whale_wallet(
         self,
         address: str,

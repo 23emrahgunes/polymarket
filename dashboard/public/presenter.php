@@ -246,6 +246,39 @@ function dashboard_build_sampling_reject_breakdown(PDO $pdo): array
     return $items;
 }
 
+function dashboard_build_alias_persistence_summary(PDO $pdo, array $runtimeSummary): array
+{
+    $integrity = dashboard_fetch_one(
+        $pdo,
+        'SELECT COUNT(*) AS alias_rows, COUNT(DISTINCT market_id) AS market_rows FROM market_aliases'
+    ) ?? ['alias_rows' => 0, 'market_rows' => 0];
+
+    $lookupUniverseMarkets = (int) ($runtimeSummary['lookup_universe_markets'] ?? 0);
+    $lookupUniverseAliases = (int) ($runtimeSummary['lookup_universe_aliases'] ?? 0);
+    $persistedRows = (int) (($runtimeSummary['persisted_market_alias_rows'] ?? 0) ?: ($integrity['alias_rows'] ?? 0));
+    $persistedMarkets = (int) (($runtimeSummary['persisted_market_alias_markets'] ?? 0) ?: ($integrity['market_rows'] ?? 0));
+    $aliasPersistenceGap = max(
+        (int) ($runtimeSummary['alias_persistence_gap'] ?? max($lookupUniverseAliases - $persistedRows, 0)),
+        0
+    );
+
+    $warning = null;
+    if ($lookupUniverseAliases > 0 && $aliasPersistenceGap > 0) {
+        $warning = 'Lookup evreni dolu ama kalıcı alias cache geriden geliyor.';
+    } elseif ($persistedRows === 0) {
+        $warning = 'Kalıcı alias cache henüz ısınmadı.';
+    }
+
+    return [
+        'lookup_universe_markets' => $lookupUniverseMarkets,
+        'lookup_universe_aliases' => $lookupUniverseAliases,
+        'persisted_market_alias_rows' => $persistedRows,
+        'persisted_market_alias_markets' => $persistedMarkets,
+        'alias_persistence_gap' => $aliasPersistenceGap,
+        'warning' => $warning,
+    ];
+}
+
 function dashboard_classify_decision_flow(array $row): string
 {
     $signalFamily = strtolower((string) ($row['signal_family'] ?? ''));
@@ -350,6 +383,8 @@ function dashboard_build_mapping_miss_breakdown(PDO $pdo): array
         SELECT reason, COUNT(*) AS count
         FROM decision_audit
         WHERE reason LIKE 'market_not_mapped%'
+           OR reason = 'unsupported_side_filtered'
+           OR reason = 'sell_side_not_supported'
         GROUP BY reason
         ORDER BY count DESC, reason ASC
         "
@@ -358,6 +393,54 @@ function dashboard_build_mapping_miss_breakdown(PDO $pdo): array
     return array_map(
         static fn (array $row): array => [
             'reason' => $row['reason'] ?? 'market_not_mapped_unknown_token',
+            'count' => (int) ($row['count'] ?? 0),
+        ],
+        $rows
+    );
+}
+
+function dashboard_build_source_quality_summary(PDO $pdo): array
+{
+    $row = dashboard_fetch_one(
+        $pdo,
+        "
+        SELECT
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_orderflow,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND reason NOT LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS orderflow_after_mapping,
+            COALESCE(SUM(CASE WHEN raw_source_signal = 'discovery' AND reason = 'route_whale_orderflow_only' THEN 1 ELSE 0 END), 0) AS discovery_route_only,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND strategy_profile = 'sampling_relaxed' THEN 1 ELSE 0 END), 0) AS sampling_orderflow,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND strategy_profile != 'sampling_relaxed' THEN 1 ELSE 0 END), 0) AS baseline_orderflow,
+            COALESCE(SUM(CASE WHEN reason IN ('unsupported_side_filtered', 'sell_side_not_supported') THEN 1 ELSE 0 END), 0) AS unsupported_side_filtered
+        FROM decision_audit
+        "
+    ) ?? [];
+
+    return [
+        'total_orderflow' => (int) ($row['total_orderflow'] ?? 0),
+        'orderflow_after_mapping' => (int) ($row['orderflow_after_mapping'] ?? 0),
+        'discovery_route_only' => (int) ($row['discovery_route_only'] ?? 0),
+        'sampling_orderflow' => (int) ($row['sampling_orderflow'] ?? 0),
+        'baseline_orderflow' => (int) ($row['baseline_orderflow'] ?? 0),
+        'unsupported_side_filtered' => (int) ($row['unsupported_side_filtered'] ?? 0),
+    ];
+}
+
+function dashboard_build_unsupported_side_summary(PDO $pdo): array
+{
+    $rows = dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT reason, COUNT(*) AS count
+        FROM decision_audit
+        WHERE reason IN ('unsupported_side_filtered', 'sell_side_not_supported')
+        GROUP BY reason
+        ORDER BY count DESC, reason ASC
+        "
+    );
+
+    return array_map(
+        static fn (array $row): array => [
+            'reason' => $row['reason'] ?? 'unsupported_side_filtered',
             'count' => (int) ($row['count'] ?? 0),
         ],
         $rows
@@ -399,6 +482,9 @@ function dashboard_augment_payload(array $payload): array
         $payload['sampling_decision_summary'] = dashboard_build_sampling_decision_summary($pdo);
         $payload['mapping_miss_breakdown'] = dashboard_build_mapping_miss_breakdown($pdo);
         $payload['sampling_reject_breakdown'] = dashboard_build_sampling_reject_breakdown($pdo);
+        $payload['alias_persistence_summary'] = dashboard_build_alias_persistence_summary($pdo, $payload['runtime_summary'] ?? []);
+        $payload['source_quality_summary'] = dashboard_build_source_quality_summary($pdo);
+        $payload['unsupported_side_summary'] = dashboard_build_unsupported_side_summary($pdo);
         $payload = dashboard_augment_recent_decisions($pdo, $payload);
     } else {
         $payload['top_unresolved_aliases'] = [];
@@ -407,6 +493,9 @@ function dashboard_augment_payload(array $payload): array
         $payload['sampling_decision_summary'] = [];
         $payload['mapping_miss_breakdown'] = [];
         $payload['sampling_reject_breakdown'] = [];
+        $payload['alias_persistence_summary'] = [];
+        $payload['source_quality_summary'] = [];
+        $payload['unsupported_side_summary'] = [];
         $payload['runtime_summary'] = array_merge(
             $payload['runtime_summary'] ?? [],
             [

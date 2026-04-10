@@ -40,7 +40,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                 linear-gradient(180deg, #08121a 0%, #091018 100%);
             color: var(--text);
         }
-        .shell { max-width: 1500px; margin: 0 auto; padding: 28px 18px 36px; }
+        .shell { max-width: 1680px; margin: 0 auto; padding: 28px 18px 36px; }
         .hero-card, .stat-card, .panel {
             border: 1px solid var(--line);
             box-shadow: var(--shadow);
@@ -135,7 +135,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         }
         .panel-inline-grid {
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-columns: 1fr;
             gap: 12px;
             align-items: start;
         }
@@ -192,6 +192,9 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #routing-breakdown,
         #sampling-decision-summary,
         #mapping-miss-breakdown,
+        #source-quality-summary,
+        #unsupported-side-summary,
+        #alias-persistence-summary,
         #whale-wallet-counts,
         #top-whales,
         #performance-snapshot,
@@ -212,6 +215,9 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .subcard #routing-breakdown,
         .subcard #sampling-decision-summary,
         .subcard #mapping-miss-breakdown,
+        .subcard #source-quality-summary,
+        .subcard #unsupported-side-summary,
+        .subcard #alias-persistence-summary,
         .subcard #whale-wallet-counts,
         .subcard #top-whales,
         .subcard #performance-snapshot,
@@ -254,10 +260,10 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
             white-space: nowrap;
         }
         #recent-decisions { max-height: 420px; overflow: auto; }
-        #market-alias-counts, #whale-wallet-counts { max-height: 160px; overflow: auto; }
+        #market-alias-counts, #whale-wallet-counts, #unsupported-side-summary { max-height: 180px; overflow: auto; }
         #top-market-aliases, #top-whales { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
-        #performance-snapshot { max-height: 420px; overflow: auto; }
+        #performance-snapshot, #source-quality-summary, #alias-persistence-summary { max-height: 420px; overflow: auto; }
         #sampling-reject-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
         #recent-decisions table { min-width: 1040px; table-layout: auto; }
@@ -305,7 +311,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         <article class="panel panel-half"><div class="panel-header"><h2>Son İşlemler</h2><span class="badge info">SQLite Çalışma Geçmişi</span></div><div id="recent-trades"></div></article>
         <article class="panel panel-half"><div class="panel-header"><h2>Venue Hesapları</h2><span class="badge info">Paper Bakiyeleri</span></div><div id="venue-accounts"></div></article>
         <div class="section-marker"><span class="section-label">Teşhis ve Kanıt</span></div>
-        <article class="panel panel-primary">
+        <article class="panel panel-wide">
             <div class="panel-header"><h2>Mapping Sağlığı</h2><span class="badge info">Kapsam</span></div>
             <div class="panel-subgrid">
                 <div class="subcard">
@@ -323,8 +329,20 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                     </div>
                 </div>
                 <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Kaynak Kalitesi Özeti</h3><span class="badge info">Orderflow</span></div>
+                    <div class="metric-list" id="source-quality-summary"></div>
+                </div>
+                <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Mapping Miss Nedenleri</h3><span class="badge warn">Tanı</span></div>
                     <div id="mapping-miss-breakdown"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Desteklenmeyen Yön Filtresi</h3><span class="badge warn">Side</span></div>
+                    <div id="unsupported-side-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Alias Cache Bütünlüğü</h3><span class="badge info">Write-through</span></div>
+                    <div class="metric-list" id="alias-persistence-summary"></div>
                 </div>
                 <div class="panel-inline-grid">
                     <div class="subcard">
@@ -348,7 +366,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                 </div>
             </div>
         </article>
-        <article class="panel panel-third">
+        <article class="panel panel-wide">
             <div class="panel-header"><h2>Balina Kaynağı</h2><span class="badge info">Hibrit Cache</span></div>
             <p class="panel-copy">Keşif skoru, whale adresini sıralamak için kullanılır; başarı oranı değildir. Güven skoru ve kazanma oranı yalnızca kapanmış canlı işlemlerden öğrenilir.</p>
             <div class="panel-subgrid">
@@ -362,7 +380,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                 </div>
             </div>
         </article>
-        <article class="panel panel-third">
+        <article class="panel panel-wide">
             <div class="panel-header"><h2>Performans Özeti</h2><span class="badge warn">Kanıt</span></div>
             <div class="panel-subgrid">
                 <div class="subcard">
@@ -450,6 +468,7 @@ function translateMappingStage(value) {
     const map = {
         active_context: 'aktif bağlam',
         alias_cache: 'alias cache',
+        lookup_universe: 'lookup evreni',
         lazy_lookup: 'lazy lookup',
         unresolved_retry: 'yeniden deneme',
         hot_window: 'sıcak pencere',
@@ -462,9 +481,9 @@ function translateMappingStage(value) {
 function translateFlowClassification(value) {
     const text = String(value ?? '').toLowerCase();
     const map = {
-        'discovery-route-only': 'discovery-route-only',
-        'sampling-orderflow': 'sampling-orderflow',
-        'baseline-orderflow': 'baseline-orderflow',
+        'discovery-route-only': 'discovery route-only',
+        'sampling-orderflow': 'sampling orderflow',
+        'baseline-orderflow': 'baseline orderflow',
         other: 'diğer'
     };
     return map[text] || String(value ?? 'diğer');
@@ -484,6 +503,8 @@ function translateReason(value) {
         market_not_mapped_active_window: 'aktif pencere dışında kaldı',
         market_not_mapped_lazy_lookup_failed: 'lazy lookup eşleme bulamadı',
         market_not_mapped_unknown_token: 'token eşleşmesi bulunamadı',
+        unsupported_side_filtered: 'desteklenmeyen yön erken filtrelendi',
+        sell_side_not_supported: 'desteklenmeyen yön filtrelendi',
         score_below_threshold: 'skor eşik altında',
         liquidity_guard_rejection: 'likidite koruması reddetti',
         slippage_guard_rejection: 'slippage koruması reddetti',
@@ -739,6 +760,11 @@ function updatePanels(payload) {
         { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
     ], payload.mapping_miss_breakdown, 'Henüz mapping miss nedeni yok.');
 
+    renderTable('unsupported-side-summary', [
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.unsupported_side_summary, 'Henüz desteklenmeyen yön filtresi görünmüyor.');
+
     const runtime = payload.runtime_summary || {};
     renderMetrics('mapping-health', [
         { label: 'Eşlenen orderflow event', value: formatNumber(runtime.mapped_orderflow_events, 0) },
@@ -753,6 +779,26 @@ function updatePanels(payload) {
         { label: 'Active-window miss oranı', value: `${formatNumber(runtime.active_window_miss_rate, 1)}%` },
         { label: 'Resolver hit oranı', value: `${formatNumber(runtime.resolver_hit_rate, 1)}%` },
         { label: 'Market eşleşmedi oranı', value: `${formatNumber(runtime.market_not_mapped_rate, 1)}%` }
+    ]);
+
+    const sourceQuality = payload.source_quality_summary || {};
+    renderMetrics('source-quality-summary', [
+        { label: 'Toplam orderflow', value: formatNumber(sourceQuality.total_orderflow, 0) },
+        { label: 'Mapping sonrası kalan', value: formatNumber(sourceQuality.orderflow_after_mapping, 0) },
+        { label: 'Discovery route-only', value: formatNumber(sourceQuality.discovery_route_only, 0) },
+        { label: 'Baseline orderflow', value: formatNumber(sourceQuality.baseline_orderflow, 0) },
+        { label: 'Sampling orderflow', value: formatNumber(sourceQuality.sampling_orderflow, 0) },
+        { label: 'Unsupported side filtre', value: formatNumber(sourceQuality.unsupported_side_filtered, 0) }
+    ]);
+
+    const aliasPersistence = payload.alias_persistence_summary || {};
+    renderMetrics('alias-persistence-summary', [
+        { label: 'Lookup evreni market', value: formatNumber(aliasPersistence.lookup_universe_markets, 0) },
+        { label: 'Lookup evreni alias', value: formatNumber(aliasPersistence.lookup_universe_aliases, 0) },
+        { label: 'Kalıcı alias satırı', value: formatNumber(aliasPersistence.persisted_market_alias_rows, 0) },
+        { label: 'Kalıcı market satırı', value: formatNumber(aliasPersistence.persisted_market_alias_markets, 0) },
+        { label: 'Yazma farkı', value: formatNumber(aliasPersistence.alias_persistence_gap, 0) },
+        { label: 'Durum', value: aliasPersistence.warning || 'uyumlu', long: true }
     ]);
 
     const performance = payload.performance_summary || {};

@@ -90,6 +90,7 @@ def _create_dashboard_db(path: Path) -> None:
             (3, '2026-04-09 10:02:00', 'polymarket', 'market-3', 'SPORTS', 'whale', 'sampling_relaxed', 'whale_tracker', 'decision', 'score_below_threshold', 0.71, 0.72, 40.0, 0.71, 'hot_window', 1, 1, '["hot-token","hot-market"]', 1),
             (4, '2026-04-09 10:03:00', 'polymarket', 'market-4', 'POLITICS', 'whale', 'sampling_relaxed', 'activity', 'reject', 'slippage_guard_rejection,score_below_threshold', 0.48, 0.58, 35.0, 0.48, 'lazy_lookup', 1, 0, '["sampling-token","sampling-market"]', 0),
             (5, '2026-04-09 10:04:00', 'polymarket', 'market-5', 'SPORTS', 'discovery', 'baseline', 'discovery', 'reject', 'route_whale_orderflow_only', 0.0, 0.72, 40.0, 0.0, 'active_context', 0, 0, '["route-only-market"]', 0),
+            (6, '2026-04-09 10:05:00', 'polymarket', 'market-6', 'OTHER', 'whale', 'baseline', 'whale_tracker', 'reject', 'unsupported_side_filtered', 0.0, 0.78, 25.0, 0.0, 'alias_cache', 0, 0, '["unsupported-market"]', 0),
         ],
     )
     cur.execute(
@@ -245,7 +246,7 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['runtime_summary']['tracked_whales'] == 2
     assert payload['runtime_summary']['total_trades'] == 2
     assert payload['runtime_summary']['unmapped_orderflow_events'] == 1
-    assert payload['runtime_summary']['alias_cache_hits'] == 1
+    assert payload['runtime_summary']['alias_cache_hits'] == 2
     assert payload['runtime_summary']['lazy_lookup_hits'] == 1
     assert payload['runtime_summary']['hot_window_hits'] == 1
     assert payload['runtime_summary']['hot_window_promotions'] == 1
@@ -275,13 +276,26 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     routing_breakdown = {row['flow_classification']: row['count'] for row in payload['routing_breakdown']}
     assert routing_breakdown['discovery-route-only'] == 1
     assert routing_breakdown['sampling-orderflow'] == 2
-    assert routing_breakdown['baseline-orderflow'] == 2
+    assert routing_breakdown['baseline-orderflow'] == 3
     sampling_decision_summary = {row['action']: row['count'] for row in payload['sampling_decision_summary']}
     assert sampling_decision_summary['decision'] == 1
     assert sampling_decision_summary['reject'] == 1
     assert sampling_decision_summary['execute'] == 1
     mapping_miss_breakdown = {row['reason']: row['count'] for row in payload['mapping_miss_breakdown']}
     assert mapping_miss_breakdown['market_not_mapped_active_window'] == 1
+    assert mapping_miss_breakdown['unsupported_side_filtered'] == 1
+    alias_persistence_summary = payload['alias_persistence_summary']
+    assert alias_persistence_summary['persisted_market_alias_rows'] == 2
+    assert alias_persistence_summary['persisted_market_alias_markets'] == 1
+    source_quality_summary = payload['source_quality_summary']
+    assert source_quality_summary['total_orderflow'] == 5
+    assert source_quality_summary['orderflow_after_mapping'] == 4
+    assert source_quality_summary['discovery_route_only'] == 1
+    assert source_quality_summary['sampling_orderflow'] == 2
+    assert source_quality_summary['baseline_orderflow'] == 3
+    assert source_quality_summary['unsupported_side_filtered'] == 1
+    unsupported_side_summary = {row['reason']: row['count'] for row in payload['unsupported_side_summary']}
+    assert unsupported_side_summary['unsupported_side_filtered'] == 1
     assert payload['sampling_summary']['strategy_profile'] == 'sampling_relaxed'
     assert payload['sampling_summary']['closed_trades'] == 1
     assert payload['performance_summary']['evidence']['live_paper_closed'] == 3
@@ -305,6 +319,9 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Sampling Red Nedenleri' in html
     assert 'Mapping Miss Nedenleri' in html
     assert 'Sampling Karar' in html
+    assert 'Kaynak Kalitesi' in html
+    assert 'Alias Cache' in html
+    assert 'Desteklenmeyen' in html
     assert 'Henüz kapanmış whale geçmişi yok; nötr güven.' in html
     assert '&mdash;' in html
 

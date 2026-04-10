@@ -6,6 +6,7 @@ from src.copy_trader import CopyTrader
 from src.database import Database
 from src.decision_engine import DecisionEngine
 from src.evaluation_utils import STRATEGY_PROFILE_SAMPLING_RELAXED
+from src.market_mapping import collect_alias_candidates
 from src.runtime import GhostBotRuntime, RuntimeSettings
 
 
@@ -29,6 +30,13 @@ class _FakeTrader:
     async def execute_trade(self, *args, **kwargs):
         self.calls.append({"args": args, "kwargs": kwargs})
         return True, "ok"
+
+
+def test_collect_alias_candidates_expands_hex_variants():
+    aliases = collect_alias_candidates("0xABCDEF1234567890", extra=["abcdef1234567890"])
+
+    assert "0xabcdef1234567890" in aliases
+    assert "abcdef1234567890" in aliases
 
 
 @pytest.mark.asyncio
@@ -221,6 +229,57 @@ async def test_copy_trader_promotes_market_after_successful_lazy_lookup(tmp_path
     assert promotion_calls[0]["stage"] == "lazy_lookup"
     assert promotion_calls[0]["source"] == "whale_tracker"
     assert promotion_calls[0]["context"]["market_id"] == "0xMARKET5"
+
+
+@pytest.mark.asyncio
+async def test_copy_trader_uses_lookup_universe_context_before_lazy_retry(tmp_path):
+    db_path = str(tmp_path / "lookup_universe_trade.db")
+    db = Database(db_path)
+    await db.connect()
+
+    trader = _FakeTrader()
+    lazy_calls = []
+
+    async def fake_lazy_resolver(alias_candidates, source):
+        lazy_calls.append((tuple(alias_candidates), source))
+        return None
+
+    copy_trader = CopyTrader(
+        trader,
+        _FakeScanner(),
+        db,
+        DecisionEngine(),
+        market_resolver=fake_lazy_resolver,
+        lookup_context_resolver=lambda aliases: {
+            "market_id": "0xMARKET-LOOKUP",
+            "token_id": "0xTOKEN-LOOKUP",
+            "token_ids": ["0xTOKEN-LOOKUP"],
+            "question": "Will Team Lookup win the championship?",
+            "category": "SPORTS",
+            "volume_24h": 90000.0,
+            "active": True,
+        },
+    )
+
+    success = await copy_trader.evaluate_activity_event(
+        {
+            "type": "WHALE_EVENT",
+            "market_id": None,
+            "token_id": "0xTOKEN-LOOKUP",
+            "side": "BUY",
+            "amount": 2500.0,
+            "wallet": "0xLOOKUP-WHALE",
+            "wallets_count": 3,
+            "source": "activity",
+            "alias_candidates": ["0xMARKET-LOOKUP", "0xTOKEN-LOOKUP"],
+        }
+    )
+
+    await db.close()
+
+    assert success is True
+    assert len(trader.calls) == 1
+    assert lazy_calls == []
 
 
 @pytest.mark.asyncio
@@ -587,12 +646,14 @@ async def test_runtime_promotes_and_expires_hot_window_market(tmp_path):
     assert "0xlookup2" in runtime.hot_window_market_context
     assert len(trade_universe) == 2
     assert runtime.hot_window_promotions == 1
+    alias_row = await runtime.db.resolve_market_alias(["0xtokenl2"])
 
     runtime.hot_window_expiries["0xlookup2"] = 0.0
     await runtime._prune_hot_window()
     await runtime.close()
 
     assert "0xlookup2" not in runtime.hot_window_market_context
+    assert alias_row is not None
 
 
 @pytest.mark.asyncio

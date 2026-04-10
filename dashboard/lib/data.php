@@ -147,6 +147,10 @@ function dashboard_runtime_summary_from_db(PDO $pdo): array
     $tradeCount = dashboard_fetch_one($pdo, 'SELECT COUNT(*) AS count FROM trades');
     $openPositions = dashboard_fetch_one($pdo, "SELECT COUNT(*) AS count FROM venue_positions WHERE status = 'OPEN'");
     $openOrders = dashboard_fetch_one($pdo, "SELECT COUNT(*) AS count FROM venue_orders WHERE status = 'OPEN'");
+    $aliasIntegrity = dashboard_fetch_one(
+        $pdo,
+        'SELECT COUNT(*) AS alias_rows, COUNT(DISTINCT market_id) AS market_rows FROM market_aliases'
+    ) ?? ['alias_rows' => 0, 'market_rows' => 0];
     $samplingClosed = dashboard_fetch_one(
         $pdo,
         "SELECT COUNT(*) AS count FROM trades WHERE venue = 'polymarket' AND sample_kind = 'live_paper' AND is_synthetic = 0 AND strategy_profile = 'sampling_relaxed' AND status != 'OPEN'"
@@ -200,6 +204,11 @@ function dashboard_runtime_summary_from_db(PDO $pdo): array
         'sampling_closed_trades' => isset($samplingClosed['count']) ? (int) $samplingClosed['count'] : 0,
         'sampling_target_closed_trades' => $samplingTarget,
         'sampling_stop_reason' => $samplingStopReason,
+        'lookup_universe_markets' => 0,
+        'lookup_universe_aliases' => 0,
+        'persisted_market_alias_rows' => (int) ($aliasIntegrity['alias_rows'] ?? 0),
+        'persisted_market_alias_markets' => (int) ($aliasIntegrity['market_rows'] ?? 0),
+        'alias_persistence_gap' => 0,
     ];
 }
 
@@ -219,6 +228,11 @@ function dashboard_merge_runtime_summary(array $dbSummary, array $statusMetrics)
         'sampling_closed_trades',
         'sampling_target_closed_trades',
         'sampling_stop_reason',
+        'lookup_universe_markets',
+        'lookup_universe_aliases',
+        'persisted_market_alias_rows',
+        'persisted_market_alias_markets',
+        'alias_persistence_gap',
     ];
 
     foreach ($keys as $key) {
@@ -353,6 +367,11 @@ function dashboard_build_payload(string $view = 'full'): array
         'sampling_closed_trades' => 0,
         'sampling_target_closed_trades' => max(dashboard_int_env('PAPER_SAMPLING_TARGET_CLOSED_TRADES', 20), 1),
         'sampling_stop_reason' => 'none',
+        'lookup_universe_markets' => 0,
+        'lookup_universe_aliases' => 0,
+        'persisted_market_alias_rows' => 0,
+        'persisted_market_alias_markets' => 0,
+        'alias_persistence_gap' => 0,
     ];
 
     $collections = [

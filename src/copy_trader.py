@@ -18,6 +18,8 @@ UNRESOLVED_ALIAS_RETRY_MIN_EVENTS = 2
 UNRESOLVED_ALIAS_RETRY_MIN_TOTAL_AMOUNT = 250.0
 UNRESOLVED_ALIAS_RETRY_MIN_UNIQUE_WALLETS = 2
 SAMPLING_ORDERFLOW_WINDOW_SECONDS = 300.0
+SAMPLING_ORDERFLOW_MIN_EVENTS = 2
+SAMPLING_ORDERFLOW_MIN_TOTAL_AMOUNT = 500.0
 
 
 class CopyTrader:
@@ -28,6 +30,7 @@ class CopyTrader:
         db,
         decision_engine: DecisionEngine,
         market_resolver: Optional[Callable[[list[str], str], Awaitable[Optional[Dict]]]] = None,
+        lookup_context_resolver: Optional[Callable[[list[str]], Optional[Dict]]] = None,
         mapping_event_callback: Optional[Callable[..., Awaitable[None]]] = None,
         market_promotion_callback: Optional[Callable[..., Awaitable[bool]]] = None,
     ):
@@ -36,6 +39,7 @@ class CopyTrader:
         self.db = db
         self.decision_engine = decision_engine
         self.market_resolver = market_resolver
+        self.lookup_context_resolver = lookup_context_resolver
         self.mapping_event_callback = mapping_event_callback
         self.market_promotion_callback = market_promotion_callback
         self.market_context_by_id: Dict[str, Dict] = {}
@@ -104,6 +108,9 @@ class CopyTrader:
         alias_candidates = collect_alias_candidates(
             market_id,
             token_id,
+            event.get("asset"),
+            event.get("conditionId"),
+            event.get("slug"),
             extra=event.get("alias_candidates"),
         )
         context, mapping_stage, mapping_reason, lazy_lookup_attempted, lazy_lookup_hit = await self._resolve_market_context(
@@ -117,7 +124,7 @@ class CopyTrader:
         hot_window_promoted = False
         if (
             context is not None
-            and mapping_stage in {"alias_cache", "lazy_lookup"}
+            and mapping_stage in {"alias_cache", "lazy_lookup", "lookup_universe", "unresolved_retry"}
             and self.market_promotion_callback is not None
         ):
             hot_window_promoted = bool(
@@ -165,7 +172,7 @@ class CopyTrader:
         await self._persist_event_aliases(context, alias_candidates, source)
 
         if side != "BUY":
-            decision = self.decision_engine.reject(base_inputs, "sell_side_not_supported")
+            decision = self.decision_engine.reject(base_inputs, "unsupported_side_filtered")
             self.decision_engine.log_result(decision, logger)
             return False
 
@@ -237,9 +244,9 @@ class CopyTrader:
 
         if not decision.should_trade and sampling_applicable:
             if self.sampling_enabled:
-                sampling_inputs = self._build_sampling_orderflow_inputs(scored_inputs, sampling_orderflow_summary)
-                decision = self.decision_engine.score_orderflow(sampling_inputs)
-                if sampling_orderflow_summary is not None:
+                if sampling_orderflow_summary is not None and sampling_orderflow_summary.get("ready_for_retry"):
+                    sampling_inputs = self._build_sampling_orderflow_inputs(scored_inputs, sampling_orderflow_summary)
+                    decision = self.decision_engine.score_orderflow(sampling_inputs)
                     decision.inputs.update(
                         {
                             "aggregated_orderflow_events": sampling_orderflow_summary["event_count"],
@@ -309,13 +316,22 @@ class CopyTrader:
             self._cache_context(cached_context, alias_candidates)
             return cached_context, "alias_cache", "mapped", False, False
 
+        if self.lookup_context_resolver is not None:
+            lookup_context = self.lookup_context_resolver(alias_candidates)
+            if lookup_context is not None:
+                self._clear_unresolved_alias_retry(alias_candidates)
+                self._cache_context(lookup_context, alias_candidates)
+                return lookup_context, "lookup_universe", "mapped", False, False
+
         should_retry, retry_stage = self._should_attempt_unresolved_alias_retry(
             alias_candidates=alias_candidates,
             event=event,
             source=source,
         )
         if not should_retry:
-            return None, "active_window", "market_not_mapped_active_window", False, False
+            fallback_stage = "active_window" if self.lookup_context_resolver is None else "lazy_lookup"
+            fallback_reason = "market_not_mapped_active_window" if self.lookup_context_resolver is None else "market_not_mapped_lazy_lookup_failed"
+            return None, fallback_stage, fallback_reason, False, False
 
         if self.market_resolver is None:
             return None, retry_stage, "market_not_mapped_lazy_lookup_failed", False, False
@@ -557,6 +573,7 @@ class CopyTrader:
             "source_count": len({item.get("source") for item in events if item.get("source")}),
             "max_trust": max(float(item.get("trust", whale_trust) or whale_trust) for item in events),
             "max_wallets_count": max_wallets_count,
+            "ready_for_retry": len(events) >= SAMPLING_ORDERFLOW_MIN_EVENTS or total_amount >= SAMPLING_ORDERFLOW_MIN_TOTAL_AMOUNT,
         }
 
     @staticmethod
