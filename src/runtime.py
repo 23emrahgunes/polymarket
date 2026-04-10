@@ -329,8 +329,9 @@ class GhostBotRuntime:
         if self.explorer is None or self.scanner is None or self.copy_trader is None:
             return
 
+        await self._hydrate_lookup_context_from_db(reset=True)
         lookup_universe = await self.explorer.fetch_market_lookup_universe(limit=self.settings.market_lookup_limit)
-        await self._refresh_lookup_context(lookup_universe, source="explorer")
+        await self._refresh_lookup_context(lookup_universe, source="explorer", reset=False)
         self.last_lookup_refresh_ts = time.time()
         active_markets = await self.explorer.fetch_active_markets(limit=self.settings.market_limit)
         await self._refresh_active_market_context(active_markets)
@@ -341,6 +342,7 @@ class GhostBotRuntime:
             if classify_market_category(market.get("question", "")) == "CRYPTO"
         }
         await self.scanner.update_monitored_symbols([symbol for symbol in symbols if symbol])
+        await self.log_runtime_status(len(active_markets), 0.0)
 
     async def run(self) -> None:
         await self.initialize()
@@ -387,8 +389,9 @@ class GhostBotRuntime:
         while not self.stop_event.is_set():
             cycle_started = time.time()
             if (time.time() - self.last_lookup_refresh_ts) >= self.settings.market_scan_interval_seconds or not self.lookup_market_context:
+                await self._hydrate_lookup_context_from_db(reset=True)
                 lookup_universe = await self.explorer.fetch_market_lookup_universe(limit=self.settings.market_lookup_limit)
-                await self._refresh_lookup_context(lookup_universe, source="explorer")
+                await self._refresh_lookup_context(lookup_universe, source="explorer", reset=False)
                 self.last_lookup_refresh_ts = time.time()
             else:
                 lookup_universe = list(self.lookup_market_context.values())
@@ -942,9 +945,10 @@ class GhostBotRuntime:
             self._cache_market_context(normalized_market, self.active_market_context, self.token_to_market_id)
         self._publish_trade_market_contexts()
 
-    async def _refresh_lookup_context(self, market_universe: list[Dict], source: str) -> None:
-        self.lookup_market_context = {}
-        self.lookup_token_to_market_id = {}
+    async def _refresh_lookup_context(self, market_universe: list[Dict], source: str, *, reset: bool = True) -> None:
+        if reset:
+            self.lookup_market_context = {}
+            self.lookup_token_to_market_id = {}
 
         for market in market_universe:
             await self._register_market_context(
@@ -953,6 +957,13 @@ class GhostBotRuntime:
                 context_store=self.lookup_market_context,
                 token_store=self.lookup_token_to_market_id,
             )
+
+    async def _hydrate_lookup_context_from_db(self, *, reset: bool = True) -> int:
+        if self.db is None:
+            return 0
+        persisted_universe = await self.db.get_persisted_lookup_universe(limit_markets=self.settings.market_lookup_limit)
+        await self._refresh_lookup_context(persisted_universe, source="persisted_alias_replay", reset=reset)
+        return len(persisted_universe)
 
     async def _register_market_context(
         self,
@@ -1024,8 +1035,9 @@ class GhostBotRuntime:
             limit=max(self.settings.market_limit, self.settings.market_lookup_limit),
         )
         if market is None:
+            await self._hydrate_lookup_context_from_db(reset=True)
             refreshed_market_universe = await self.explorer.fetch_market_lookup_universe(limit=self.settings.market_lookup_limit)
-            await self._refresh_lookup_context(refreshed_market_universe, source="lazy_lookup_refresh")
+            await self._refresh_lookup_context(refreshed_market_universe, source="lazy_lookup_refresh", reset=False)
             self.last_lookup_refresh_ts = time.time()
             market = self._resolve_market_context(None, None, alias_candidates)
             if market is not None:

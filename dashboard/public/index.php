@@ -147,6 +147,40 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
             min-height: 0;
             overflow: hidden;
         }
+        .fold-card {
+            border: 1px solid rgba(132, 181, 205, 0.12);
+            background: rgba(13, 29, 41, 0.9);
+            border-radius: 14px;
+            overflow: hidden;
+        }
+        .fold-summary {
+            list-style: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            padding: 14px;
+            cursor: pointer;
+        }
+        .fold-summary::-webkit-details-marker { display: none; }
+        .fold-summary::after {
+            content: "Ac";
+            color: var(--muted);
+            font-size: 0.78rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .fold-card[open] .fold-summary::after { content: "Kapat"; }
+        .fold-body {
+            border-top: 1px solid rgba(132, 181, 205, 0.1);
+            padding: 0 14px 14px;
+        }
+        .fold-body .subcard {
+            border: 0;
+            background: transparent;
+            padding: 14px 0 0;
+            box-shadow: none;
+        }
         .subcard-header {
             display: flex;
             justify-content: space-between;
@@ -602,6 +636,48 @@ function ensureSamplingRejectPanel() {
     return breakdown;
 }
 
+function collapseSectionById(targetId, label, badgeTone = 'info') {
+    const target = document.getElementById(targetId);
+    if (!target) { return; }
+    const card = target.closest('.subcard');
+    if (!card || card.dataset.folded === '1') { return; }
+
+    const details = document.createElement('details');
+    details.className = 'fold-card';
+
+    const summary = document.createElement('summary');
+    summary.className = 'fold-summary';
+
+    const title = document.createElement('span');
+    title.className = 'subcard-title';
+    title.textContent = label;
+
+    const badge = document.createElement('span');
+    badge.className = `badge ${badgeTone}`;
+    badge.textContent = 'Detay';
+
+    summary.append(title, badge);
+
+    const body = document.createElement('div');
+    body.className = 'fold-body';
+
+    const parent = card.parentNode;
+    if (!parent) { return; }
+    parent.replaceChild(details, card);
+    body.appendChild(card);
+    details.append(summary, body);
+    card.dataset.folded = '1';
+}
+
+function setupDiagnosticFolds() {
+    collapseSectionById('market-alias-counts', 'Alias Kaynakları', 'info');
+    collapseSectionById('top-market-aliases', 'En Güçlü Alias Cache', 'info');
+    collapseSectionById('top-unresolved-aliases', 'En Sık Çözülemeyen Alias’lar', 'warn');
+    collapseSectionById('recent-unresolved-aliases', 'Son Çözülemeyen Alias Olayları', 'warn');
+    collapseSectionById('top-whales', 'Balina Tablosu', 'info');
+    collapseSectionById('sampling-reject-breakdown', 'Sampling Red Nedenleri', 'warn');
+}
+
 function renderStatusBanner(service) {
     const banner = document.getElementById('status-banner');
     if (!banner) { return; }
@@ -851,6 +927,7 @@ async function refreshDashboard() {
     }
 }
 
+setupDiagnosticFolds();
 refreshDashboard();
 setInterval(refreshDashboard, refreshSeconds * 1000);
 </script>

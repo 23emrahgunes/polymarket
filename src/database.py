@@ -13,7 +13,7 @@ from src.evaluation_utils import (
     normalize_signal_family,
     normalize_strategy_profile,
 )
-from src.market_mapping import normalize_market_alias
+from src.market_mapping import choose_primary_token_alias, normalize_market_alias
 
 
 class Database:
@@ -709,6 +709,72 @@ class Database:
             """
         ) as cursor:
             return await cursor.fetchone()
+
+    async def get_persisted_lookup_universe(self, limit_markets: int = 15000) -> List[dict]:
+        async with self.conn.execute(
+            """
+            SELECT
+                market_id,
+                MAX(question) AS question,
+                MAX(category) AS category,
+                MAX(volume_24h) AS volume_24h,
+                MAX(active) AS active,
+                GROUP_CONCAT(alias) AS aliases,
+                GROUP_CONCAT(CASE WHEN alias != market_id THEN alias END) AS token_aliases
+            FROM market_aliases
+            GROUP BY market_id
+            ORDER BY MAX(volume_24h) DESC, MAX(last_seen_at) DESC
+            LIMIT ?
+            """,
+            (limit_markets,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        universe: List[dict] = []
+        for row in rows:
+            market_id = normalize_market_alias(row["market_id"])
+            if not market_id:
+                continue
+
+            aliases = [
+                normalized
+                for alias in str(row["aliases"] or "").split(",")
+                if (normalized := normalize_market_alias(alias))
+            ]
+            token_aliases = [
+                normalized
+                for alias in str(row["token_aliases"] or "").split(",")
+                if (normalized := normalize_market_alias(alias))
+            ]
+
+            deduped_aliases: list[str] = []
+            for alias in aliases:
+                if alias not in deduped_aliases:
+                    deduped_aliases.append(alias)
+
+            deduped_token_aliases: list[str] = []
+            for alias in token_aliases:
+                if alias != market_id and alias not in deduped_token_aliases:
+                    deduped_token_aliases.append(alias)
+
+            primary_token_alias = choose_primary_token_alias(
+                deduped_token_aliases,
+                market_id=market_id,
+            )
+
+            universe.append(
+                {
+                    "market_id": market_id,
+                    "question": row["question"] or "",
+                    "category": row["category"] or None,
+                    "volume_24h": float(row["volume_24h"] or 0.0),
+                    "active": bool(row["active"]),
+                    "token_id": primary_token_alias,
+                    "token_ids": deduped_token_aliases,
+                    "alias_candidates": deduped_aliases,
+                }
+            )
+        return universe
 
     async def upsert_whale_wallet(
         self,

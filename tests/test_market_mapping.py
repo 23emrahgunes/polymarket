@@ -519,6 +519,7 @@ async def test_runtime_bootstrap_persists_market_aliases(tmp_path):
 
     assert alias_row is not None
     assert alias_row["market_id"] == "0xmarket3"
+    assert runtime.resolve_lookup_market_context(["0xMARKET3", "0xTOKEN3"]) is not None
 
 
 @pytest.mark.asyncio
@@ -586,6 +587,47 @@ async def test_runtime_separates_trade_and_lookup_contexts(tmp_path):
     assert len(runtime.lookup_market_context) == 3
     assert lookup_context is not None
     assert lookup_context["market_id"] == "0xlookup2"
+
+
+@pytest.mark.asyncio
+async def test_runtime_hydrates_lookup_context_from_persisted_aliases(tmp_path):
+    db_path = str(tmp_path / "runtime_persisted_hydration.db")
+    runtime = GhostBotRuntime(
+        RuntimeSettings(
+            exchange_id="coinbase",
+            db_path=db_path,
+            debug_signal_mode=False,
+            runtime_verify_once=False,
+            market_lookup_limit=10,
+        )
+    )
+    await runtime.initialize()
+    await runtime.db.upsert_market_aliases(
+        market_id="0xPERSISTED1",
+        aliases=["0xPERSISTED1", "0xTOKENP1", "persisted-slug-1"],
+        question="Will Team Persisted win?",
+        category="SPORTS",
+        volume_24h=91000.0,
+        active=True,
+        source="persisted_alias_replay",
+    )
+
+    async def fake_fetch_active_markets(limit=200):
+        return []
+
+    async def fake_fetch_lookup_markets(limit=5000):
+        return []
+
+    runtime.explorer.fetch_active_markets = fake_fetch_active_markets
+    runtime.explorer.fetch_market_lookup_universe = fake_fetch_lookup_markets
+    await runtime.bootstrap_market_context()
+
+    lookup_context = runtime.resolve_lookup_market_context(["0xTOKENP1", "persisted-slug-1"])
+    await runtime.close()
+
+    assert lookup_context is not None
+    assert lookup_context["market_id"] == "0xpersisted1"
+    assert len(runtime.lookup_market_context) == 1
 
 
 @pytest.mark.asyncio

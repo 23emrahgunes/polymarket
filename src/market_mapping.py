@@ -5,6 +5,7 @@ from typing import Any, Iterable, List
 
 
 HEX_ALIAS_PATTERN = re.compile(r"^(0x)?[0-9a-f]{16,}$")
+TOKENISH_ALIAS_PATTERN = re.compile(r"^(0x)?[0-9a-f]{16,}$|^\d{6,}$")
 
 
 def normalize_market_alias(value: Any) -> str | None:
@@ -64,6 +65,22 @@ def build_market_aliases(
     extra_aliases: Iterable[Any] | None = None,
 ) -> List[str]:
     return collect_alias_candidates(market_id, token_id, list(token_ids or []), extra=extra_aliases)
+
+
+def choose_primary_token_alias(aliases: Iterable[Any], *, market_id: Any = None, fallback: Any = None) -> str | None:
+    normalized_market_id = normalize_market_alias(market_id)
+    normalized_fallback = normalize_market_alias(fallback)
+    normalized_aliases = [normalize_market_alias(alias) for alias in aliases]
+    normalized_aliases = [alias for alias in normalized_aliases if alias and alias != normalized_market_id]
+
+    if normalized_fallback and normalized_fallback in normalized_aliases:
+        return normalized_fallback
+
+    for alias in normalized_aliases:
+        if TOKENISH_ALIAS_PATTERN.fullmatch(alias):
+            return alias
+
+    return normalized_aliases[0] if normalized_aliases else normalized_fallback
 
 
 def event_is_meaningful_for_lazy_lookup(

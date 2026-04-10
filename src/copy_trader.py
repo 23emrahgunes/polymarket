@@ -8,7 +8,12 @@ from src.evaluation_utils import (
     STRATEGY_PROFILE_SAMPLING_RELAXED,
     normalize_signal_family,
 )
-from src.market_mapping import collect_alias_candidates, event_is_meaningful_for_lazy_lookup, normalize_market_alias
+from src.market_mapping import (
+    choose_primary_token_alias,
+    collect_alias_candidates,
+    event_is_meaningful_for_lazy_lookup,
+    normalize_market_alias,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -402,25 +407,30 @@ class CopyTrader:
         if normalized_market_id in self.market_context_by_id:
             return self.market_context_by_id[normalized_market_id]
 
-        token_alias = None
-        if alias_row["alias_type"] == "token_id":
-            token_alias = alias_row["alias"]
-        else:
-            market_alias_rows = await self.db.get_market_aliases_for_market(normalized_market_id)
-            for market_alias_row in market_alias_rows:
-                if market_alias_row["alias_type"] == "token_id":
-                    token_alias = market_alias_row["alias"]
-                    break
+        market_alias_rows = await self.db.get_market_aliases_for_market(normalized_market_id)
+        all_aliases = [market_alias_row["alias"] for market_alias_row in market_alias_rows if market_alias_row["alias"]]
+
+        token_alias = choose_primary_token_alias(
+            [market_alias_row["alias"] for market_alias_row in market_alias_rows],
+            market_id=normalized_market_id,
+            fallback=alias_row["alias"] if alias_row["alias_type"] == "token_id" else None,
+        )
+
+        hydrated_aliases = collect_alias_candidates(
+            normalized_market_id,
+            token_alias,
+            extra=[*all_aliases, *alias_candidates],
+        )
 
         return {
             "market_id": normalized_market_id,
             "token_id": token_alias,
-            "token_ids": [token_alias] if token_alias else [],
+            "token_ids": [alias for alias in all_aliases if alias != normalized_market_id],
             "question": alias_row["question"] or "",
             "category": alias_row["category"] or classify_market_category(alias_row["question"] or ""),
             "volume_24h": float(alias_row["volume_24h"] or 0.0),
             "active": bool(alias_row["active"]),
-            "alias_candidates": alias_candidates,
+            "alias_candidates": hydrated_aliases,
         }
 
     def _cache_context(self, context: Dict, alias_candidates: list[str]) -> None:
