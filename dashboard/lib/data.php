@@ -141,6 +141,43 @@ function dashboard_get_service_data(array &$warnings): array
     ];
 }
 
+function dashboard_fetch_orderflow_mapping_stats(PDO $pdo, bool $recentWindow = false): array
+{
+    if ($recentWindow) {
+        return dashboard_fetch_one(
+            $pdo,
+            "
+            WITH anchor AS (
+                SELECT MAX(occurred_at) AS max_occurred_at
+                FROM decision_audit
+                WHERE signal_family IN ('activity_orderflow', 'whale')
+            )
+            SELECT
+                COALESCE(SUM(CASE WHEN decision_audit.signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_orderflow,
+                COALESCE(SUM(CASE WHEN decision_audit.signal_family IN ('activity_orderflow', 'whale') AND decision_audit.reason LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS unmapped_orderflow,
+                COALESCE(SUM(CASE WHEN decision_audit.signal_family IN ('activity_orderflow', 'whale') AND decision_audit.mapping_stage = 'alias_cache' AND decision_audit.reason NOT LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS alias_cache_hits,
+                COALESCE(SUM(CASE WHEN decision_audit.signal_family IN ('activity_orderflow', 'whale') AND decision_audit.lazy_lookup_hit = 1 THEN 1 ELSE 0 END), 0) AS lazy_lookup_hits
+            FROM decision_audit
+            CROSS JOIN anchor
+            WHERE anchor.max_occurred_at IS NOT NULL
+              AND decision_audit.occurred_at >= datetime(anchor.max_occurred_at, '-60 minutes')
+            "
+        ) ?? ['total_orderflow' => 0, 'unmapped_orderflow' => 0, 'alias_cache_hits' => 0, 'lazy_lookup_hits' => 0];
+    }
+
+    return dashboard_fetch_one(
+        $pdo,
+        "
+        SELECT
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_orderflow,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND reason LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS unmapped_orderflow,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND mapping_stage = 'alias_cache' AND reason NOT LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS alias_cache_hits,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND lazy_lookup_hit = 1 THEN 1 ELSE 0 END), 0) AS lazy_lookup_hits
+        FROM decision_audit
+        "
+    ) ?? ['total_orderflow' => 0, 'unmapped_orderflow' => 0, 'alias_cache_hits' => 0, 'lazy_lookup_hits' => 0];
+}
+
 function dashboard_runtime_summary_from_db(PDO $pdo): array
 {
     $wallet = dashboard_fetch_one($pdo, 'SELECT balance FROM wallet WHERE id = 1');
@@ -160,27 +197,26 @@ function dashboard_runtime_summary_from_db(PDO $pdo): array
         "SELECT source_type, COUNT(*) AS count FROM whale_wallets WHERE enabled = 1 GROUP BY source_type ORDER BY source_type"
     );
 
-    $decisionStats = dashboard_fetch_one(
-        $pdo,
-        "
-        SELECT
-            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_orderflow,
-            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND reason LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS unmapped_orderflow,
-            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND mapping_stage = 'alias_cache' AND reason NOT LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS alias_cache_hits,
-            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND lazy_lookup_hit = 1 THEN 1 ELSE 0 END), 0) AS lazy_lookup_hits
-        FROM decision_audit
-        "
-    ) ?? ['total_orderflow' => 0, 'unmapped_orderflow' => 0, 'alias_cache_hits' => 0, 'lazy_lookup_hits' => 0];
+    $historicalDecisionStats = dashboard_fetch_orderflow_mapping_stats($pdo, false);
+    $recentDecisionStats = dashboard_fetch_orderflow_mapping_stats($pdo, true);
 
     $trackedWhales = 0;
     foreach ($whales as $row) {
         $trackedWhales += (int) ($row['count'] ?? 0);
     }
 
-    $totalOrderflow = (int) ($decisionStats['total_orderflow'] ?? 0);
-    $unmappedOrderflow = (int) ($decisionStats['unmapped_orderflow'] ?? 0);
-    $mappedOrderflow = max($totalOrderflow - $unmappedOrderflow, 0);
-    $marketNotMappedRate = $totalOrderflow > 0 ? ($unmappedOrderflow / $totalOrderflow) * 100.0 : 0.0;
+    $historicalTotalOrderflow = (int) ($historicalDecisionStats['total_orderflow'] ?? 0);
+    $historicalUnmappedOrderflow = (int) ($historicalDecisionStats['unmapped_orderflow'] ?? 0);
+    $historicalMappedOrderflow = max($historicalTotalOrderflow - $historicalUnmappedOrderflow, 0);
+    $historicalMarketNotMappedRate = $historicalTotalOrderflow > 0
+        ? ($historicalUnmappedOrderflow / $historicalTotalOrderflow) * 100.0
+        : 0.0;
+    $recentTotalOrderflow = (int) ($recentDecisionStats['total_orderflow'] ?? 0);
+    $recentUnmappedOrderflow = (int) ($recentDecisionStats['unmapped_orderflow'] ?? 0);
+    $recentMappedOrderflow = max($recentTotalOrderflow - $recentUnmappedOrderflow, 0);
+    $recentMarketNotMappedRate = $recentTotalOrderflow > 0
+        ? ($recentUnmappedOrderflow / $recentTotalOrderflow) * 100.0
+        : 0.0;
     $samplingTarget = max(dashboard_int_env('PAPER_SAMPLING_TARGET_CLOSED_TRADES', 20), 1);
     $samplingMode = 'disabled';
     $samplingStopReason = 'none';
@@ -192,11 +228,18 @@ function dashboard_runtime_summary_from_db(PDO $pdo): array
     return [
         'wallet_balance' => isset($wallet['balance']) ? (float) $wallet['balance'] : null,
         'tracked_whales' => $trackedWhales,
-        'mapped_orderflow_events' => $mappedOrderflow,
-        'unmapped_orderflow_events' => $unmappedOrderflow,
-        'alias_cache_hits' => (int) ($decisionStats['alias_cache_hits'] ?? 0),
-        'lazy_lookup_hits' => (int) ($decisionStats['lazy_lookup_hits'] ?? 0),
-        'market_not_mapped_rate' => round($marketNotMappedRate, 1),
+        'mapped_orderflow_events' => $recentMappedOrderflow,
+        'unmapped_orderflow_events' => $recentUnmappedOrderflow,
+        'alias_cache_hits' => (int) ($recentDecisionStats['alias_cache_hits'] ?? 0),
+        'lazy_lookup_hits' => (int) ($recentDecisionStats['lazy_lookup_hits'] ?? 0),
+        'market_not_mapped_rate' => round($recentMarketNotMappedRate, 1),
+        'recent_mapped_orderflow_events' => $recentMappedOrderflow,
+        'recent_unmapped_orderflow_events' => $recentUnmappedOrderflow,
+        'recent_market_not_mapped_rate' => round($recentMarketNotMappedRate, 1),
+        'historical_mapped_orderflow_events' => $historicalMappedOrderflow,
+        'historical_unmapped_orderflow_events' => $historicalUnmappedOrderflow,
+        'historical_market_not_mapped_rate' => round($historicalMarketNotMappedRate, 1),
+        'live_metrics_available' => false,
         'total_trades' => isset($tradeCount['count']) ? (int) $tradeCount['count'] : 0,
         'open_positions_count' => isset($openPositions['count']) ? (int) $openPositions['count'] : 0,
         'open_orders_count' => isset($openOrders['count']) ? (int) $openOrders['count'] : 0,
@@ -243,6 +286,14 @@ function dashboard_merge_runtime_summary(array $dbSummary, array $statusMetrics)
 
     if (isset($statusMetrics['futures_open_positions']) || isset($statusMetrics['spot_open_positions'])) {
         $summary['open_positions_count'] = (int) ($statusMetrics['futures_open_positions'] ?? 0) + (int) ($statusMetrics['spot_open_positions'] ?? 0);
+    }
+
+    if (
+        array_key_exists('mapped_orderflow_events', $statusMetrics)
+        || array_key_exists('unmapped_orderflow_events', $statusMetrics)
+        || array_key_exists('market_not_mapped_rate', $statusMetrics)
+    ) {
+        $summary['live_metrics_available'] = true;
     }
 
     return $summary;
@@ -360,6 +411,13 @@ function dashboard_build_payload(string $view = 'full'): array
         'alias_cache_hits' => 0,
         'lazy_lookup_hits' => 0,
         'market_not_mapped_rate' => 0.0,
+        'recent_mapped_orderflow_events' => 0,
+        'recent_unmapped_orderflow_events' => 0,
+        'recent_market_not_mapped_rate' => 0.0,
+        'historical_mapped_orderflow_events' => 0,
+        'historical_unmapped_orderflow_events' => 0,
+        'historical_market_not_mapped_rate' => 0.0,
+        'live_metrics_available' => false,
         'total_trades' => 0,
         'open_positions_count' => 0,
         'open_orders_count' => 0,

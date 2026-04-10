@@ -64,7 +64,7 @@ class RuntimeSettings:
     orderflow_hot_window_ttl_seconds: float = 900.0
     discovery_interval_seconds: float = 5.0
     whale_interval_seconds: float = 15.0
-    status_interval_seconds: float = 300.0
+    status_interval_seconds: float = 60.0
     market_scan_interval_seconds: float = 60.0
     whale_target_count: int = 50
     whale_discovery_min_event_usd: float = 2_500.0
@@ -91,6 +91,7 @@ class RuntimeSettings:
             orderflow_hot_window_enabled=_env_flag("ORDERFLOW_HOT_WINDOW_ENABLED", True),
             orderflow_hot_window_limit=max(int(os.getenv("ORDERFLOW_HOT_WINDOW_LIMIT", "150") or 150), 1),
             orderflow_hot_window_ttl_seconds=max(float(os.getenv("ORDERFLOW_HOT_WINDOW_TTL_SECONDS", "900") or 900), 60.0),
+            status_interval_seconds=max(float(os.getenv("STATUS_INTERVAL_SECONDS", "60") or 60), 10.0),
             whale_target_count=max(int(os.getenv("WHALE_TARGET_COUNT", "50") or 50), 1),
             whale_discovery_min_event_usd=float(os.getenv("WHALE_DISCOVERY_MIN_EVENT_USD", "2500") or 2500),
             whale_discovery_min_events=max(int(os.getenv("WHALE_DISCOVERY_MIN_EVENTS", "2") or 2), 1),

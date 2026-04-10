@@ -248,6 +248,12 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['runtime_summary']['unmapped_orderflow_events'] == 1
     assert payload['runtime_summary']['alias_cache_hits'] == 2
     assert payload['runtime_summary']['lazy_lookup_hits'] == 1
+    assert payload['runtime_summary']['market_not_mapped_rate'] == 20.0
+    assert payload['runtime_summary']['recent_market_not_mapped_rate'] == 20.0
+    assert payload['runtime_summary']['historical_market_not_mapped_rate'] == 20.0
+    assert payload['runtime_summary']['recent_mapped_orderflow_events'] == 4
+    assert payload['runtime_summary']['historical_mapped_orderflow_events'] == 4
+    assert payload['runtime_summary']['live_metrics_available'] is False
     assert payload['runtime_summary']['hot_window_hits'] == 1
     assert payload['runtime_summary']['hot_window_promotions'] == 1
     assert payload['runtime_summary']['active_window_misses'] == 1

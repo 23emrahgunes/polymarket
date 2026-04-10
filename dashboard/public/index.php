@@ -702,6 +702,13 @@ function updateHeader(payload) {
     document.getElementById('mapped-orderflow').textContent = `${formatNumber(runtime.mapped_orderflow_events, 0)} / ${formatNumber(runtime.unmapped_orderflow_events, 0)}`;
     document.getElementById('mapping-note').textContent = `Alias cache ${formatNumber(runtime.alias_cache_hits, 0)}, lazy ${formatNumber(runtime.lazy_lookup_hits, 0)}, sıcak pencere ${formatNumber(runtime.hot_window_hits, 0)}`;
     document.getElementById('market-not-mapped-rate').textContent = `${formatNumber(runtime.market_not_mapped_rate, 1)}%`;
+    const marketRateNote = document.getElementById('market-not-mapped-note') || document.getElementById('market-not-mapped-rate')?.nextElementSibling;
+    if (marketRateNote) {
+        marketRateNote.id = 'market-not-mapped-note';
+        marketRateNote.textContent = runtime.live_metrics_available
+            ? 'Canli oran gosteriliyor, 60 dk ve tarihsel detay asagida'
+            : 'Canli status yok, son 60 dk orani gosteriliyor';
+    }
     document.getElementById('final-verdict').textContent = translateVerdict(verdictBlock.verdict || 'yok');
     document.getElementById('verdict-reason').textContent = verdictBlock.reason || 'Henüz SWOT kararı yok.';
     document.getElementById('open-state-note').textContent = `${formatNumber(runtime.open_positions_count, 0)} açık pozisyon / ${formatNumber(runtime.open_orders_count, 0)} açık emir`;
@@ -855,6 +862,23 @@ function updatePanels(payload) {
         { label: 'Active-window miss oranı', value: `${formatNumber(runtime.active_window_miss_rate, 1)}%` },
         { label: 'Resolver hit oranı', value: `${formatNumber(runtime.resolver_hit_rate, 1)}%` },
         { label: 'Market eşleşmedi oranı', value: `${formatNumber(runtime.market_not_mapped_rate, 1)}%` }
+    ]);
+
+    renderMetrics('mapping-health', [
+        { label: 'Eslenen orderflow event', value: formatNumber(runtime.mapped_orderflow_events, 0) },
+        { label: 'Eslenemeyen orderflow event', value: formatNumber(runtime.unmapped_orderflow_events, 0) },
+        { label: 'Alias cache hit', value: formatNumber(runtime.alias_cache_hits, 0) },
+        { label: 'Lazy lookup hit', value: formatNumber(runtime.lazy_lookup_hits, 0) },
+        { label: 'Sicak pencere marketleri', value: formatNumber(runtime.hot_window_markets, 0) },
+        { label: 'Sicak pencere hit', value: formatNumber(runtime.hot_window_hits, 0) },
+        { label: 'Hot-window promotion', value: formatNumber(runtime.hot_window_promotions, 0) },
+        { label: 'Hot-window expiry', value: formatNumber(runtime.hot_window_expiries, 0) },
+        { label: 'Active-window miss', value: formatNumber(runtime.active_window_misses, 0) },
+        { label: 'Active-window miss orani', value: `${formatNumber(runtime.active_window_miss_rate, 1)}%` },
+        { label: 'Resolver hit orani', value: `${formatNumber(runtime.resolver_hit_rate, 1)}%` },
+        { label: 'Canli market eslesmedi orani', value: runtime.live_metrics_available ? `${formatNumber(runtime.market_not_mapped_rate, 1)}%` : 'yok' },
+        { label: 'Son 60 dk market eslesmedi orani', value: `${formatNumber(runtime.recent_market_not_mapped_rate, 1)}%` },
+        { label: 'Tarihsel market eslesmedi orani', value: `${formatNumber(runtime.historical_market_not_mapped_rate, 1)}%` }
     ]);
 
     const sourceQuality = payload.source_quality_summary || {};

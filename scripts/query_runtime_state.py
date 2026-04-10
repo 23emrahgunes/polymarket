@@ -42,6 +42,39 @@ def _read_latest_status_metrics() -> dict:
     return metrics
 
 
+def _fetch_orderflow_mapping_stats(cursor: sqlite3.Cursor, recent_window: bool = False) -> tuple[int, int]:
+    if recent_window:
+        row = cursor.execute(
+            """
+            WITH anchor AS (
+                SELECT MAX(occurred_at) AS max_occurred_at
+                FROM decision_audit
+                WHERE signal_family IN ('activity_orderflow', 'whale')
+            )
+            SELECT
+                COALESCE(SUM(CASE WHEN decision_audit.signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_orderflow,
+                COALESCE(SUM(CASE WHEN decision_audit.signal_family IN ('activity_orderflow', 'whale') AND decision_audit.reason LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS unmapped_orderflow
+            FROM decision_audit
+            CROSS JOIN anchor
+            WHERE anchor.max_occurred_at IS NOT NULL
+              AND decision_audit.occurred_at >= datetime(anchor.max_occurred_at, '-60 minutes')
+            """
+        ).fetchone()
+    else:
+        row = cursor.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_orderflow,
+                COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND reason LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS unmapped_orderflow
+            FROM decision_audit
+            """
+        ).fetchone()
+
+    if row is None:
+        return (0, 0)
+    return (int(row[0] or 0), int(row[1] or 0))
+
+
 def main() -> int:
     db_path = Path(os.getenv("GHOST_TRADER_DB_PATH", "data/ghost_trader.db"))
     if not db_path.exists():
@@ -223,6 +256,12 @@ def main() -> int:
         ).fetchone()
     except sqlite3.OperationalError:
         alias_integrity = (0, 0)
+    try:
+        historical_total_orderflow, historical_unmapped_orderflow = _fetch_orderflow_mapping_stats(cursor, recent_window=False)
+        recent_total_orderflow, recent_unmapped_orderflow = _fetch_orderflow_mapping_stats(cursor, recent_window=True)
+    except sqlite3.OperationalError:
+        historical_total_orderflow, historical_unmapped_orderflow = (0, 0)
+        recent_total_orderflow, recent_unmapped_orderflow = (0, 0)
     connection.close()
 
     print(f"DB_PATH={db_path}")
@@ -264,6 +303,15 @@ def main() -> int:
     print("MAPPING_MISS_BREAKDOWN")
     for row in mapping_miss_breakdown:
         print(row)
+    print("MAPPING_RATE_SUMMARY")
+    live_market_not_mapped_rate = status_metrics.get("market_not_mapped_rate")
+    print(("live_market_not_mapped_rate", live_market_not_mapped_rate if live_market_not_mapped_rate is not None else "missing"))
+    print(("recent_total_orderflow", recent_total_orderflow))
+    print(("recent_unmapped_orderflow", recent_unmapped_orderflow))
+    print(("recent_market_not_mapped_rate", round((recent_unmapped_orderflow / recent_total_orderflow) * 100.0, 1) if recent_total_orderflow else 0.0))
+    print(("historical_total_orderflow", historical_total_orderflow))
+    print(("historical_unmapped_orderflow", historical_unmapped_orderflow))
+    print(("historical_market_not_mapped_rate", round((historical_unmapped_orderflow / historical_total_orderflow) * 100.0, 1) if historical_total_orderflow else 0.0))
     print("ALIAS_PERSISTENCE_SUMMARY")
     lookup_universe_markets = int(status_metrics.get("lookup_universe_markets", 0) or 0)
     lookup_universe_aliases = int(status_metrics.get("lookup_universe_aliases", 0) or 0)
