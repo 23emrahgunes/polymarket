@@ -197,7 +197,16 @@ def main() -> int:
         print(f"SQLite database not found: {db_path}")
         return 1
 
-    conn = sqlite3.connect(db_path)
+    connection_target: str | Path
+    connection_kwargs: dict[str, object] = {"timeout": 5.0}
+    if args.apply:
+        connection_target = db_path
+    else:
+        connection_target = f"file:{db_path.resolve().as_posix()}?mode=ro"
+        connection_kwargs["uri"] = True
+
+    conn = sqlite3.connect(connection_target, **connection_kwargs)
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         rules = build_prune_rules(
             discovery_route_only_days=args.discovery_route_only_days,
@@ -250,6 +259,12 @@ def main() -> int:
         for table in ["decision_audit", "market_aliases", "trades", "venue_positions", "runtime_status_snapshot"]:
             print(f"- {table}: {fetch_count(conn, table)}")
         return 0
+    except sqlite3.OperationalError as exc:
+        if "database is locked" in str(exc).lower():
+            print("error=database_locked")
+            print("Cleanup needs exclusive DB access. Stop ghost-trader and ghost-trader-dashboard, then retry.")
+            return 2
+        raise
     finally:
         conn.close()
 

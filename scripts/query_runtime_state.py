@@ -18,6 +18,16 @@ def _coerce_metric_value(raw: str):
     return raw
 
 
+def _print_row(row) -> None:
+    if row is None:
+        print(None)
+        return
+    if isinstance(row, sqlite3.Row):
+        print(tuple(row))
+        return
+    print(row)
+
+
 def _read_latest_status_metrics() -> dict:
     try:
         result = subprocess.run(
@@ -305,41 +315,41 @@ def main() -> int:
     print(f"WALLET_BALANCE={wallet[0] if wallet else 'missing'}")
     print("VENUE_ACCOUNTS")
     for account in venue_accounts:
-        print(account)
+        _print_row(account)
     print("RECENT_TRADES")
     for trade in trades:
-        print(trade)
+        _print_row(trade)
     print("OPEN_POSITIONS")
     for position in positions:
-        print(position)
+        _print_row(position)
     print("OPEN_ORDERS")
     for order in orders:
-        print(order)
+        _print_row(order)
     print("MARKET_ALIAS_COUNTS")
     for count in market_alias_counts:
-        print(count)
+        _print_row(count)
     print("TOP_MARKET_ALIASES")
     for market_alias in market_aliases:
-        print(market_alias)
+        _print_row(market_alias)
     print("WHALE_WALLET_COUNTS")
     for count in whale_counts:
-        print(count)
+        _print_row(count)
     print("TOP_WHALE_WALLETS")
     for whale_wallet in whale_wallets:
-        print(whale_wallet)
+        _print_row(whale_wallet)
     print("RECENT_DECISION_AUDIT")
     for audit_row in decision_audit:
-        print(audit_row)
+        _print_row(audit_row)
     print("ROUTING_BREAKDOWN")
     for row in routing_breakdown:
-        print(row)
+        _print_row(row)
     print("SAMPLING_DECISION_SUMMARY")
     for row in sampling_decision_summary:
-        print(row)
+        _print_row(row)
     print(("execute", sampling_execute_count[0] if sampling_execute_count else 0))
     print("MAPPING_MISS_BREAKDOWN")
     for row in mapping_miss_breakdown:
-        print(row)
+        _print_row(row)
     print("MAPPING_RATE_SUMMARY")
     live_market_not_mapped_rate = status_metrics.get("market_not_mapped_rate")
     print(("live_market_not_mapped_rate", live_market_not_mapped_rate if live_market_not_mapped_rate is not None else "missing"))
@@ -377,7 +387,7 @@ def main() -> int:
         print((label, value))
     print("UNSUPPORTED_SIDE_SUMMARY")
     for row in unsupported_side_summary:
-        print(row)
+        _print_row(row)
     return 0
 
 
