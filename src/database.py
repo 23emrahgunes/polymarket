@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional
@@ -221,6 +222,15 @@ class Database:
             )
             """
         )
+        await self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS runtime_status_snapshot (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                metrics_json TEXT NOT NULL
+            )
+            """
+        )
 
         async with self.conn.execute("SELECT COUNT(*) AS count FROM wallet") as cursor:
             row = await cursor.fetchone()
@@ -293,6 +303,15 @@ class Database:
                 active INTEGER NOT NULL DEFAULT 1,
                 last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 source TEXT
+            )
+            """
+        )
+        await self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS runtime_status_snapshot (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                metrics_json TEXT NOT NULL
             )
             """
         )
@@ -775,6 +794,44 @@ class Database:
                 }
             )
         return universe
+
+    async def upsert_runtime_status_snapshot(self, metrics: dict) -> None:
+        metrics_json = json.dumps(metrics, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
+        await self.conn.execute(
+            """
+            INSERT INTO runtime_status_snapshot (id, updated_at, metrics_json)
+            VALUES (1, CURRENT_TIMESTAMP, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                updated_at = CURRENT_TIMESTAMP,
+                metrics_json = excluded.metrics_json
+            """,
+            (metrics_json,),
+        )
+        await self.conn.commit()
+
+    async def get_runtime_status_snapshot(self) -> Optional[dict]:
+        async with self.conn.execute(
+            """
+            SELECT updated_at, metrics_json
+            FROM runtime_status_snapshot
+            WHERE id = 1
+            """
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if row is None or not row["metrics_json"]:
+            return None
+
+        try:
+            metrics = json.loads(row["metrics_json"])
+        except json.JSONDecodeError:
+            return None
+
+        if not isinstance(metrics, dict):
+            return None
+
+        metrics["updated_at"] = row["updated_at"]
+        return metrics
 
     async def upsert_whale_wallet(
         self,

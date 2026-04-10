@@ -156,7 +156,7 @@ function dashboard_build_unresolved_alias_summary(PDO $pdo): array
     ];
 }
 
-function dashboard_build_hot_window_summary(PDO $pdo, array $statusMetrics): array
+function dashboard_build_hot_window_summary(PDO $pdo, array $runtimeSummary): array
 {
     $defaults = [
         'hot_window_markets' => 0,
@@ -198,10 +198,16 @@ function dashboard_build_hot_window_summary(PDO $pdo, array $statusMetrics): arr
         ? round(($resolverHits / $mappedOrderflow) * 100.0, 1)
         : 0.0;
 
-    foreach (['hot_window_markets', 'hot_window_expiries'] as $key) {
-        if (array_key_exists($key, $statusMetrics)) {
-            $summary[$key] = (int) $statusMetrics[$key];
+    foreach (['hot_window_markets', 'hot_window_expiries', 'hot_window_hits', 'hot_window_promotions', 'active_window_misses'] as $key) {
+        if (array_key_exists($key, $runtimeSummary)) {
+            $summary[$key] = (int) $runtimeSummary[$key];
         }
+    }
+    if (array_key_exists('active_window_miss_rate', $runtimeSummary)) {
+        $summary['active_window_miss_rate'] = (float) $runtimeSummary['active_window_miss_rate'];
+    }
+    if (array_key_exists('resolver_hit_rate', $runtimeSummary)) {
+        $summary['resolver_hit_rate'] = (float) $runtimeSummary['resolver_hit_rate'];
     }
 
     return $summary;
@@ -257,13 +263,17 @@ function dashboard_build_alias_persistence_summary(PDO $pdo, array $runtimeSumma
     $lookupUniverseAliases = (int) ($runtimeSummary['lookup_universe_aliases'] ?? 0);
     $persistedRows = (int) (($runtimeSummary['persisted_market_alias_rows'] ?? 0) ?: ($integrity['alias_rows'] ?? 0));
     $persistedMarkets = (int) (($runtimeSummary['persisted_market_alias_markets'] ?? 0) ?: ($integrity['market_rows'] ?? 0));
+    $hydratedLookupMarkets = (int) ($runtimeSummary['hydrated_lookup_markets'] ?? 0);
+    $hydratedLookupAliases = (int) ($runtimeSummary['hydrated_lookup_aliases'] ?? 0);
     $aliasPersistenceGap = max(
         (int) ($runtimeSummary['alias_persistence_gap'] ?? max($lookupUniverseAliases - $persistedRows, 0)),
         0
     );
 
-    $warning = null;
-    if ($lookupUniverseAliases > 0 && $aliasPersistenceGap > 0) {
+    $warning = $runtimeSummary['lookup_hydration_warning'] ?? null;
+    if ($warning === 'persisted_alias_rows_present_but_lookup_hydration_zero') {
+        $warning = 'Kalici alias cache dolu ama canli lookup hydration sifir gorunuyor.';
+    } elseif ($lookupUniverseAliases > 0 && $aliasPersistenceGap > 0) {
         $warning = 'Lookup evreni dolu ama kalıcı alias cache geriden geliyor.';
     } elseif ($persistedRows === 0) {
         $warning = 'Kalıcı alias cache henüz ısınmadı.';
@@ -274,6 +284,8 @@ function dashboard_build_alias_persistence_summary(PDO $pdo, array $runtimeSumma
         'lookup_universe_aliases' => $lookupUniverseAliases,
         'persisted_market_alias_rows' => $persistedRows,
         'persisted_market_alias_markets' => $persistedMarkets,
+        'hydrated_lookup_markets' => $hydratedLookupMarkets,
+        'hydrated_lookup_aliases' => $hydratedLookupAliases,
         'alias_persistence_gap' => $aliasPersistenceGap,
         'warning' => $warning,
     ];
@@ -471,12 +483,11 @@ function dashboard_augment_payload(array $payload): array
 {
     $warnings = [];
     $pdo = dashboard_open_db($warnings);
-    $statusMetrics = dashboard_parse_status_metrics($payload['service_log_excerpt'] ?? []);
     if ($pdo !== null) {
         $payload = array_merge($payload, dashboard_build_unresolved_alias_summary($pdo));
         $payload['runtime_summary'] = array_merge(
             $payload['runtime_summary'] ?? [],
-            dashboard_build_hot_window_summary($pdo, $statusMetrics)
+            dashboard_build_hot_window_summary($pdo, $payload['runtime_summary'] ?? [])
         );
         $payload['routing_breakdown'] = dashboard_build_routing_breakdown($pdo);
         $payload['sampling_decision_summary'] = dashboard_build_sampling_decision_summary($pdo);

@@ -623,11 +623,58 @@ async def test_runtime_hydrates_lookup_context_from_persisted_aliases(tmp_path):
     await runtime.bootstrap_market_context()
 
     lookup_context = runtime.resolve_lookup_market_context(["0xTOKENP1", "persisted-slug-1"])
+    snapshot = await runtime.db.get_runtime_status_snapshot()
     await runtime.close()
 
     assert lookup_context is not None
     assert lookup_context["market_id"] == "0xpersisted1"
     assert len(runtime.lookup_market_context) == 1
+    assert runtime.hydrated_lookup_markets == 1
+    assert runtime.hydrated_lookup_aliases >= 2
+    assert snapshot is not None
+    assert snapshot["hydrated_lookup_markets"] == 1
+    assert snapshot["hydrated_lookup_aliases"] >= 2
+    assert snapshot["lookup_hydration_warning"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_runtime_emits_lookup_hydration_warning_when_persisted_aliases_do_not_hydrate(tmp_path):
+    db_path = str(tmp_path / "runtime_hydration_warning.db")
+    runtime = GhostBotRuntime(
+        RuntimeSettings(
+            exchange_id="coinbase",
+            db_path=db_path,
+            debug_signal_mode=False,
+            runtime_verify_once=False,
+            market_lookup_limit=10,
+        )
+    )
+    await runtime.initialize()
+    await runtime.db.upsert_market_aliases(
+        market_id="0xPERSISTED-WARN",
+        aliases=["0xPERSISTED-WARN", "0xTOKEN-WARN"],
+        question="Will Team Warning win?",
+        category="SPORTS",
+        volume_24h=72000.0,
+        active=True,
+        source="persisted_alias_replay",
+    )
+
+    async def fake_refresh_lookup_context(*args, **kwargs):
+        return None
+
+    runtime._refresh_lookup_context = fake_refresh_lookup_context  # type: ignore[method-assign]
+    hydrated_count = await runtime._hydrate_lookup_context_from_db(reset=True)
+    await runtime.log_runtime_status(0, 0.0)
+    snapshot = await runtime.db.get_runtime_status_snapshot()
+    await runtime.close()
+
+    assert hydrated_count == 1
+    assert runtime.hydrated_lookup_markets == 0
+    assert runtime.hydrated_lookup_aliases == 0
+    assert runtime.lookup_hydration_warning == "persisted_alias_rows_present_but_lookup_hydration_zero"
+    assert snapshot is not None
+    assert snapshot["lookup_hydration_warning"] == "persisted_alias_rows_present_but_lookup_hydration_zero"
 
 
 @pytest.mark.asyncio

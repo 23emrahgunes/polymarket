@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -39,6 +40,40 @@ def _read_latest_status_metrics() -> dict:
     metrics = {}
     for key, value in STATUS_METRIC_PATTERN.findall(latest_status):
         metrics[key] = _coerce_metric_value(value)
+    return metrics
+
+
+def _read_runtime_status_snapshot(cursor: sqlite3.Cursor) -> dict:
+    try:
+        row = cursor.execute(
+            """
+            SELECT updated_at, metrics_json
+            FROM runtime_status_snapshot
+            WHERE id = 1
+            """
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return {}
+
+    if row is None:
+        return {}
+
+    metrics_json = row["metrics_json"] if isinstance(row, sqlite3.Row) else row[1]
+    if not metrics_json:
+        return {}
+
+    try:
+        metrics = json.loads(metrics_json)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+
+    if not isinstance(metrics, dict):
+        return {}
+
+    updated_at = row["updated_at"] if isinstance(row, sqlite3.Row) else row[0]
+    metrics["updated_at"] = updated_at
+    if metrics.get("lookup_hydration_warning") == "none":
+        metrics["lookup_hydration_warning"] = None
     return metrics
 
 
@@ -82,8 +117,10 @@ def main() -> int:
         return 1
 
     connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
     cursor = connection.cursor()
-    status_metrics = _read_latest_status_metrics()
+    snapshot_metrics = _read_runtime_status_snapshot(cursor)
+    status_metrics = snapshot_metrics or _read_latest_status_metrics()
 
     wallet = cursor.execute("SELECT balance FROM wallet WHERE id = 1").fetchone()
     venue_accounts = cursor.execute(
@@ -315,12 +352,17 @@ def main() -> int:
     print("ALIAS_PERSISTENCE_SUMMARY")
     lookup_universe_markets = int(status_metrics.get("lookup_universe_markets", 0) or 0)
     lookup_universe_aliases = int(status_metrics.get("lookup_universe_aliases", 0) or 0)
+    hydrated_lookup_markets = int(status_metrics.get("hydrated_lookup_markets", 0) or 0)
+    hydrated_lookup_aliases = int(status_metrics.get("hydrated_lookup_aliases", 0) or 0)
     persisted_rows = int((alias_integrity[0] if alias_integrity else 0) or 0)
     persisted_markets = int((alias_integrity[1] if alias_integrity else 0) or 0)
     print(("lookup_universe_markets", lookup_universe_markets))
     print(("lookup_universe_aliases", lookup_universe_aliases))
     print(("persisted_market_alias_rows", persisted_rows))
     print(("persisted_market_alias_markets", persisted_markets))
+    print(("hydrated_lookup_markets", hydrated_lookup_markets))
+    print(("hydrated_lookup_aliases", hydrated_lookup_aliases))
+    print(("lookup_hydration_warning", status_metrics.get("lookup_hydration_warning") or "none"))
     print(("alias_persistence_gap", max(lookup_universe_aliases - persisted_rows, 0)))
     print("SOURCE_QUALITY_SUMMARY")
     source_labels = (

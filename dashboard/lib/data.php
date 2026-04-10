@@ -117,6 +117,37 @@ function dashboard_parse_status_metrics(array $logLines): array
     return $metrics;
 }
 
+function dashboard_read_runtime_status_snapshot(PDO $pdo, array &$warnings): array
+{
+    try {
+        $statement = $pdo->query('SELECT updated_at, metrics_json FROM runtime_status_snapshot WHERE id = 1');
+        $row = $statement ? $statement->fetch(PDO::FETCH_ASSOC) : false;
+    } catch (Throwable $exception) {
+        return [];
+    }
+
+    if (!is_array($row) || trim((string) ($row['metrics_json'] ?? '')) === '') {
+        return [];
+    }
+
+    try {
+        $decoded = json_decode((string) $row['metrics_json'], true, 512, JSON_THROW_ON_ERROR);
+    } catch (Throwable $exception) {
+        $warnings[] = 'runtime status snapshot decode failed';
+        return [];
+    }
+
+    if (!is_array($decoded)) {
+        return [];
+    }
+
+    $decoded['updated_at'] = $row['updated_at'] ?? null;
+    if (($decoded['lookup_hydration_warning'] ?? 'none') === 'none') {
+        $decoded['lookup_hydration_warning'] = null;
+    }
+    return $decoded;
+}
+
 function dashboard_get_service_data(array &$warnings): array
 {
     $serviceName = dashboard_service_name(dashboard_env('DASHBOARD_TARGET_SERVICE', 'ghost-trader') ?? 'ghost-trader');
@@ -251,6 +282,9 @@ function dashboard_runtime_summary_from_db(PDO $pdo): array
         'lookup_universe_aliases' => 0,
         'persisted_market_alias_rows' => (int) ($aliasIntegrity['alias_rows'] ?? 0),
         'persisted_market_alias_markets' => (int) ($aliasIntegrity['market_rows'] ?? 0),
+        'hydrated_lookup_markets' => 0,
+        'hydrated_lookup_aliases' => 0,
+        'lookup_hydration_warning' => null,
         'alias_persistence_gap' => 0,
     ];
 }
@@ -275,6 +309,9 @@ function dashboard_merge_runtime_summary(array $dbSummary, array $statusMetrics)
         'lookup_universe_aliases',
         'persisted_market_alias_rows',
         'persisted_market_alias_markets',
+        'hydrated_lookup_markets',
+        'hydrated_lookup_aliases',
+        'lookup_hydration_warning',
         'alias_persistence_gap',
     ];
 
@@ -429,6 +466,9 @@ function dashboard_build_payload(string $view = 'full'): array
         'lookup_universe_aliases' => 0,
         'persisted_market_alias_rows' => 0,
         'persisted_market_alias_markets' => 0,
+        'hydrated_lookup_markets' => 0,
+        'hydrated_lookup_aliases' => 0,
+        'lookup_hydration_warning' => null,
         'alias_persistence_gap' => 0,
     ];
 
@@ -445,7 +485,12 @@ function dashboard_build_payload(string $view = 'full'): array
     ];
 
     if ($pdo !== null) {
-        $runtimeSummary = dashboard_merge_runtime_summary(dashboard_runtime_summary_from_db($pdo), $statusMetrics);
+        $snapshotMetrics = dashboard_read_runtime_status_snapshot($pdo, $warnings);
+        $liveMetrics = $snapshotMetrics !== [] ? $snapshotMetrics : $statusMetrics;
+        $runtimeSummary = dashboard_merge_runtime_summary(dashboard_runtime_summary_from_db($pdo), $liveMetrics);
+        if (!empty($snapshotMetrics['lookup_hydration_warning'])) {
+            $warnings[] = 'canli lookup hydration sifir gorunuyor; kalici alias cache runtime a tam yuklenmemis olabilir.';
+        }
         $collections = dashboard_fetch_runtime_collections($pdo);
     }
 

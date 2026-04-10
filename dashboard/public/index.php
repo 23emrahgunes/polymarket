@@ -898,6 +898,8 @@ function updatePanels(payload) {
         { label: 'Kalıcı alias satırı', value: formatNumber(aliasPersistence.persisted_market_alias_rows, 0) },
         { label: 'Kalıcı market satırı', value: formatNumber(aliasPersistence.persisted_market_alias_markets, 0) },
         { label: 'Yazma farkı', value: formatNumber(aliasPersistence.alias_persistence_gap, 0) },
+        { label: 'Hydrate edilen market', value: formatNumber(aliasPersistence.hydrated_lookup_markets, 0) },
+        { label: 'Hydrate edilen alias', value: formatNumber(aliasPersistence.hydrated_lookup_aliases, 0) },
         { label: 'Durum', value: aliasPersistence.warning || 'uyumlu', long: true }
     ]);
 

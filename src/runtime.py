@@ -135,6 +135,9 @@ class GhostBotRuntime:
         self.hot_window_promotions = 0
         self.hot_window_expiry_events = 0
         self.active_window_misses = 0
+        self.hydrated_lookup_markets = 0
+        self.hydrated_lookup_aliases = 0
+        self.lookup_hydration_warning: Optional[str] = None
         self.sampling_enabled = bool(settings.paper_sampling_mode and self.sample_kind == "live_paper")
         self.sampling_closed_trades = 0
         self.sampling_stop_reason: Optional[str] = None
@@ -466,50 +469,101 @@ class GhostBotRuntime:
         sampling_mode = "enabled" if self.sampling_enabled else ("target_reached" if self.sampling_stop_reason == "target_reached" else "disabled")
         alias_integrity = await self.db.get_market_alias_integrity()
         persisted_market_alias_rows = int(alias_integrity["alias_rows"] or 0) if alias_integrity else 0
+        persisted_market_alias_markets = int(alias_integrity["market_rows"] or 0) if alias_integrity else 0
         lookup_universe_markets = len(self.lookup_market_context)
         lookup_universe_aliases = self._count_lookup_universe_aliases()
         alias_persistence_gap = max(lookup_universe_aliases - persisted_market_alias_rows, 0)
+        status_metrics = {
+            "active_markets": active_markets_count,
+            "tracked_whales": len(whale_tracker.top_whales if whale_tracker else []),
+            "leaderboard_wallets": getattr(whale_tracker, "leaderboard_wallets_count", 0),
+            "activity_discovered_wallets": getattr(whale_tracker, "activity_discovered_wallets_count", 0),
+            "persisted_wallets": getattr(whale_tracker, "persisted_wallets_count", 0),
+            "wallet_timeouts_last_cycle": getattr(whale_tracker, "wallet_timeouts_last_cycle", 0),
+            "source_mode": getattr(whale_tracker, "source_mode", "uninitialized"),
+            "total_trades": total,
+            "win_rate": round(win_rate, 1),
+            "total_pnl": round(total_pnl, 2),
+            "futures_balance": round(futures_balance, 2),
+            "futures_realized": round(futures_realized, 2),
+            "futures_unrealized": round(futures_unrealized, 2),
+            "futures_open_positions": len(futures_open_positions),
+            "spot_balance": round(spot_balance, 2),
+            "spot_realized": round(spot_realized, 2),
+            "spot_unrealized": round(spot_unrealized, 2),
+            "spot_open_positions": len(spot_open_positions),
+            "mapped_orderflow_events": self.mapped_orderflow_events,
+            "unmapped_orderflow_events": self.unmapped_orderflow_events,
+            "alias_cache_hits": self.alias_cache_hits,
+            "lazy_lookup_hits": self.lazy_lookup_hits,
+            "hot_window_markets": len(self.hot_window_market_context),
+            "hot_window_hits": self.hot_window_hits,
+            "hot_window_promotions": self.hot_window_promotions,
+            "hot_window_expiries": self.hot_window_expiry_events,
+            "active_window_misses": self.active_window_misses,
+            "resolver_hit_rate": round(resolver_hit_rate, 1),
+            "active_window_miss_rate": round(active_window_miss_rate, 1),
+            "market_not_mapped_rate": round(market_not_mapped_rate, 1),
+            "lookup_universe_markets": lookup_universe_markets,
+            "lookup_universe_aliases": lookup_universe_aliases,
+            "persisted_market_alias_rows": persisted_market_alias_rows,
+            "persisted_market_alias_markets": persisted_market_alias_markets,
+            "hydrated_lookup_markets": self.hydrated_lookup_markets,
+            "hydrated_lookup_aliases": self.hydrated_lookup_aliases,
+            "lookup_hydration_warning": self.lookup_hydration_warning or "none",
+            "alias_persistence_gap": alias_persistence_gap,
+            "sampling_mode": sampling_mode,
+            "sampling_closed_trades": self.sampling_closed_trades,
+            "sampling_target_closed_trades": self.settings.paper_sampling_target_closed_trades,
+            "sampling_stop_reason": self.sampling_stop_reason or "none",
+            "scan_time": round(cycle_duration, 2),
+        }
+        await self.db.upsert_runtime_status_snapshot(status_metrics)
         logger.info(
-            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s mapped_orderflow_events=%s unmapped_orderflow_events=%s alias_cache_hits=%s lazy_lookup_hits=%s hot_window_markets=%s hot_window_hits=%s hot_window_promotions=%s hot_window_expiries=%s active_window_misses=%s resolver_hit_rate=%.1f active_window_miss_rate=%.1f market_not_mapped_rate=%.1f lookup_universe_markets=%s lookup_universe_aliases=%s persisted_market_alias_rows=%s alias_persistence_gap=%s sampling_mode=%s sampling_closed_trades=%s sampling_target_closed_trades=%s sampling_stop_reason=%s scan_time=%.2fs",
-            active_markets_count,
-            len(whale_tracker.top_whales if whale_tracker else []),
-            getattr(whale_tracker, "leaderboard_wallets_count", 0),
-            getattr(whale_tracker, "activity_discovered_wallets_count", 0),
-            getattr(whale_tracker, "persisted_wallets_count", 0),
-            getattr(whale_tracker, "wallet_timeouts_last_cycle", 0),
-            getattr(whale_tracker, "source_mode", "uninitialized"),
-            total,
-            win_rate,
-            total_pnl,
-            futures_balance,
-            futures_realized,
-            futures_unrealized,
-            len(futures_open_positions),
-            spot_balance,
-            spot_realized,
-            spot_unrealized,
-            len(spot_open_positions),
-            self.mapped_orderflow_events,
-            self.unmapped_orderflow_events,
-            self.alias_cache_hits,
-            self.lazy_lookup_hits,
-            len(self.hot_window_market_context),
-            self.hot_window_hits,
-            self.hot_window_promotions,
-            self.hot_window_expiry_events,
-            self.active_window_misses,
-            resolver_hit_rate,
-            active_window_miss_rate,
-            market_not_mapped_rate,
-            lookup_universe_markets,
-            lookup_universe_aliases,
-            persisted_market_alias_rows,
-            alias_persistence_gap,
-            sampling_mode,
-            self.sampling_closed_trades,
-            self.settings.paper_sampling_target_closed_trades,
-            self.sampling_stop_reason or "none",
-            cycle_duration,
+            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s mapped_orderflow_events=%s unmapped_orderflow_events=%s alias_cache_hits=%s lazy_lookup_hits=%s hot_window_markets=%s hot_window_hits=%s hot_window_promotions=%s hot_window_expiries=%s active_window_misses=%s resolver_hit_rate=%.1f active_window_miss_rate=%.1f market_not_mapped_rate=%.1f lookup_universe_markets=%s lookup_universe_aliases=%s persisted_market_alias_rows=%s persisted_market_alias_markets=%s hydrated_lookup_markets=%s hydrated_lookup_aliases=%s lookup_hydration_warning=%s alias_persistence_gap=%s sampling_mode=%s sampling_closed_trades=%s sampling_target_closed_trades=%s sampling_stop_reason=%s scan_time=%.2fs",
+            status_metrics["active_markets"],
+            status_metrics["tracked_whales"],
+            status_metrics["leaderboard_wallets"],
+            status_metrics["activity_discovered_wallets"],
+            status_metrics["persisted_wallets"],
+            status_metrics["wallet_timeouts_last_cycle"],
+            status_metrics["source_mode"],
+            status_metrics["total_trades"],
+            status_metrics["win_rate"],
+            status_metrics["total_pnl"],
+            status_metrics["futures_balance"],
+            status_metrics["futures_realized"],
+            status_metrics["futures_unrealized"],
+            status_metrics["futures_open_positions"],
+            status_metrics["spot_balance"],
+            status_metrics["spot_realized"],
+            status_metrics["spot_unrealized"],
+            status_metrics["spot_open_positions"],
+            status_metrics["mapped_orderflow_events"],
+            status_metrics["unmapped_orderflow_events"],
+            status_metrics["alias_cache_hits"],
+            status_metrics["lazy_lookup_hits"],
+            status_metrics["hot_window_markets"],
+            status_metrics["hot_window_hits"],
+            status_metrics["hot_window_promotions"],
+            status_metrics["hot_window_expiries"],
+            status_metrics["active_window_misses"],
+            status_metrics["resolver_hit_rate"],
+            status_metrics["active_window_miss_rate"],
+            status_metrics["market_not_mapped_rate"],
+            status_metrics["lookup_universe_markets"],
+            status_metrics["lookup_universe_aliases"],
+            status_metrics["persisted_market_alias_rows"],
+            status_metrics["persisted_market_alias_markets"],
+            status_metrics["hydrated_lookup_markets"],
+            status_metrics["hydrated_lookup_aliases"],
+            status_metrics["lookup_hydration_warning"],
+            status_metrics["alias_persistence_gap"],
+            status_metrics["sampling_mode"],
+            status_metrics["sampling_closed_trades"],
+            status_metrics["sampling_target_closed_trades"],
+            status_metrics["sampling_stop_reason"],
+            status_metrics["scan_time"],
         )
 
     async def run_activity_hunter_loop(self) -> None:
@@ -964,6 +1018,16 @@ class GhostBotRuntime:
             return 0
         persisted_universe = await self.db.get_persisted_lookup_universe(limit_markets=self.settings.market_lookup_limit)
         await self._refresh_lookup_context(persisted_universe, source="persisted_alias_replay", reset=reset)
+        self.hydrated_lookup_markets = len(self.lookup_market_context)
+        self.hydrated_lookup_aliases = self._count_lookup_universe_aliases()
+        alias_integrity = await self.db.get_market_alias_integrity()
+        persisted_market_alias_rows = int(alias_integrity["alias_rows"] or 0) if alias_integrity else 0
+        if persisted_market_alias_rows > 0 and (
+            self.hydrated_lookup_markets == 0 or self.hydrated_lookup_aliases == 0
+        ):
+            self.lookup_hydration_warning = "persisted_alias_rows_present_but_lookup_hydration_zero"
+        else:
+            self.lookup_hydration_warning = None
         return len(persisted_universe)
 
     async def _register_market_context(
@@ -1009,7 +1073,12 @@ class GhostBotRuntime:
             market_id=market_id,
             token_id=market.get("token_id"),
             token_ids=market.get("token_ids", []),
-            extra_aliases=market.get("alias_candidates", []),
+            extra_aliases=[
+                *(market.get("alias_candidates", []) or []),
+                market.get("asset"),
+                market.get("conditionId"),
+                market.get("slug"),
+            ],
         )
         normalized_market["alias_candidates"] = alias_candidates
         return normalized_market

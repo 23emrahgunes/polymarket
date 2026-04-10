@@ -260,6 +260,53 @@ The day-to-day refresh script also restarts and checks it if present:
 ./scripts/vps_refresh_and_evaluate.sh
 ./scripts/vps_refresh_and_evaluate.sh --quick
 ```
+
+## Runtime Data Cleanup
+
+Long-running PAPER runtime can accumulate a very large `decision_audit` table,
+especially when `route_whale_orderflow_only` and other reject paths dominate.
+That does **not** mean the bot is idle, but it does mean retention-based cleanup
+is useful for DB size and query speed.
+
+Use the cleanup script in **dry-run** mode first:
+
+```bash
+python scripts/prune_runtime_data.py
+```
+
+Default retention behavior:
+
+- old `discovery + route_whale_orderflow_only` rejects: prune after `7` days
+- other old discovery rejects: prune after `14` days
+- old orderflow rejects: prune after `30` days
+- old non-reject audit rows: prune after `180` days
+- `market_aliases` are **not** pruned by default
+
+To actually delete rows:
+
+```bash
+python scripts/prune_runtime_data.py --apply
+```
+
+Optional DB compaction:
+
+```bash
+python scripts/prune_runtime_data.py --apply --vacuum
+```
+
+Optional conservative alias cleanup for old inactive cache rows only:
+
+```bash
+python scripts/prune_runtime_data.py --apply --prune-market-aliases
+```
+
+Why this policy:
+
+- `decision_audit` is the main growth surface on a busy PAPER runtime
+- `market_aliases` should be treated conservatively while mapping is still a
+  bottleneck
+- `runtime_status_snapshot` is a single-row table and does not need cleanup
+
 ## Installation
 
 ```bash

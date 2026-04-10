@@ -103,6 +103,9 @@ def _create_dashboard_db(path: Path) -> None:
             ('condition-1', 'market_id', 'market-1', 'Test market', 'SPORTS', 75000.0, 1, 'lazy_lookup', '2026-04-09 10:00:00'),
         ],
     )
+    cur.execute(
+        'CREATE TABLE runtime_status_snapshot (id INTEGER PRIMARY KEY, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, metrics_json TEXT NOT NULL)'
+    )
     conn.commit()
     conn.close()
 
@@ -156,9 +159,10 @@ def _request(url: str, auth: tuple[str, str] | None = None):
 
 
 class DashboardServer:
-    def __init__(self, process: subprocess.Popen[bytes], base_url: str):
+    def __init__(self, process: subprocess.Popen[bytes], base_url: str, db_path: Path):
         self.process = process
         self.base_url = base_url
+        self.db_path = db_path
 
     def close(self) -> None:
         if self.process.poll() is None:
@@ -219,7 +223,7 @@ def dashboard_server(tmp_path: Path):
         process.wait(timeout=5)
         pytest.fail('dashboard php server did not start in time')
 
-    server = DashboardServer(process, base_url)
+    server = DashboardServer(process, base_url, db_path)
     try:
         yield server
     finally:
@@ -307,6 +311,57 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['performance_summary']['evidence']['live_paper_closed'] == 3
     assert payload['swot_verdict']['final_verdict']['verdict'] == 'IMPROVE FIRST'
     assert isinstance(payload['warnings'], list)
+
+
+def test_dashboard_prefers_runtime_status_snapshot_when_present(dashboard_server: DashboardServer):
+    metrics = {
+        'mapped_orderflow_events': 7,
+        'unmapped_orderflow_events': 1,
+        'market_not_mapped_rate': 12.5,
+        'alias_cache_hits': 4,
+        'lazy_lookup_hits': 2,
+        'hot_window_markets': 3,
+        'hot_window_hits': 2,
+        'hot_window_promotions': 5,
+        'hot_window_expiries': 1,
+        'active_window_misses': 1,
+        'active_window_miss_rate': 12.5,
+        'resolver_hit_rate': 85.7,
+        'lookup_universe_markets': 25,
+        'lookup_universe_aliases': 140,
+        'persisted_market_alias_rows': 2,
+        'persisted_market_alias_markets': 1,
+        'hydrated_lookup_markets': 21,
+        'hydrated_lookup_aliases': 120,
+        'lookup_hydration_warning': 'persisted_alias_rows_present_but_lookup_hydration_zero',
+        'alias_persistence_gap': 138,
+        'sampling_mode': 'enabled',
+        'sampling_closed_trades': 1,
+        'sampling_target_closed_trades': 20,
+        'sampling_stop_reason': 'none',
+    }
+    conn = sqlite3.connect(dashboard_server.db_path)
+    cur = conn.cursor()
+    cur.execute(
+        'INSERT OR REPLACE INTO runtime_status_snapshot (id, updated_at, metrics_json) VALUES (1, ?, ?)',
+        ('2026-04-09 12:00:00', json.dumps(metrics)),
+    )
+    conn.commit()
+    conn.close()
+
+    response = _request(dashboard_server.base_url + '/api.php', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD))
+    payload = json.loads(response.read().decode('utf-8'))
+
+    assert payload['runtime_summary']['live_metrics_available'] is True
+    assert payload['runtime_summary']['market_not_mapped_rate'] == 12.5
+    assert payload['runtime_summary']['recent_market_not_mapped_rate'] == 20.0
+    assert payload['runtime_summary']['historical_market_not_mapped_rate'] == 20.0
+    assert payload['runtime_summary']['hydrated_lookup_markets'] == 21
+    assert payload['runtime_summary']['hydrated_lookup_aliases'] == 120
+    assert payload['runtime_summary']['lookup_hydration_warning'] == 'persisted_alias_rows_present_but_lookup_hydration_zero'
+    assert payload['alias_persistence_summary']['hydrated_lookup_markets'] == 21
+    assert payload['alias_persistence_summary']['warning'] == 'Kalici alias cache dolu ama canli lookup hydration sifir gorunuyor.'
+    assert any('canli lookup hydration sifir gorunuyor' in warning.lower() for warning in payload['warnings'])
 
 
 def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
