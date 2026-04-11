@@ -69,6 +69,8 @@ function dashboard_config(): array
         'DASHBOARD_USER' => 'admin',
         'DASHBOARD_PASSWORD_HASH' => '',
         'DASHBOARD_REFRESH_SECONDS' => '5',
+        'DASHBOARD_API_CACHE_SECONDS' => '8',
+        'DASHBOARD_DECISION_SCAN_LIMIT' => '50000',
         'DASHBOARD_LOG_LINES' => '40',
         'DASHBOARD_SUMMARY_PATH' => 'reports/performance/summary.json',
         'DASHBOARD_SWOT_PATH' => 'reports/performance/swot_report.json',

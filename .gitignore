@@ -5,6 +5,7 @@ __pycache__/
 logs/
 data/*.db-shm
 data/*.db-wal
+data/dashboard_api_cache_*.json
 .env
 __publish_repo/
 docs/polymarket-research.md

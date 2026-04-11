@@ -56,6 +56,31 @@ function dashboard_fetch_one(PDO $pdo, string $sql, array $params = []): ?array
     return is_array($row) ? $row : null;
 }
 
+function dashboard_decision_scan_limit(): int
+{
+    $configured = dashboard_int_env('DASHBOARD_DECISION_SCAN_LIMIT', 50000);
+    return max(min($configured, 250000), 1000);
+}
+
+function dashboard_decision_audit_window_columns(): string
+{
+    return 'id, occurred_at, venue, market_id, category, signal_family, strategy_profile, raw_source_signal, action, reason, decision_score, threshold, trade_size, confidence, mapping_stage, lazy_lookup_attempted, lazy_lookup_hit, alias_candidates_json, hot_window_promoted';
+}
+
+function dashboard_decision_audit_window_sql(string $alias = 'decision_audit'): string
+{
+    $safeAlias = preg_replace('/[^A-Za-z0-9_]/', '', $alias) ?: 'decision_audit';
+    $limit = dashboard_decision_scan_limit();
+    return '(SELECT ' . dashboard_decision_audit_window_columns() . ' FROM decision_audit ORDER BY id DESC LIMIT ' . $limit . ') AS ' . $safeAlias;
+}
+
+function dashboard_decision_audit_window_cte(string $name = 'recent_decisions'): string
+{
+    $safeName = preg_replace('/[^A-Za-z0-9_]/', '', $name) ?: 'recent_decisions';
+    $limit = dashboard_decision_scan_limit();
+    return $safeName . ' AS (SELECT ' . dashboard_decision_audit_window_columns() . ' FROM decision_audit ORDER BY id DESC LIMIT ' . $limit . ')';
+}
+
 function dashboard_load_report(string $pathEnvKey, string $fallbackPath, string $label, array &$warnings): ?array
 {
     $path = dashboard_path(dashboard_env($pathEnvKey, $fallbackPath) ?? $fallbackPath);
@@ -174,13 +199,15 @@ function dashboard_get_service_data(array &$warnings): array
 
 function dashboard_fetch_orderflow_mapping_stats(PDO $pdo, bool $recentWindow = false): array
 {
+    $windowCte = dashboard_decision_audit_window_cte('recent_decisions');
     if ($recentWindow) {
         return dashboard_fetch_one(
             $pdo,
             "
-            WITH anchor AS (
+            WITH {$windowCte},
+            anchor AS (
                 SELECT MAX(occurred_at) AS max_occurred_at
-                FROM decision_audit
+                FROM recent_decisions
                 WHERE signal_family IN ('activity_orderflow', 'whale')
             )
             SELECT
@@ -188,7 +215,7 @@ function dashboard_fetch_orderflow_mapping_stats(PDO $pdo, bool $recentWindow = 
                 COALESCE(SUM(CASE WHEN decision_audit.signal_family IN ('activity_orderflow', 'whale') AND decision_audit.reason LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS unmapped_orderflow,
                 COALESCE(SUM(CASE WHEN decision_audit.signal_family IN ('activity_orderflow', 'whale') AND decision_audit.mapping_stage = 'alias_cache' AND decision_audit.reason NOT LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS alias_cache_hits,
                 COALESCE(SUM(CASE WHEN decision_audit.signal_family IN ('activity_orderflow', 'whale') AND decision_audit.lazy_lookup_hit = 1 THEN 1 ELSE 0 END), 0) AS lazy_lookup_hits
-            FROM decision_audit
+            FROM recent_decisions AS decision_audit
             CROSS JOIN anchor
             WHERE anchor.max_occurred_at IS NOT NULL
               AND decision_audit.occurred_at >= datetime(anchor.max_occurred_at, '-60 minutes')
@@ -199,12 +226,13 @@ function dashboard_fetch_orderflow_mapping_stats(PDO $pdo, bool $recentWindow = 
     return dashboard_fetch_one(
         $pdo,
         "
+        WITH {$windowCte}
         SELECT
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_orderflow,
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND reason LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS unmapped_orderflow,
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND mapping_stage = 'alias_cache' AND reason NOT LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS alias_cache_hits,
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND lazy_lookup_hit = 1 THEN 1 ELSE 0 END), 0) AS lazy_lookup_hits
-        FROM decision_audit
+        FROM recent_decisions
         "
     ) ?? ['total_orderflow' => 0, 'unmapped_orderflow' => 0, 'alias_cache_hits' => 0, 'lazy_lookup_hits' => 0];
 }

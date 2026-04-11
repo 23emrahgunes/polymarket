@@ -101,7 +101,7 @@ function dashboard_build_unresolved_alias_summary(PDO $pdo): array
     $rows = dashboard_fetch_all(
         $pdo,
         "SELECT occurred_at, reason, mapping_stage, alias_candidates_json
-         FROM decision_audit
+         FROM " . dashboard_decision_audit_window_sql('decision_audit') . "
          WHERE reason LIKE 'market_not_mapped%'
          ORDER BY id DESC
          LIMIT 250"
@@ -168,36 +168,7 @@ function dashboard_build_hot_window_summary(PDO $pdo, array $runtimeSummary): ar
         'resolver_hit_rate' => 0.0,
     ];
 
-    $decisionStats = dashboard_fetch_one(
-        $pdo,
-        "
-        SELECT
-            COALESCE(SUM(CASE WHEN mapping_stage = 'hot_window' AND reason NOT LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS hot_window_hits,
-            COALESCE(SUM(CASE WHEN reason = 'market_not_mapped_active_window' THEN 1 ELSE 0 END), 0) AS active_window_misses,
-            COALESCE(SUM(CASE WHEN hot_window_promoted = 1 THEN 1 ELSE 0 END), 0) AS hot_window_promotions,
-            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_orderflow,
-            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND reason LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS unmapped_orderflow,
-            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND mapping_stage = 'alias_cache' AND reason NOT LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS alias_cache_hits,
-            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND lazy_lookup_hit = 1 THEN 1 ELSE 0 END), 0) AS lazy_lookup_hits
-        FROM decision_audit
-        "
-    ) ?: [];
-
-    $totalOrderflow = (int) ($decisionStats['total_orderflow'] ?? 0);
-    $mappedOrderflow = max($totalOrderflow - (int) ($decisionStats['unmapped_orderflow'] ?? 0), 0);
-    $resolverHits = (int) ($decisionStats['alias_cache_hits'] ?? 0) + (int) ($decisionStats['lazy_lookup_hits'] ?? 0);
-
     $summary = $defaults;
-    $summary['hot_window_hits'] = (int) ($decisionStats['hot_window_hits'] ?? 0);
-    $summary['hot_window_promotions'] = (int) ($decisionStats['hot_window_promotions'] ?? 0);
-    $summary['active_window_misses'] = (int) ($decisionStats['active_window_misses'] ?? 0);
-    $summary['active_window_miss_rate'] = $totalOrderflow > 0
-        ? round(((int) $summary['active_window_misses'] / $totalOrderflow) * 100.0, 1)
-        : 0.0;
-    $summary['resolver_hit_rate'] = $mappedOrderflow > 0
-        ? round(($resolverHits / $mappedOrderflow) * 100.0, 1)
-        : 0.0;
-
     foreach (['hot_window_markets', 'hot_window_expiries', 'hot_window_hits', 'hot_window_promotions', 'active_window_misses'] as $key) {
         if (array_key_exists($key, $runtimeSummary)) {
             $summary[$key] = (int) $runtimeSummary[$key];
@@ -209,6 +180,39 @@ function dashboard_build_hot_window_summary(PDO $pdo, array $runtimeSummary): ar
     if (array_key_exists('resolver_hit_rate', $runtimeSummary)) {
         $summary['resolver_hit_rate'] = (float) $runtimeSummary['resolver_hit_rate'];
     }
+    if (($runtimeSummary['live_metrics_available'] ?? false) === true) {
+        return $summary;
+    }
+
+    $decisionStats = dashboard_fetch_one(
+        $pdo,
+        "
+        WITH " . dashboard_decision_audit_window_cte('recent_decisions') . "
+        SELECT
+            COALESCE(SUM(CASE WHEN mapping_stage = 'hot_window' AND reason NOT LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS hot_window_hits,
+            COALESCE(SUM(CASE WHEN reason = 'market_not_mapped_active_window' THEN 1 ELSE 0 END), 0) AS active_window_misses,
+            COALESCE(SUM(CASE WHEN hot_window_promoted = 1 THEN 1 ELSE 0 END), 0) AS hot_window_promotions,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_orderflow,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND reason LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS unmapped_orderflow,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND mapping_stage = 'alias_cache' AND reason NOT LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS alias_cache_hits,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND lazy_lookup_hit = 1 THEN 1 ELSE 0 END), 0) AS lazy_lookup_hits
+        FROM recent_decisions
+        "
+    ) ?: [];
+
+    $totalOrderflow = (int) ($decisionStats['total_orderflow'] ?? 0);
+    $mappedOrderflow = max($totalOrderflow - (int) ($decisionStats['unmapped_orderflow'] ?? 0), 0);
+    $resolverHits = (int) ($decisionStats['alias_cache_hits'] ?? 0) + (int) ($decisionStats['lazy_lookup_hits'] ?? 0);
+
+    $summary['hot_window_hits'] = (int) ($decisionStats['hot_window_hits'] ?? 0);
+    $summary['hot_window_promotions'] = (int) ($decisionStats['hot_window_promotions'] ?? 0);
+    $summary['active_window_misses'] = (int) ($decisionStats['active_window_misses'] ?? 0);
+    $summary['active_window_miss_rate'] = $totalOrderflow > 0
+        ? round(((int) $summary['active_window_misses'] / $totalOrderflow) * 100.0, 1)
+        : 0.0;
+    $summary['resolver_hit_rate'] = $mappedOrderflow > 0
+        ? round(($resolverHits / $mappedOrderflow) * 100.0, 1)
+        : 0.0;
 
     return $summary;
 }
@@ -219,7 +223,7 @@ function dashboard_build_sampling_reject_breakdown(PDO $pdo): array
         $pdo,
         "
         SELECT reason
-        FROM decision_audit
+        FROM " . dashboard_decision_audit_window_sql('decision_audit') . "
         WHERE strategy_profile = 'sampling_relaxed' AND action = 'reject'
         ORDER BY id DESC
         LIMIT 250
@@ -312,6 +316,7 @@ function dashboard_build_routing_breakdown(PDO $pdo): array
     $rows = dashboard_fetch_all(
         $pdo,
         "
+        WITH " . dashboard_decision_audit_window_cte('recent_decisions') . "
         SELECT
             CASE
                 WHEN raw_source_signal = 'discovery' AND reason = 'route_whale_orderflow_only' THEN 'discovery-route-only'
@@ -320,7 +325,7 @@ function dashboard_build_routing_breakdown(PDO $pdo): array
                 ELSE 'other'
             END AS flow_classification,
             COUNT(*) AS count
-        FROM decision_audit
+        FROM recent_decisions
         GROUP BY flow_classification
         HAVING flow_classification != 'other'
         ORDER BY count DESC, flow_classification ASC
@@ -341,8 +346,9 @@ function dashboard_build_sampling_decision_summary(PDO $pdo): array
     $rows = dashboard_fetch_all(
         $pdo,
         "
+        WITH " . dashboard_decision_audit_window_cte('recent_decisions') . "
         SELECT action, COUNT(*) AS count
-        FROM decision_audit
+        FROM recent_decisions
         WHERE strategy_profile = 'sampling_relaxed'
           AND signal_family IN ('activity_orderflow', 'whale')
         GROUP BY action
@@ -392,8 +398,9 @@ function dashboard_build_mapping_miss_breakdown(PDO $pdo): array
     $rows = dashboard_fetch_all(
         $pdo,
         "
+        WITH " . dashboard_decision_audit_window_cte('recent_decisions') . "
         SELECT reason, COUNT(*) AS count
-        FROM decision_audit
+        FROM recent_decisions
         WHERE reason LIKE 'market_not_mapped%'
            OR reason = 'unsupported_side_filtered'
            OR reason = 'sell_side_not_supported'
@@ -416,6 +423,7 @@ function dashboard_build_source_quality_summary(PDO $pdo): array
     $row = dashboard_fetch_one(
         $pdo,
         "
+        WITH " . dashboard_decision_audit_window_cte('recent_decisions') . "
         SELECT
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_orderflow,
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND reason NOT LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS orderflow_after_mapping,
@@ -423,7 +431,7 @@ function dashboard_build_source_quality_summary(PDO $pdo): array
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND strategy_profile = 'sampling_relaxed' THEN 1 ELSE 0 END), 0) AS sampling_orderflow,
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND strategy_profile != 'sampling_relaxed' THEN 1 ELSE 0 END), 0) AS baseline_orderflow,
             COALESCE(SUM(CASE WHEN reason IN ('unsupported_side_filtered', 'sell_side_not_supported') THEN 1 ELSE 0 END), 0) AS unsupported_side_filtered
-        FROM decision_audit
+        FROM recent_decisions
         "
     ) ?? [];
 
@@ -442,8 +450,9 @@ function dashboard_build_unsupported_side_summary(PDO $pdo): array
     $rows = dashboard_fetch_all(
         $pdo,
         "
+        WITH " . dashboard_decision_audit_window_cte('recent_decisions') . "
         SELECT reason, COUNT(*) AS count
-        FROM decision_audit
+        FROM recent_decisions
         WHERE reason IN ('unsupported_side_filtered', 'sell_side_not_supported')
         GROUP BY reason
         ORDER BY count DESC, reason ASC
@@ -552,6 +561,7 @@ function dashboard_build_whale_copy_summary(PDO $pdo): array
     $row = dashboard_fetch_one(
         $pdo,
         "
+        WITH " . dashboard_decision_audit_window_cte('recent_decisions') . "
         SELECT
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_whale_events,
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
@@ -575,7 +585,7 @@ function dashboard_build_whale_copy_summary(PDO $pdo): array
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
                                   AND action = 'decision'
                              THEN 1 ELSE 0 END), 0) AS gated_decisions
-        FROM decision_audit
+        FROM recent_decisions
         "
     ) ?: [];
 
@@ -604,7 +614,7 @@ function dashboard_build_gated_reject_breakdown(PDO $pdo): array
         $pdo,
         "
         SELECT reason
-        FROM decision_audit
+        FROM " . dashboard_decision_audit_window_sql('decision_audit') . "
         WHERE signal_family IN ('activity_orderflow', 'whale')
           AND action = 'reject'
           AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
