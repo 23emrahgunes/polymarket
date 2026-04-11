@@ -37,6 +37,42 @@ def _print_row(row) -> None:
     print(row)
 
 
+def _summarize_whale_copy_recovery(rows) -> dict[str, int]:
+    summary = {
+        "relaxed_gate_attempts": 0,
+        "relaxed_gate_decisions": 0,
+        "token_recovery_attempts": 0,
+        "token_recovery_hits": 0,
+        "token_recovery_failed": 0,
+        "missing_token_rejects": 0,
+    }
+    for row in rows or []:
+        action = row["action"] if isinstance(row, sqlite3.Row) else row[0]
+        reason = str((row["reason"] if isinstance(row, sqlite3.Row) else row[1]) or "")
+        raw_inputs = (row["inputs_json"] if isinstance(row, sqlite3.Row) else row[2]) or "{}"
+        try:
+            inputs = json.loads(raw_inputs)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        copy_policy = str(inputs.get("copy_policy") or "").lower()
+        is_gated_copy = copy_policy == "gated_whale_copy" or bool(inputs.get("whale_copy_relaxed_gate"))
+        if not is_gated_copy and "token_recovery" not in reason:
+            continue
+        if inputs.get("whale_copy_relaxed_gate"):
+            summary["relaxed_gate_attempts"] += 1
+            if action == "decision":
+                summary["relaxed_gate_decisions"] += 1
+        if inputs.get("token_recovery_attempted"):
+            summary["token_recovery_attempts"] += 1
+        if inputs.get("token_recovery_hit"):
+            summary["token_recovery_hits"] += 1
+        if inputs.get("token_recovery_failed") or "token_recovery_failed" in reason:
+            summary["token_recovery_failed"] += 1
+        if "missing_polymarket_token_price" in reason:
+            summary["missing_token_rejects"] += 1
+    return summary
+
+
 def _read_latest_status_metrics() -> dict:
     try:
         result = subprocess.run(
@@ -395,6 +431,19 @@ def main() -> int:
         whale_copy_summary = (0, 0, 0, 0, 0)
         gated_reject_breakdown = []
     try:
+        whale_copy_recovery_rows = cursor.execute(
+            """
+            SELECT action, reason, inputs_json
+            FROM decision_audit
+            WHERE signal_family IN ('activity_orderflow', 'whale')
+              AND inputs_json IS NOT NULL
+            ORDER BY id DESC
+            LIMIT 500
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        whale_copy_recovery_rows = []
+    try:
         alias_integrity = cursor.execute(
             """
             SELECT
@@ -508,6 +557,9 @@ def main() -> int:
     for label, value in zip(whale_copy_labels, whale_copy_summary or ()):
         print((label, value))
     print(("gated_executes", sampling_execute_count[0] if sampling_execute_count else 0))
+    print("WHALE_COPY_RECOVERY_SUMMARY")
+    for label, value in _summarize_whale_copy_recovery(whale_copy_recovery_rows).items():
+        print((label, value))
     print("GATED_REJECT_BREAKDOWN")
     gated_counts: dict[str, int] = {}
     for row in gated_reject_breakdown:

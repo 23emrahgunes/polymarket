@@ -68,6 +68,7 @@ class DecisionInputs:
     hot_window_hit: bool = False
     hot_window_promoted: bool = False
     strategy_profile: str = STRATEGY_PROFILE_BASELINE
+    copy_policy: Optional[str] = None
 
 
 @dataclass
@@ -116,6 +117,12 @@ SAMPLING_RELAXED_OVERRIDES: Dict[str, Dict[str, float | int]] = {
 
 SAMPLING_MAX_SPREAD_MULTIPLIER = 1.20
 SAMPLING_SLIPPAGE_MULTIPLIER = 1.20
+WHALE_COPY_MIN_SCORE_DELTA = 0.08
+WHALE_COPY_MIN_SCORE_FLOOR = 0.50
+WHALE_COPY_MAX_SPREAD_MULTIPLIER = 1.50
+WHALE_COPY_SPREAD_PENALTY_MULTIPLIER = 1.35
+WHALE_COPY_MIN_VOLUME_MULTIPLIER = 0.75
+COPY_POLICY_GATED_WHALE_COPY = "gated_whale_copy"
 
 DISCOVERY_TRADE_CATEGORIES = {"CRYPTO"}
 
@@ -214,15 +221,33 @@ class DecisionEngine:
         reasons: List[str] = []
         effective_max_spread_pct = profile.max_spread_pct
         effective_spread_penalty_threshold = 0.75 * profile.max_spread_pct
+        effective_min_volume_24h = profile.min_volume_24h
+        effective_min_score = profile.min_score
+        copy_policy = (inputs.copy_policy or "").strip().lower()
+        whale_copy_relaxed_gate = (
+            strategy_profile == STRATEGY_PROFILE_SAMPLING_RELAXED
+            and copy_policy == COPY_POLICY_GATED_WHALE_COPY
+        )
         if strategy_profile == STRATEGY_PROFILE_SAMPLING_RELAXED:
             effective_max_spread_pct *= SAMPLING_MAX_SPREAD_MULTIPLIER
             effective_spread_penalty_threshold *= SAMPLING_SLIPPAGE_MULTIPLIER
+        if whale_copy_relaxed_gate:
+            effective_max_spread_pct = max(
+                effective_max_spread_pct,
+                profile.max_spread_pct * WHALE_COPY_MAX_SPREAD_MULTIPLIER,
+            )
+            effective_spread_penalty_threshold = max(
+                effective_spread_penalty_threshold,
+                0.75 * profile.max_spread_pct * WHALE_COPY_SPREAD_PENALTY_MULTIPLIER,
+            )
+            effective_min_volume_24h *= WHALE_COPY_MIN_VOLUME_MULTIPLIER
+            effective_min_score = max(WHALE_COPY_MIN_SCORE_FLOOR, profile.min_score - WHALE_COPY_MIN_SCORE_DELTA)
 
         if not inputs.market_id:
             reasons.append("market_not_mapped")
         if inputs.mid_price is None or inputs.spread_pct is None:
             reasons.append("invalid_orderbook_data")
-        if inputs.volume_24h < profile.min_volume_24h:
+        if inputs.volume_24h < effective_min_volume_24h:
             reasons.append("liquidity_guard_rejection")
         if inputs.spread_pct is not None and inputs.spread_pct > effective_max_spread_pct:
             reasons.append("slippage_guard_rejection")
@@ -241,7 +266,7 @@ class DecisionEngine:
 
         notional_component = clamp(event_amount / profile.min_whale_notional) if profile.min_whale_notional else 0.0
         cluster_component = clamp(wallets_count / profile.min_cluster_wallets) if profile.min_cluster_wallets else 0.0
-        liquidity_component = clamp(inputs.volume_24h / profile.min_volume_24h) if profile.min_volume_24h else 0.0
+        liquidity_component = clamp(inputs.volume_24h / effective_min_volume_24h) if effective_min_volume_24h else 0.0
         trust_component = clamp(inputs.whale_trust)
 
         drift_penalty = 0.0
@@ -260,7 +285,7 @@ class DecisionEngine:
             - drift_penalty
             - spread_penalty
         )
-        if score < profile.min_score:
+        if score < effective_min_score:
             reasons.append("score_below_threshold")
 
         return DecisionResult(
@@ -268,7 +293,7 @@ class DecisionEngine:
             category=inputs.category,
             market_id=inputs.market_id,
             score=round(score, 4),
-            threshold=profile.min_score,
+            threshold=effective_min_score,
             should_trade=not reasons,
             reasons=self._dedupe(reasons),
             trade_size=profile.paper_trade_size,
@@ -282,6 +307,8 @@ class DecisionEngine:
                 spread_penalty=round(spread_penalty, 4),
                 effective_max_spread_pct=round(effective_max_spread_pct, 4),
                 effective_spread_penalty_threshold=round(effective_spread_penalty_threshold, 4),
+                effective_min_volume_24h=round(effective_min_volume_24h, 4),
+                whale_copy_relaxed_gate=whale_copy_relaxed_gate,
             ),
             venue=inputs.venue,
             direction=inputs.direction,
@@ -340,6 +367,7 @@ class DecisionEngine:
             "lazy_lookup_attempted": inputs.lazy_lookup_attempted,
             "lazy_lookup_hit": inputs.lazy_lookup_hit,
             "strategy_profile": normalize_strategy_profile(inputs.strategy_profile),
+            "copy_policy": inputs.copy_policy,
         }
         for key, value in extras.items():
             payload[key] = value

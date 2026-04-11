@@ -653,6 +653,68 @@ function dashboard_build_gated_reject_breakdown(PDO $pdo): array
     return $items;
 }
 
+function dashboard_build_whale_copy_recovery_summary(PDO $pdo): array
+{
+    $summary = [
+        'relaxed_gate_attempts' => 0,
+        'relaxed_gate_decisions' => 0,
+        'token_recovery_attempts' => 0,
+        'token_recovery_hits' => 0,
+        'token_recovery_failed' => 0,
+        'missing_token_rejects' => 0,
+    ];
+    if (!dashboard_table_has_column($pdo, 'decision_audit', 'inputs_json')) {
+        return $summary;
+    }
+
+    $rows = dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT action, reason, inputs_json
+        FROM " . dashboard_decision_audit_window_sql('decision_audit') . "
+        WHERE signal_family IN ('activity_orderflow', 'whale')
+          AND inputs_json IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 500
+        "
+    );
+
+    foreach ($rows as $row) {
+        $inputs = json_decode((string) ($row['inputs_json'] ?? ''), true);
+        if (!is_array($inputs)) {
+            continue;
+        }
+
+        $reason = (string) ($row['reason'] ?? '');
+        $copyPolicy = strtolower((string) ($inputs['copy_policy'] ?? ''));
+        $isGatedCopy = $copyPolicy === 'gated_whale_copy' || !empty($inputs['whale_copy_relaxed_gate']);
+        if (!$isGatedCopy && !str_contains($reason, 'token_recovery')) {
+            continue;
+        }
+
+        if (!empty($inputs['whale_copy_relaxed_gate'])) {
+            $summary['relaxed_gate_attempts']++;
+            if (($row['action'] ?? '') === 'decision') {
+                $summary['relaxed_gate_decisions']++;
+            }
+        }
+        if (!empty($inputs['token_recovery_attempted'])) {
+            $summary['token_recovery_attempts']++;
+        }
+        if (!empty($inputs['token_recovery_hit'])) {
+            $summary['token_recovery_hits']++;
+        }
+        if (!empty($inputs['token_recovery_failed']) || str_contains($reason, 'token_recovery_failed')) {
+            $summary['token_recovery_failed']++;
+        }
+        if (str_contains($reason, 'missing_polymarket_token_price')) {
+            $summary['missing_token_rejects']++;
+        }
+    }
+
+    return $summary;
+}
+
 function dashboard_augment_recent_decisions(PDO $pdo, array $payload): array
 {
     if (!dashboard_table_has_column($pdo, 'decision_audit', 'hot_window_promoted')) {
@@ -695,6 +757,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['trusted_whale_summary'] = dashboard_build_trusted_whale_summary($pdo);
         $payload['whale_copy_summary'] = dashboard_build_whale_copy_summary($pdo);
         $payload['gated_reject_breakdown'] = dashboard_build_gated_reject_breakdown($pdo);
+        $payload['whale_copy_recovery_summary'] = dashboard_build_whale_copy_recovery_summary($pdo);
         $payload = dashboard_augment_recent_decisions($pdo, $payload);
     } else {
         $payload['top_unresolved_aliases'] = [];
@@ -710,6 +773,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['trusted_whale_summary'] = [];
         $payload['whale_copy_summary'] = [];
         $payload['gated_reject_breakdown'] = [];
+        $payload['whale_copy_recovery_summary'] = [];
         $payload['runtime_summary'] = array_merge(
             $payload['runtime_summary'] ?? [],
             [

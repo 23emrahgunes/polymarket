@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-from src.decision_engine import DecisionEngine, DecisionInputs
+from src.decision_engine import COPY_POLICY_GATED_WHALE_COPY, DecisionEngine, DecisionInputs
 from src.evaluation_utils import STRATEGY_PROFILE_SAMPLING_RELAXED
 
 
@@ -112,3 +112,75 @@ def test_sampling_relaxed_applies_spread_multiplier_without_changing_baseline():
     assert sampling.should_trade is True
     assert sampling.strategy_profile == STRATEGY_PROFILE_SAMPLING_RELAXED
     assert sampling.inputs["effective_max_spread_pct"] == pytest.approx(0.048, rel=1e-4)
+
+
+def test_gated_whale_copy_relaxes_score_only_for_sampling_profile():
+    engine = DecisionEngine()
+    baseline_inputs = DecisionInputs(
+        source="activity",
+        category="POLITICS",
+        market_id="market-politics-copy",
+        token_id="token-politics-copy",
+        event_type="WHALE_EVENT",
+        question="Will candidate Z win the election?",
+        volume_24h=16_000.0,
+        mid_price=0.59,
+        spread_pct=0.04,
+        event_amount=300.0,
+        wallets_count=2,
+        whale_trust=0.5,
+        price_drift_pct=0.01,
+    )
+
+    baseline = engine.score_orderflow(baseline_inputs)
+    sampling = engine.score_orderflow(
+        DecisionInputs(**{**baseline_inputs.__dict__, "strategy_profile": STRATEGY_PROFILE_SAMPLING_RELAXED})
+    )
+    gated_copy = engine.score_orderflow(
+        DecisionInputs(
+            **{
+                **baseline_inputs.__dict__,
+                "strategy_profile": STRATEGY_PROFILE_SAMPLING_RELAXED,
+                "copy_policy": COPY_POLICY_GATED_WHALE_COPY,
+            }
+        )
+    )
+
+    assert baseline.should_trade is False
+    assert sampling.should_trade is False
+    assert "score_below_threshold" in sampling.reasons
+    assert gated_copy.should_trade is True
+    assert gated_copy.threshold == pytest.approx(0.5)
+    assert gated_copy.inputs["whale_copy_relaxed_gate"] is True
+
+
+def test_gated_whale_copy_spread_and_liquidity_relaxation_does_not_change_sampling():
+    engine = DecisionEngine()
+    inputs = DecisionInputs(
+        source="activity",
+        category="SPORTS",
+        market_id="market-sports-copy",
+        token_id="token-sports-copy",
+        event_type="WHALE_EVENT",
+        question="Will Team Copy win?",
+        volume_24h=12_000.0,
+        mid_price=0.61,
+        spread_pct=0.055,
+        event_amount=500.0,
+        wallets_count=2,
+        whale_trust=0.7,
+        price_drift_pct=0.01,
+        strategy_profile=STRATEGY_PROFILE_SAMPLING_RELAXED,
+    )
+
+    sampling = engine.score_orderflow(inputs)
+    gated_copy = engine.score_orderflow(
+        DecisionInputs(**{**inputs.__dict__, "copy_policy": COPY_POLICY_GATED_WHALE_COPY})
+    )
+
+    assert sampling.should_trade is False
+    assert "liquidity_guard_rejection" in sampling.reasons
+    assert "slippage_guard_rejection" in sampling.reasons
+    assert gated_copy.should_trade is True
+    assert gated_copy.inputs["effective_max_spread_pct"] == pytest.approx(0.06, rel=1e-4)
+    assert gated_copy.inputs["effective_min_volume_24h"] == pytest.approx(11250.0)

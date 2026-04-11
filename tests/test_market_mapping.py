@@ -23,6 +23,34 @@ class _FakeScanner:
         }
 
 
+class _TokenFallbackScanner:
+    def __init__(self, valid_token: str | None):
+        self.valid_token = valid_token
+        self.calls = []
+
+    async def get_orderbook_snapshot(self, token_id):
+        self.calls.append(token_id)
+        if token_id == self.valid_token:
+            return {
+                "token_id": token_id,
+                "best_bid": 0.57,
+                "best_ask": 0.58,
+                "mid_price": 0.575,
+                "spread_pct": 0.017,
+                "is_valid": True,
+                "reason": "ok",
+            }
+        return {
+            "token_id": token_id,
+            "best_bid": None,
+            "best_ask": None,
+            "mid_price": None,
+            "spread_pct": None,
+            "is_valid": False,
+            "reason": "missing_polymarket_token_price",
+        }
+
+
 class _FakeTrader:
     def __init__(self):
         self.calls = []
@@ -106,6 +134,106 @@ async def test_copy_trader_uses_alias_cache_to_execute_trade(tmp_path):
     assert trader.calls[0]["args"][0] == "0xmarket1"
     assert trader.calls[0]["args"][1] == "YES"
     assert cached_alias is not None
+
+
+@pytest.mark.asyncio
+async def test_copy_trader_recovers_orderbook_token_from_same_market_aliases(tmp_path):
+    db_path = str(tmp_path / "token_recovery_hit.db")
+    db = Database(db_path)
+    await db.connect()
+    bad_token = "0xaaaaaaaaaaaaaaaa"
+    good_token = "0xbbbbbbbbbbbbbbbb"
+    await db.upsert_market_aliases(
+        market_id="0xcccccccccccccccc",
+        aliases=["0xcccccccccccccccc", bad_token, good_token],
+        question="Will Team Token win the championship?",
+        category="SPORTS",
+        volume_24h=75_000.0,
+        active=True,
+        source="explorer",
+    )
+
+    trader = _FakeTrader()
+    scanner = _TokenFallbackScanner(valid_token=good_token)
+    copy_trader = CopyTrader(trader, scanner, db, DecisionEngine())
+    copy_trader.update_sampling_state(
+        enabled=True,
+        target_reached=False,
+        closed_trades=0,
+        target_closed_trades=20,
+    )
+
+    success = await copy_trader.evaluate_activity_event(
+        {
+            "type": "WHALE_EVENT",
+            "token_id": bad_token,
+            "side": "BUY",
+            "amount": 2500.0,
+            "wallet": "0xWHALE",
+            "source": "activity",
+            "alias_candidates": ["0xcccccccccccccccc", bad_token, good_token],
+        }
+    )
+    await db.close()
+
+    assert success is True
+    assert scanner.calls[0] == bad_token
+    assert good_token in scanner.calls
+    assert len(trader.calls) == 1
+    assert trader.calls[0]["kwargs"]["strategy_profile"] == STRATEGY_PROFILE_SAMPLING_RELAXED
+    assert trader.calls[0]["args"][3] == 0.575
+
+
+@pytest.mark.asyncio
+async def test_copy_trader_marks_token_recovery_failed_when_alias_tokens_miss(tmp_path):
+    db_path = str(tmp_path / "token_recovery_failed.db")
+    db = Database(db_path)
+    await db.connect()
+    bad_token = "0xaaaaaaaaaaaaaaaa"
+    alternate_token = "0xbbbbbbbbbbbbbbbb"
+    await db.upsert_market_aliases(
+        market_id="0xcccccccccccccccc",
+        aliases=["0xcccccccccccccccc", bad_token, alternate_token],
+        question="Will Team Token fail?",
+        category="SPORTS",
+        volume_24h=75_000.0,
+        active=True,
+        source="explorer",
+    )
+
+    audits = []
+    trader = _FakeTrader()
+    scanner = _TokenFallbackScanner(valid_token=None)
+    copy_trader = CopyTrader(trader, scanner, db, DecisionEngine(audit_sink=audits.append))
+    copy_trader.update_sampling_state(
+        enabled=True,
+        target_reached=False,
+        closed_trades=0,
+        target_closed_trades=20,
+    )
+
+    success = await copy_trader.evaluate_activity_event(
+        {
+            "type": "WHALE_EVENT",
+            "token_id": bad_token,
+            "side": "BUY",
+            "amount": 2500.0,
+            "wallet": "0xWHALE",
+            "source": "activity",
+            "alias_candidates": ["0xcccccccccccccccc", bad_token, alternate_token],
+        }
+    )
+    await db.close()
+
+    assert success is False
+    assert len(trader.calls) == 0
+    assert scanner.calls[0] == bad_token
+    assert alternate_token in scanner.calls
+    assert "missing_polymarket_token_price" in audits[-1].reasons
+    assert "token_recovery_failed" in audits[-1].reasons
+    assert audits[-1].inputs["token_recovery_attempted"] is True
+    assert audits[-1].inputs["token_recovery_failed"] is True
+    assert audits[-1].inputs["copy_policy"] == "gated_whale_copy"
 
 
 @pytest.mark.asyncio

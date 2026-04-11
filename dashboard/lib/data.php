@@ -64,7 +64,7 @@ function dashboard_decision_scan_limit(): int
 
 function dashboard_decision_audit_window_columns(): string
 {
-    return 'id, occurred_at, venue, market_id, category, signal_family, strategy_profile, raw_source_signal, action, reason, decision_score, threshold, trade_size, confidence, mapping_stage, lazy_lookup_attempted, lazy_lookup_hit, alias_candidates_json, hot_window_promoted';
+    return 'id, occurred_at, venue, market_id, category, signal_family, strategy_profile, raw_source_signal, action, reason, decision_score, threshold, trade_size, confidence, inputs_json, mapping_stage, lazy_lookup_attempted, lazy_lookup_hit, alias_candidates_json, hot_window_promoted';
 }
 
 function dashboard_decision_audit_window_sql(string $alias = 'decision_audit'): string

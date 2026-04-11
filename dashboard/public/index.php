@@ -234,6 +234,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #trusted-whale-summary,
         #top-whales,
         #whale-copy-summary,
+        #whale-copy-recovery-summary,
         #gated-reject-breakdown,
         #performance-snapshot,
         #sampling-reject-breakdown {
@@ -263,6 +264,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .subcard #trusted-whale-summary,
         .subcard #top-whales,
         .subcard #whale-copy-summary,
+        .subcard #whale-copy-recovery-summary,
         .subcard #gated-reject-breakdown,
         .subcard #performance-snapshot,
         .subcard #sampling-reject-breakdown {
@@ -307,7 +309,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #market-alias-counts, #whale-wallet-counts, #unsupported-side-summary { max-height: 180px; overflow: auto; }
         #top-market-aliases, #top-whales, #trusted-whale-summary { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
-        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary { max-height: 420px; overflow: auto; }
+        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary { max-height: 420px; overflow: auto; }
         #sampling-reject-breakdown, #gated-reject-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
         #recent-decisions table { min-width: 1040px; table-layout: auto; }
@@ -437,6 +439,8 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                 <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Strateji ve Sampling</h3><span class="badge warn">Özet</span></div>
                     <div class="metric-list" id="whale-copy-summary"></div>
+                    <div class="subsection-title">Whale-copy recovery özeti</div>
+                    <div class="metric-list" id="whale-copy-recovery-summary"></div>
                     <div class="metric-list" id="performance-snapshot"></div>
                 </div>
                 <div class="subcard">
@@ -564,6 +568,8 @@ function translateReason(value) {
         score_below_threshold: 'skor eşik altında',
         liquidity_guard_rejection: 'likidite koruması reddetti',
         slippage_guard_rejection: 'slippage koruması reddetti',
+        missing_polymarket_token_price: 'Polymarket token fiyatı bulunamadı',
+        token_recovery_failed: 'token recovery başarısız',
         cluster_threshold_not_reached: 'cluster eşiği tutmadı',
         sampling_target_reached: 'sampling hedefi dolduğu için durduruldu',
         none: 'yok'
@@ -938,6 +944,16 @@ function updatePanels(payload) {
         { label: 'Gated red', value: formatNumber(whaleCopy.gated_rejects, 0) },
         { label: 'Karar', value: formatNumber(whaleCopy.gated_decisions, 0) },
         { label: 'Execute', value: formatNumber(whaleCopy.gated_executes, 0) }
+    ]);
+
+    const whaleCopyRecovery = payload.whale_copy_recovery_summary || {};
+    renderMetrics('whale-copy-recovery-summary', [
+        { label: 'Relaxed gate denemesi', value: formatNumber(whaleCopyRecovery.relaxed_gate_attempts, 0) },
+        { label: 'Relaxed gate karar', value: formatNumber(whaleCopyRecovery.relaxed_gate_decisions, 0) },
+        { label: 'Token recovery denemesi', value: formatNumber(whaleCopyRecovery.token_recovery_attempts, 0) },
+        { label: 'Token recovery hit', value: formatNumber(whaleCopyRecovery.token_recovery_hits, 0) },
+        { label: 'Token recovery failed', value: formatNumber(whaleCopyRecovery.token_recovery_failed, 0) },
+        { label: 'Eksik token fiyatı red', value: formatNumber(whaleCopyRecovery.missing_token_rejects, 0) }
     ]);
 
     const performance = payload.performance_summary || {};

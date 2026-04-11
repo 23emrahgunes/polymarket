@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Awaitable, Callable, Dict, Optional
 
-from src.decision_engine import DecisionEngine, DecisionInputs, classify_market_category
+from src.decision_engine import COPY_POLICY_GATED_WHALE_COPY, DecisionEngine, DecisionInputs, classify_market_category
 from src.evaluation_utils import (
     STRATEGY_PROFILE_BASELINE,
     STRATEGY_PROFILE_SAMPLING_RELAXED,
@@ -13,6 +13,7 @@ from src.market_mapping import (
     collect_alias_candidates,
     event_is_meaningful_for_lazy_lookup,
     normalize_market_alias,
+    TOKENISH_ALIAS_PATTERN,
 )
 
 
@@ -190,27 +191,6 @@ class CopyTrader:
             self.decision_engine.log_result(decision, logger)
             return False
 
-        snapshot = await self.scanner.get_orderbook_snapshot(resolved_token_id)
-        if not snapshot["is_valid"]:
-            decision = self.decision_engine.reject(
-                DecisionInputs(
-                    **{
-                    **base_inputs.__dict__,
-                        "mid_price": snapshot.get("mid_price"),
-                        "spread_pct": snapshot.get("spread_pct"),
-                        "venue": "polymarket",
-                    }
-                ),
-                snapshot.get("reason", "invalid_orderbook_data"),
-            )
-            self.decision_engine.log_result(decision, logger)
-            return False
-
-        reference_price = event.get("price") or event.get("avg_price") or snapshot["mid_price"]
-        price_drift_pct = 0.0
-        if reference_price:
-            price_drift_pct = abs(snapshot["mid_price"] - reference_price) / reference_price
-
         whale_trust = 0.5
         if wallet:
             stats = await self.db.get_whale_stats(wallet)
@@ -226,12 +206,44 @@ class CopyTrader:
                 wallet=wallet,
                 whale_trust=whale_trust,
             )
+        copy_policy = COPY_POLICY_GATED_WHALE_COPY if whale_copy_summary is not None else None
+
+        snapshot, orderbook_token_id, token_recovery_meta = await self._get_orderbook_snapshot_with_recovery(
+            context=context,
+            event=event,
+            primary_token_id=resolved_token_id,
+        )
+        if not snapshot["is_valid"]:
+            reject_reasons = [snapshot.get("reason", "invalid_orderbook_data")]
+            if token_recovery_meta.get("token_recovery_failed"):
+                reject_reasons.append("token_recovery_failed")
+            decision = self.decision_engine.reject(
+                DecisionInputs(
+                    **{
+                    **base_inputs.__dict__,
+                        "token_id": orderbook_token_id or resolved_token_id,
+                        "mid_price": snapshot.get("mid_price"),
+                        "spread_pct": snapshot.get("spread_pct"),
+                        "venue": "polymarket",
+                        "copy_policy": copy_policy,
+                    }
+                ),
+                *self._dedupe_reasons(reject_reasons),
+            )
+            decision.inputs.update(token_recovery_meta)
+            self.decision_engine.log_result(decision, logger)
+            return False
+
+        reference_price = event.get("price") or event.get("avg_price") or snapshot["mid_price"]
+        price_drift_pct = 0.0
+        if reference_price:
+            price_drift_pct = abs(snapshot["mid_price"] - reference_price) / reference_price
 
         scored_inputs = DecisionInputs(
             source=source,
             category=category,
             market_id=context["market_id"],
-            token_id=resolved_token_id,
+            token_id=orderbook_token_id or resolved_token_id,
             event_type=event.get("type"),
             question=question,
             volume_24h=float(context.get("volume_24h", 0.0)),
@@ -259,22 +271,15 @@ class CopyTrader:
                 source=source,
                 wallet=wallet,
                 whale_trust=whale_trust,
-            )
+        )
         evaluation_inputs = scored_inputs
         if whale_copy_summary is not None and whale_copy_summary.get("ready_for_gate"):
-            evaluation_inputs = self._build_whale_copy_inputs(scored_inputs, whale_copy_summary)
-        decision = self.decision_engine.score_orderflow(evaluation_inputs)
-        if whale_copy_summary is not None:
-            decision.inputs.update(
-                {
-                    "copy_policy": "gated_whale_copy",
-                    "gated_whale_event_count": whale_copy_summary["event_count"],
-                    "gated_total_notional": round(whale_copy_summary["total_amount"], 4),
-                    "gated_unique_wallets": whale_copy_summary["unique_wallets"],
-                    "gated_max_trust": round(whale_copy_summary["max_trust"], 4),
-                    "gated_source_count": whale_copy_summary["source_count"],
-                }
+            evaluation_inputs = self._build_whale_copy_inputs(
+                scored_inputs,
+                whale_copy_summary,
+                sampling_enabled=self.sampling_enabled,
             )
+        decision = self.decision_engine.score_orderflow(evaluation_inputs)
 
         if not decision.should_trade and sampling_applicable:
             if self.sampling_enabled:
@@ -301,6 +306,18 @@ class CopyTrader:
                     DecisionInputs(**{**scored_inputs.__dict__, "strategy_profile": STRATEGY_PROFILE_SAMPLING_RELAXED}),
                     *self._dedupe_reasons([*decision.reasons, "sampling_target_reached"]),
                 )
+        if whale_copy_summary is not None:
+            decision.inputs.update(
+                {
+                    "copy_policy": COPY_POLICY_GATED_WHALE_COPY,
+                    "gated_whale_event_count": whale_copy_summary["event_count"],
+                    "gated_total_notional": round(whale_copy_summary["total_amount"], 4),
+                    "gated_unique_wallets": whale_copy_summary["unique_wallets"],
+                    "gated_max_trust": round(whale_copy_summary["max_trust"], 4),
+                    "gated_source_count": whale_copy_summary["source_count"],
+                }
+            )
+        decision.inputs.update(token_recovery_meta)
         self.decision_engine.log_result(decision, logger)
 
         if not decision.should_trade:
@@ -493,7 +510,15 @@ class CopyTrader:
             return
         await self.db.upsert_market_aliases(
             market_id=context["market_id"],
-            aliases=collect_alias_candidates(context.get("market_id"), context.get("token_id"), extra=alias_candidates),
+            aliases=collect_alias_candidates(
+                context.get("market_id"),
+                context.get("token_id"),
+                context.get("token_ids", []),
+                context.get("asset"),
+                context.get("conditionId"),
+                context.get("slug"),
+                extra=[*alias_candidates, *(context.get("alias_candidates", []) or [])],
+            ),
             question=context.get("question"),
             category=context.get("category"),
             volume_24h=float(context.get("volume_24h", 0.0) or 0.0),
@@ -680,13 +705,20 @@ class CopyTrader:
         }
 
     @staticmethod
-    def _build_whale_copy_inputs(inputs: DecisionInputs, summary: Dict) -> DecisionInputs:
+    def _build_whale_copy_inputs(inputs: DecisionInputs, summary: Dict, *, sampling_enabled: bool = False) -> DecisionInputs:
+        overrides = {}
+        if sampling_enabled:
+            overrides = {
+                "strategy_profile": STRATEGY_PROFILE_SAMPLING_RELAXED,
+                "copy_policy": COPY_POLICY_GATED_WHALE_COPY,
+            }
         return DecisionInputs(
             **{
                 **inputs.__dict__,
                 "event_amount": max(float(inputs.event_amount or 0.0), float(summary["total_amount"])),
                 "wallets_count": max(int(inputs.wallets_count or 1), int(summary["unique_wallets"]), int(summary["max_wallets_count"])),
                 "whale_trust": max(float(inputs.whale_trust), float(summary["max_trust"])),
+                **overrides,
             }
         )
 
@@ -703,6 +735,89 @@ class CopyTrader:
                 "strategy_profile": STRATEGY_PROFILE_SAMPLING_RELAXED,
             }
         )
+
+    async def _get_orderbook_snapshot_with_recovery(
+        self,
+        *,
+        context: Dict,
+        event: Dict,
+        primary_token_id: Optional[str],
+    ) -> tuple[Dict, Optional[str], Dict]:
+        candidates = self._build_orderbook_token_candidates(
+            context=context,
+            event=event,
+            primary_token_id=primary_token_id,
+        )
+        metadata = {
+            "token_recovery_attempted": False,
+            "token_recovery_hit": False,
+            "token_recovery_failed": False,
+            "orderbook_token_id": candidates[0] if candidates else normalize_market_alias(primary_token_id),
+        }
+        if not candidates:
+            return self._invalid_orderbook_snapshot(primary_token_id, "missing_polymarket_token_price"), None, metadata
+
+        primary_token = candidates[0]
+        primary_snapshot = await self.scanner.get_orderbook_snapshot(primary_token)
+        metadata["orderbook_token_id"] = primary_snapshot.get("token_id") or primary_token
+        if primary_snapshot["is_valid"]:
+            return primary_snapshot, primary_token, metadata
+
+        if primary_snapshot.get("reason") != "missing_polymarket_token_price" or len(candidates) == 1:
+            return primary_snapshot, primary_token, metadata
+
+        metadata["token_recovery_attempted"] = True
+        metadata["token_recovery_candidates"] = candidates[1:]
+        for candidate in candidates[1:]:
+            snapshot = await self.scanner.get_orderbook_snapshot(candidate)
+            if snapshot["is_valid"]:
+                metadata["token_recovery_hit"] = True
+                metadata["orderbook_token_id"] = snapshot.get("token_id") or candidate
+                return snapshot, candidate, metadata
+
+        metadata["token_recovery_failed"] = True
+        return primary_snapshot, primary_token, metadata
+
+    @staticmethod
+    def _build_orderbook_token_candidates(
+        *,
+        context: Dict,
+        event: Dict,
+        primary_token_id: Optional[str],
+    ) -> list[str]:
+        market_id = normalize_market_alias(context.get("market_id"))
+        candidates: list[str] = []
+
+        def _add(value, *, require_tokenish: bool = False) -> None:
+            for alias in collect_alias_candidates(value):
+                if not alias or alias == market_id:
+                    continue
+                if require_tokenish and not TOKENISH_ALIAS_PATTERN.fullmatch(alias):
+                    continue
+                if alias not in candidates:
+                    candidates.append(alias)
+
+        # Prefer the event token/asset first: it is closest to the whale action we are mirroring.
+        _add(event.get("token_id"))
+        _add(event.get("asset"))
+        _add(primary_token_id)
+        _add(context.get("token_id"))
+        _add(context.get("token_ids", []))
+        _add(context.get("alias_candidates", []), require_tokenish=True)
+        return candidates[:8]
+
+    @staticmethod
+    def _invalid_orderbook_snapshot(token_id: Optional[str], reason: str) -> Dict:
+        return {
+            "token_id": token_id,
+            "best_bid": None,
+            "best_ask": None,
+            "mid_price": None,
+            "spread_pct": None,
+            "is_valid": False,
+            "reason": reason,
+            "fetched_at": time.time(),
+        }
 
     @staticmethod
     def _alias_signature(alias_candidates: list[str]) -> Optional[str]:
