@@ -70,6 +70,18 @@ def _create_dashboard_db(path: Path) -> None:
         [
             ('0xaaa', 'leaderboard', 1, 0.91, 12000.0, 5, 0, '2026-04-09 10:00:00'),
             ('0xbbb', 'activity_discovery', 1, 0.72, 8000.0, 3, 1, '2026-04-09 10:00:00'),
+            ('0xccc', 'graph_discovery', 1, 0.68, 5500.0, 2, 0, '2026-04-09 10:00:00'),
+        ],
+    )
+    cur.execute(
+        'CREATE TABLE whale_wallet_sources (address TEXT NOT NULL, source_type TEXT NOT NULL, last_seen_at TEXT, PRIMARY KEY (address, source_type))'
+    )
+    cur.executemany(
+        'INSERT INTO whale_wallet_sources VALUES (?, ?, ?)',
+        [
+            ('0xaaa', 'leaderboard', '2026-04-09 10:00:00'),
+            ('0xbbb', 'activity_discovery', '2026-04-09 10:00:00'),
+            ('0xccc', 'graph_discovery', '2026-04-09 10:00:00'),
         ],
     )
     cur.execute(
@@ -247,7 +259,7 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     payload = json.loads(response.read().decode('utf-8'))
 
     assert payload['service']['name'] == 'ghost-trader'
-    assert payload['runtime_summary']['tracked_whales'] == 2
+    assert payload['runtime_summary']['tracked_whales'] == 3
     assert payload['runtime_summary']['total_trades'] == 2
     assert payload['runtime_summary']['unmapped_orderflow_events'] == 1
     assert payload['runtime_summary']['alias_cache_hits'] == 2
@@ -276,6 +288,18 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['top_whales'][1]['trust_score'] == 0.5
     assert payload['top_whales'][1]['total_trades'] == 0
     assert payload['top_whales'][1]['win_rate'] is None
+    whale_counts = {row['source_type']: row['count'] for row in payload['whale_wallet_counts']}
+    assert whale_counts['leaderboard'] == 1
+    assert whale_counts['activity_discovery'] == 1
+    assert whale_counts['graph_discovery'] == 1
+    whale_universe = payload['whale_universe_summary']
+    assert whale_universe['tracked_whales'] == 3
+    assert whale_universe['leaderboard_wallets'] == 1
+    assert whale_universe['activity_discovered_wallets'] == 1
+    assert whale_universe['graph_discovered_wallets'] == 1
+    assert whale_universe['trusted_whales'] == 1
+    assert payload['trusted_whale_summary'][0]['address'] == '0xaaa'
+    assert payload['trusted_whale_summary'][0]['win_rate'] == 75.0
     assert payload['top_unresolved_aliases'][0]['alias'] == 'mystery-token'
     assert payload['recent_unresolved_aliases'][0]['aliases'][0] == 'mystery-token'
     assert any(row['hot_window_promoted'] == 1 for row in payload['recent_decisions'])
@@ -306,6 +330,17 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert source_quality_summary['unsupported_side_filtered'] == 1
     unsupported_side_summary = {row['reason']: row['count'] for row in payload['unsupported_side_summary']}
     assert unsupported_side_summary['unsupported_side_filtered'] == 1
+    whale_copy_summary = payload['whale_copy_summary']
+    assert whale_copy_summary['total_whale_events'] == 5
+    assert whale_copy_summary['resolved_whale_events'] == 3
+    assert whale_copy_summary['whale_copy_candidates'] == 3
+    assert whale_copy_summary['gated_rejects'] == 2
+    assert whale_copy_summary['gated_decisions'] == 1
+    assert whale_copy_summary['gated_executes'] == 2
+    gated_breakdown = {row['reason']: row['count'] for row in payload['gated_reject_breakdown']}
+    assert gated_breakdown['liquidity_guard'] == 1
+    assert gated_breakdown['score_below_threshold'] == 1
+    assert gated_breakdown['slippage_guard_rejection'] == 1
     assert payload['sampling_summary']['strategy_profile'] == 'sampling_relaxed'
     assert payload['sampling_summary']['closed_trades'] == 1
     assert payload['performance_summary']['evidence']['live_paper_closed'] == 3
@@ -383,6 +418,10 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Kaynak Kalitesi' in html
     assert 'Alias Cache' in html
     assert 'Desteklenmeyen' in html
+    assert 'Balina Evreni' in html
+    assert 'Kanitli Balinalar' in html
+    assert 'Whale-Copy' in html
+    assert 'Gated Whale-Copy Red Nedenleri' in html
     assert 'Henüz kapanmış whale geçmişi yok; nötr güven.' in html
     assert '&mdash;' in html
 

@@ -295,6 +295,11 @@ function dashboard_merge_runtime_summary(array $dbSummary, array $statusMetrics)
     $keys = [
         'wallet_balance',
         'tracked_whales',
+        'leaderboard_wallets',
+        'activity_discovered_wallets',
+        'graph_discovered_wallets',
+        'trusted_whales',
+        'persisted_wallets',
         'mapped_orderflow_events',
         'unmapped_orderflow_events',
         'alias_cache_hits',
@@ -443,6 +448,11 @@ function dashboard_build_payload(string $view = 'full'): array
     $runtimeSummary = [
         'wallet_balance' => null,
         'tracked_whales' => 0,
+        'leaderboard_wallets' => 0,
+        'activity_discovered_wallets' => 0,
+        'graph_discovered_wallets' => 0,
+        'trusted_whales' => 0,
+        'persisted_wallets' => 0,
         'mapped_orderflow_events' => 0,
         'unmapped_orderflow_events' => 0,
         'alias_cache_hits' => 0,

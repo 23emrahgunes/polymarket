@@ -468,6 +468,7 @@ class GhostBotRuntime:
         )
         sampling_mode = "enabled" if self.sampling_enabled else ("target_reached" if self.sampling_stop_reason == "target_reached" else "disabled")
         alias_integrity = await self.db.get_market_alias_integrity()
+        whale_universe_summary = await self.db.get_whale_universe_summary()
         persisted_market_alias_rows = int(alias_integrity["alias_rows"] or 0) if alias_integrity else 0
         persisted_market_alias_markets = int(alias_integrity["market_rows"] or 0) if alias_integrity else 0
         lookup_universe_markets = len(self.lookup_market_context)
@@ -478,7 +479,9 @@ class GhostBotRuntime:
             "tracked_whales": len(whale_tracker.top_whales if whale_tracker else []),
             "leaderboard_wallets": getattr(whale_tracker, "leaderboard_wallets_count", 0),
             "activity_discovered_wallets": getattr(whale_tracker, "activity_discovered_wallets_count", 0),
+            "graph_discovered_wallets": getattr(whale_tracker, "graph_discovered_wallets_count", whale_universe_summary["graph_discovered_wallets"]),
             "persisted_wallets": getattr(whale_tracker, "persisted_wallets_count", 0),
+            "trusted_whales": whale_universe_summary["trusted_whales"],
             "wallet_timeouts_last_cycle": getattr(whale_tracker, "wallet_timeouts_last_cycle", 0),
             "source_mode": getattr(whale_tracker, "source_mode", "uninitialized"),
             "total_trades": total,
@@ -520,11 +523,13 @@ class GhostBotRuntime:
         }
         await self.db.upsert_runtime_status_snapshot(status_metrics)
         logger.info(
-            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s mapped_orderflow_events=%s unmapped_orderflow_events=%s alias_cache_hits=%s lazy_lookup_hits=%s hot_window_markets=%s hot_window_hits=%s hot_window_promotions=%s hot_window_expiries=%s active_window_misses=%s resolver_hit_rate=%.1f active_window_miss_rate=%.1f market_not_mapped_rate=%.1f lookup_universe_markets=%s lookup_universe_aliases=%s persisted_market_alias_rows=%s persisted_market_alias_markets=%s hydrated_lookup_markets=%s hydrated_lookup_aliases=%s lookup_hydration_warning=%s alias_persistence_gap=%s sampling_mode=%s sampling_closed_trades=%s sampling_target_closed_trades=%s sampling_stop_reason=%s scan_time=%.2fs",
+            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s graph_discovered_wallets=%s trusted_whales=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s mapped_orderflow_events=%s unmapped_orderflow_events=%s alias_cache_hits=%s lazy_lookup_hits=%s hot_window_markets=%s hot_window_hits=%s hot_window_promotions=%s hot_window_expiries=%s active_window_misses=%s resolver_hit_rate=%.1f active_window_miss_rate=%.1f market_not_mapped_rate=%.1f lookup_universe_markets=%s lookup_universe_aliases=%s persisted_market_alias_rows=%s persisted_market_alias_markets=%s hydrated_lookup_markets=%s hydrated_lookup_aliases=%s lookup_hydration_warning=%s alias_persistence_gap=%s sampling_mode=%s sampling_closed_trades=%s sampling_target_closed_trades=%s sampling_stop_reason=%s scan_time=%.2fs",
             status_metrics["active_markets"],
             status_metrics["tracked_whales"],
             status_metrics["leaderboard_wallets"],
             status_metrics["activity_discovered_wallets"],
+            status_metrics["graph_discovered_wallets"],
+            status_metrics["trusted_whales"],
             status_metrics["persisted_wallets"],
             status_metrics["wallet_timeouts_last_cycle"],
             status_metrics["source_mode"],

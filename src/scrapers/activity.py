@@ -170,6 +170,7 @@ class ActivityHunter:
         if self.db is None:
             return
 
+        grouped_wallets: dict[tuple[str, str], dict] = {}
         for activity in activities:
             if not isinstance(activity, dict):
                 continue
@@ -192,6 +193,35 @@ class ActivityHunter:
                 "activity_discovery",
                 event_amount=amount,
                 event_category=category,
+            )
+
+            market_ref = activity.get("conditionId") or activity.get("condition_id") or activity.get("market_id") or activity.get("asset")
+            side = str(activity.get("side", "BUY")).upper()
+            if not market_ref:
+                continue
+            group_key = (str(market_ref), side)
+            group = grouped_wallets.setdefault(
+                group_key,
+                {"wallets": {}, "total_amount": 0.0, "category": category},
+            )
+            group["wallets"][str(wallet).lower()] = max(
+                float(group["wallets"].get(str(wallet).lower(), 0.0) or 0.0),
+                amount,
+            )
+            group["total_amount"] += amount
+            if group["category"] == "UNKNOWN" and category != "UNKNOWN":
+                group["category"] = category
+
+        for (market_ref, side), group in grouped_wallets.items():
+            wallets = list(group["wallets"].keys())
+            if len(wallets) < 2:
+                continue
+            await self.db.upsert_whale_wallet_graph_cluster(
+                wallets,
+                market_ref=market_ref,
+                side=side,
+                total_notional=float(group["total_amount"] or 0.0),
+                event_category=group["category"],
             )
 
     def _log_fetch_error(self, reason: Optional[str]) -> None:

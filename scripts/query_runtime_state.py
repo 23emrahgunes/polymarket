@@ -25,6 +25,15 @@ def _print_row(row) -> None:
     if isinstance(row, sqlite3.Row):
         print(tuple(row))
         return
+    if hasattr(row, "keys"):
+        try:
+            print(tuple(row[key] for key in row.keys()))
+            return
+        except Exception:
+            pass
+    if isinstance(row, dict):
+        print(tuple(row.values()))
+        return
     print(row)
 
 
@@ -188,13 +197,28 @@ def main() -> int:
     try:
         whale_counts = cursor.execute(
             """
-            SELECT source_type, COUNT(*) AS count
-            FROM whale_wallets
-            WHERE enabled = 1
-            GROUP BY source_type
-            ORDER BY source_type
+            SELECT whale_wallet_sources.source_type, COUNT(DISTINCT LOWER(whale_wallet_sources.address)) AS count
+            FROM whale_wallet_sources
+            INNER JOIN whale_wallets ON LOWER(whale_wallets.address) = LOWER(whale_wallet_sources.address)
+            WHERE whale_wallets.enabled = 1
+            GROUP BY whale_wallet_sources.source_type
+            ORDER BY whale_wallet_sources.source_type
             """
         ).fetchall()
+    except sqlite3.OperationalError:
+        try:
+            whale_counts = cursor.execute(
+                """
+                SELECT source_type, COUNT(*) AS count
+                FROM whale_wallets
+                WHERE enabled = 1
+                GROUP BY source_type
+                ORDER BY source_type
+                """
+            ).fetchall()
+        except sqlite3.OperationalError:
+            whale_counts = []
+    try:
         whale_wallets = cursor.execute(
             """
             SELECT address, source_type, discovery_score, last_event_amount, event_count_24h, failure_streak
@@ -204,9 +228,43 @@ def main() -> int:
             LIMIT 10
             """
         ).fetchall()
+        trusted_whales = cursor.execute(
+            """
+            SELECT
+                whale_stats.address,
+                COALESCE(whale_wallets.source_type, 'trusted_only') AS source_type,
+                whale_stats.trust_score,
+                whale_stats.total_trades,
+                whale_stats.wins,
+                whale_stats.total_pnl
+            FROM whale_stats
+            LEFT JOIN whale_wallets ON whale_wallets.address = whale_stats.address
+            WHERE whale_stats.total_trades > 0
+            ORDER BY whale_stats.trust_score DESC, whale_stats.total_trades DESC, whale_stats.total_pnl DESC
+            LIMIT 10
+            """
+        ).fetchall()
+        trusted_whale_count_row = cursor.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM whale_stats
+            WHERE total_trades > 0
+            """
+        ).fetchone()
+        trusted_whale_count = int(trusted_whale_count_row[0] if trusted_whale_count_row else 0)
+        tracked_whale_count_row = cursor.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM whale_wallets
+            WHERE enabled = 1
+            """
+        ).fetchone()
+        tracked_whale_count = int(tracked_whale_count_row[0] if tracked_whale_count_row else 0)
     except sqlite3.OperationalError:
-        whale_counts = []
         whale_wallets = []
+        trusted_whales = []
+        trusted_whale_count = 0
+        tracked_whale_count = 0
     try:
         decision_audit = cursor.execute(
             """
@@ -285,6 +343,48 @@ def main() -> int:
             ORDER BY count DESC, reason ASC
             """
         ).fetchall()
+        whale_copy_summary = cursor.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_whale_events,
+                COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
+                                      AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
+                                      AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
+                                      AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
+                                 THEN 1 ELSE 0 END), 0) AS resolved_whale_events,
+                COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
+                                      AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
+                                      AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
+                                      AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
+                                      AND COALESCE(reason, '') NOT LIKE '%route_whale_orderflow_only%'
+                                 THEN 1 ELSE 0 END), 0) AS whale_copy_candidates,
+                COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
+                                      AND action = 'reject'
+                                      AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
+                                      AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
+                                      AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
+                                      AND COALESCE(reason, '') NOT LIKE '%route_whale_orderflow_only%'
+                                 THEN 1 ELSE 0 END), 0) AS gated_rejects,
+                COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
+                                      AND action = 'decision'
+                                 THEN 1 ELSE 0 END), 0) AS gated_decisions
+            FROM decision_audit
+            """
+        ).fetchone()
+        gated_reject_breakdown = cursor.execute(
+            """
+            SELECT reason
+            FROM decision_audit
+            WHERE signal_family IN ('activity_orderflow', 'whale')
+              AND action = 'reject'
+              AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
+              AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
+              AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
+              AND COALESCE(reason, '') NOT LIKE '%route_whale_orderflow_only%'
+            ORDER BY id DESC
+            LIMIT 300
+            """
+        ).fetchall()
     except sqlite3.OperationalError:
         routing_breakdown = []
         sampling_decision_summary = []
@@ -292,6 +392,8 @@ def main() -> int:
         mapping_miss_breakdown = []
         source_quality_summary = (0, 0, 0, 0, 0, 0)
         unsupported_side_summary = []
+        whale_copy_summary = (0, 0, 0, 0, 0)
+        gated_reject_breakdown = []
     try:
         alias_integrity = cursor.execute(
             """
@@ -336,6 +438,9 @@ def main() -> int:
         _print_row(count)
     print("TOP_WHALE_WALLETS")
     for whale_wallet in whale_wallets:
+        _print_row(whale_wallet)
+    print("TRUSTED_WHALES")
+    for whale_wallet in trusted_whales:
         _print_row(whale_wallet)
     print("RECENT_DECISION_AUDIT")
     for audit_row in decision_audit:
@@ -385,6 +490,34 @@ def main() -> int:
     )
     for label, value in zip(source_labels, source_quality_summary or ()):
         print((label, value))
+    print("WHALE_UNIVERSE_SUMMARY")
+    whale_count_map = {str(row[0]): int(row[1]) for row in whale_counts}
+    print(("tracked_whales", tracked_whale_count))
+    print(("leaderboard_wallets", whale_count_map.get("leaderboard", 0)))
+    print(("activity_discovered_wallets", whale_count_map.get("activity_discovery", 0)))
+    print(("graph_discovered_wallets", whale_count_map.get("graph_discovery", 0)))
+    print(("trusted_whales", trusted_whale_count))
+    print("WHALE_COPY_SUMMARY")
+    whale_copy_labels = (
+        "total_whale_events",
+        "resolved_whale_events",
+        "whale_copy_candidates",
+        "gated_rejects",
+        "gated_decisions",
+    )
+    for label, value in zip(whale_copy_labels, whale_copy_summary or ()):
+        print((label, value))
+    print(("gated_executes", sampling_execute_count[0] if sampling_execute_count else 0))
+    print("GATED_REJECT_BREAKDOWN")
+    gated_counts: dict[str, int] = {}
+    for row in gated_reject_breakdown:
+        reason_text = str(row[0] if not isinstance(row, sqlite3.Row) else row["reason"] or "").strip()
+        if not reason_text:
+            continue
+        for reason in [part.strip() for part in reason_text.split(",") if part.strip()]:
+            gated_counts[reason] = gated_counts.get(reason, 0) + 1
+    for reason, count in sorted(gated_counts.items(), key=lambda item: (-item[1], item[0]))[:10]:
+        print((reason, count))
     print("UNSUPPORTED_SIDE_SUMMARY")
     for row in unsupported_side_summary:
         _print_row(row)

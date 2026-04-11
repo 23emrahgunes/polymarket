@@ -40,6 +40,35 @@ def test_collect_alias_candidates_expands_hex_variants():
 
 
 @pytest.mark.asyncio
+async def test_whale_graph_discovery_records_source_counts(tmp_path):
+    db_path = str(tmp_path / "whale_graph_discovery.db")
+    db = Database(db_path)
+    await db.connect()
+
+    await db.upsert_whale_wallet_graph_cluster(
+        ["0xGraphA", "0xGraphB", "0xGraphA"],
+        market_ref="0xMARKET-GRAPH",
+        side="BUY",
+        total_notional=2_000.0,
+        event_category="SPORTS",
+    )
+
+    counts = await db.get_whale_wallet_counts()
+    summary = await db.get_whale_universe_summary()
+    ranked = await db.get_ranked_whale_wallets(
+        limit=10,
+        source_type="graph_discovery",
+        min_event_count_24h=1,
+        single_event_min_usd=1_000.0,
+    )
+    await db.close()
+
+    assert counts["graph_discovered_wallets"] == 2
+    assert summary["graph_discovered_wallets"] == 2
+    assert {row["address"] for row in ranked} == {"0xgrapha", "0xgraphb"}
+
+
+@pytest.mark.asyncio
 async def test_copy_trader_uses_alias_cache_to_execute_trade(tmp_path):
     db_path = str(tmp_path / "alias_cache_trade.db")
     db = Database(db_path)

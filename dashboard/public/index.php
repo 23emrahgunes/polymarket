@@ -229,8 +229,12 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #source-quality-summary,
         #unsupported-side-summary,
         #alias-persistence-summary,
+        #whale-universe-summary,
         #whale-wallet-counts,
+        #trusted-whale-summary,
         #top-whales,
+        #whale-copy-summary,
+        #gated-reject-breakdown,
         #performance-snapshot,
         #sampling-reject-breakdown {
             border: 1px solid rgba(132, 181, 205, 0.12);
@@ -239,6 +243,8 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
             padding: 12px;
         }
         #top-whales,
+        #trusted-whale-summary,
+        #gated-reject-breakdown,
         #sampling-reject-breakdown {
             margin-top: 12px;
         }
@@ -252,8 +258,12 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .subcard #source-quality-summary,
         .subcard #unsupported-side-summary,
         .subcard #alias-persistence-summary,
+        .subcard #whale-universe-summary,
         .subcard #whale-wallet-counts,
+        .subcard #trusted-whale-summary,
         .subcard #top-whales,
+        .subcard #whale-copy-summary,
+        .subcard #gated-reject-breakdown,
         .subcard #performance-snapshot,
         .subcard #sampling-reject-breakdown {
             border: 0;
@@ -295,16 +305,17 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         }
         #recent-decisions { max-height: 420px; overflow: auto; }
         #market-alias-counts, #whale-wallet-counts, #unsupported-side-summary { max-height: 180px; overflow: auto; }
-        #top-market-aliases, #top-whales { max-height: 320px; overflow: auto; }
+        #top-market-aliases, #top-whales, #trusted-whale-summary { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
-        #performance-snapshot, #source-quality-summary, #alias-persistence-summary { max-height: 420px; overflow: auto; }
-        #sampling-reject-breakdown { max-height: 220px; overflow: auto; }
+        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary { max-height: 420px; overflow: auto; }
+        #sampling-reject-breakdown, #gated-reject-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
         #recent-decisions table { min-width: 1040px; table-layout: auto; }
-        #top-whales table { min-width: 900px; table-layout: auto; }
+        #top-whales table, #trusted-whale-summary table { min-width: 900px; table-layout: auto; }
         #top-market-aliases table,
         #recent-unresolved-aliases table,
-        #sampling-reject-breakdown table { min-width: 560px; table-layout: auto; }
+        #sampling-reject-breakdown table,
+        #gated-reject-breakdown table { min-width: 560px; table-layout: auto; }
         @media (max-width: 1100px) {
             .panel-half, .panel-third, .panel-tertiary, .panel-primary, .panel-secondary { grid-column: span 12; }
             .panel-inline-grid { grid-template-columns: 1fr; }
@@ -406,7 +417,13 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
             <div class="panel-subgrid">
                 <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Kaynak Sayıları</h3><span class="badge info">Havuz</span></div>
+                    <p class="subcard-copy">Balina Evreni Ozeti: leaderboard, activity, graph-discovery ve kanitli balina ayrimi.</p>
+                    <div class="metric-list" id="whale-universe-summary"></div>
                     <div id="whale-wallet-counts"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Kanitli Balinalar</h3><span class="badge info">Trust</span></div>
+                    <div class="subcard-scroll"><div id="trusted-whale-summary"></div></div>
                 </div>
                 <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Balina Tablosu</h3><span class="badge info">Skor ve Güven</span></div>
@@ -419,7 +436,12 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
             <div class="panel-subgrid">
                 <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Strateji ve Sampling</h3><span class="badge warn">Özet</span></div>
+                    <div class="metric-list" id="whale-copy-summary"></div>
                     <div class="metric-list" id="performance-snapshot"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Gated Whale-Copy Red Nedenleri</h3><span class="badge warn">Gate</span></div>
+                    <div id="gated-reject-breakdown"></div>
                 </div>
                 <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Sampling Red Nedenleri</h3><span class="badge warn">Blocker</span></div>
@@ -674,7 +696,9 @@ function setupDiagnosticFolds() {
     collapseSectionById('top-market-aliases', 'En Güçlü Alias Cache', 'info');
     collapseSectionById('top-unresolved-aliases', 'En Sık Çözülemeyen Alias’lar', 'warn');
     collapseSectionById('recent-unresolved-aliases', 'Son Çözülemeyen Alias Olayları', 'warn');
+    collapseSectionById('trusted-whale-summary', 'Kanıtlı Balinalar', 'info');
     collapseSectionById('top-whales', 'Balina Tablosu', 'info');
+    collapseSectionById('gated-reject-breakdown', 'Gated Whale-Copy Red Nedenleri', 'warn');
     collapseSectionById('sampling-reject-breakdown', 'Sampling Red Nedenleri', 'warn');
 }
 
@@ -771,6 +795,24 @@ function updatePanels(payload) {
         { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
     ], payload.whale_wallet_counts, 'Balina kaynak sayısı yok.');
 
+    const whaleUniverse = payload.whale_universe_summary || {};
+    renderMetrics('whale-universe-summary', [
+        { label: 'Izlenen toplam balina', value: formatNumber(whaleUniverse.tracked_whales, 0) },
+        { label: 'Leaderboard kaynakli', value: formatNumber(whaleUniverse.leaderboard_wallets, 0) },
+        { label: 'Activity kaynakli', value: formatNumber(whaleUniverse.activity_discovered_wallets, 0) },
+        { label: 'Graph-discovery kaynakli', value: formatNumber(whaleUniverse.graph_discovered_wallets, 0) },
+        { label: 'Kanitli balina', value: formatNumber(whaleUniverse.trusted_whales, 0) }
+    ]);
+
+    renderTable('trusted-whale-summary', [
+        { key: 'address', label: 'Adres', mono: true, render: (row) => truncateHtml(row.address || '', 22) },
+        { key: 'source_type', label: 'Kaynak', render: (row) => escapeHtml(row.source_type || '') },
+        { key: 'trust_score', label: 'Guven', render: (row) => escapeHtml(formatNumber(row.trust_score, 3)) },
+        { key: 'total_trades', label: 'Islem', render: (row) => escapeHtml(formatNumber(row.total_trades, 0)) },
+        { key: 'win_rate', label: 'Kazanma', render: (row) => row.win_rate === null || row.win_rate === undefined ? '&mdash;' : escapeHtml(`%${formatNumber(row.win_rate, 1)}`) },
+        { key: 'total_pnl', label: 'Toplam PnL', render: (row) => escapeHtml(formatNumber(row.total_pnl, 2)) }
+    ], payload.trusted_whale_summary, 'Henuz kapanmis performans kaniti yok.');
+
     renderTable('top-whales', [
         { key: 'address', label: 'Adres', mono: true, render: (row) => truncateHtml(row.address || '', 22) },
         { key: 'source_type', label: 'Kaynak', render: (row) => escapeHtml(row.source_type || '') },
@@ -850,21 +892,6 @@ function updatePanels(payload) {
 
     const runtime = payload.runtime_summary || {};
     renderMetrics('mapping-health', [
-        { label: 'Eşlenen orderflow event', value: formatNumber(runtime.mapped_orderflow_events, 0) },
-        { label: 'Eşlenemeyen orderflow event', value: formatNumber(runtime.unmapped_orderflow_events, 0) },
-        { label: 'Alias cache hit', value: formatNumber(runtime.alias_cache_hits, 0) },
-        { label: 'Lazy lookup hit', value: formatNumber(runtime.lazy_lookup_hits, 0) },
-        { label: 'Sıcak pencere marketleri', value: formatNumber(runtime.hot_window_markets, 0) },
-        { label: 'Sıcak pencere hit', value: formatNumber(runtime.hot_window_hits, 0) },
-        { label: 'Hot-window promotion', value: formatNumber(runtime.hot_window_promotions, 0) },
-        { label: 'Hot-window expiry', value: formatNumber(runtime.hot_window_expiries, 0) },
-        { label: 'Active-window miss', value: formatNumber(runtime.active_window_misses, 0) },
-        { label: 'Active-window miss oranı', value: `${formatNumber(runtime.active_window_miss_rate, 1)}%` },
-        { label: 'Resolver hit oranı', value: `${formatNumber(runtime.resolver_hit_rate, 1)}%` },
-        { label: 'Market eşleşmedi oranı', value: `${formatNumber(runtime.market_not_mapped_rate, 1)}%` }
-    ]);
-
-    renderMetrics('mapping-health', [
         { label: 'Eslenen orderflow event', value: formatNumber(runtime.mapped_orderflow_events, 0) },
         { label: 'Eslenemeyen orderflow event', value: formatNumber(runtime.unmapped_orderflow_events, 0) },
         { label: 'Alias cache hit', value: formatNumber(runtime.alias_cache_hits, 0) },
@@ -903,6 +930,16 @@ function updatePanels(payload) {
         { label: 'Durum', value: aliasPersistence.warning || 'uyumlu', long: true }
     ]);
 
+    const whaleCopy = payload.whale_copy_summary || {};
+    renderMetrics('whale-copy-summary', [
+        { label: 'Toplam whale/orderflow event', value: formatNumber(whaleCopy.total_whale_events, 0) },
+        { label: 'Resolved whale event', value: formatNumber(whaleCopy.resolved_whale_events, 0) },
+        { label: 'Whale-copy adayi', value: formatNumber(whaleCopy.whale_copy_candidates, 0) },
+        { label: 'Gated red', value: formatNumber(whaleCopy.gated_rejects, 0) },
+        { label: 'Karar', value: formatNumber(whaleCopy.gated_decisions, 0) },
+        { label: 'Execute', value: formatNumber(whaleCopy.gated_executes, 0) }
+    ]);
+
     const performance = payload.performance_summary || {};
     const evidence = performance.evidence || {};
     const core = performance.core || {};
@@ -928,6 +965,11 @@ function updatePanels(payload) {
         { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
         { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
     ], payload.sampling_reject_breakdown, 'Henüz sampling red nedeni birikmedi.');
+
+    renderTable('gated-reject-breakdown', [
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.gated_reject_breakdown, 'Henüz gated whale-copy red nedeni birikmedi.');
 
     const logLines = Array.isArray(payload.service_log_excerpt) ? payload.service_log_excerpt : [];
     document.getElementById('service-log').textContent = logLines.length > 0 ? logLines.join('\n') : 'Servis logu alınamadı.';

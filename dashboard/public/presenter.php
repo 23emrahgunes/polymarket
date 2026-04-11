@@ -459,6 +459,190 @@ function dashboard_build_unsupported_side_summary(PDO $pdo): array
     );
 }
 
+function dashboard_fetch_whale_wallet_source_counts(PDO $pdo): array
+{
+    if (dashboard_table_has_column($pdo, 'whale_wallet_sources', 'source_type')) {
+        return dashboard_fetch_all(
+            $pdo,
+            "
+            SELECT whale_wallet_sources.source_type, COUNT(DISTINCT LOWER(whale_wallet_sources.address)) AS count
+            FROM whale_wallet_sources
+            INNER JOIN whale_wallets ON LOWER(whale_wallets.address) = LOWER(whale_wallet_sources.address)
+            WHERE whale_wallets.enabled = 1
+            GROUP BY whale_wallet_sources.source_type
+            ORDER BY whale_wallet_sources.source_type
+            "
+        );
+    }
+
+    return dashboard_fetch_all(
+        $pdo,
+        'SELECT source_type, COUNT(*) AS count FROM whale_wallets WHERE enabled = 1 GROUP BY source_type ORDER BY source_type'
+    );
+}
+
+function dashboard_build_whale_universe_summary(PDO $pdo, array $runtimeSummary): array
+{
+    $counts = dashboard_fetch_whale_wallet_source_counts($pdo);
+    $summary = [
+        'tracked_whales' => 0,
+        'leaderboard_wallets' => 0,
+        'activity_discovered_wallets' => 0,
+        'graph_discovered_wallets' => 0,
+        'trusted_whales' => 0,
+    ];
+
+    foreach ($counts as $row) {
+        $sourceType = (string) ($row['source_type'] ?? '');
+        $count = (int) ($row['count'] ?? 0);
+        if ($sourceType === 'leaderboard') {
+            $summary['leaderboard_wallets'] += $count;
+        } elseif ($sourceType === 'activity_discovery') {
+            $summary['activity_discovered_wallets'] += $count;
+        } elseif ($sourceType === 'graph_discovery') {
+            $summary['graph_discovered_wallets'] += $count;
+        }
+    }
+
+    $trackedRow = dashboard_fetch_one($pdo, 'SELECT COUNT(*) AS count FROM whale_wallets WHERE enabled = 1');
+    $summary['tracked_whales'] = (int) (($trackedRow['count'] ?? 0));
+
+    $trustedRow = dashboard_fetch_one(
+        $pdo,
+        "
+        SELECT COUNT(*) AS count
+        FROM whale_stats
+        WHERE total_trades > 0
+        "
+    );
+    $summary['trusted_whales'] = (int) (($trustedRow['count'] ?? 0));
+
+    return $summary;
+}
+
+function dashboard_build_trusted_whale_summary(PDO $pdo): array
+{
+    return dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT
+            whale_stats.address,
+            COALESCE(whale_wallets.source_type, 'trusted_only') AS source_type,
+            COALESCE(whale_wallets.discovery_score, 0) AS discovery_score,
+            whale_stats.trust_score,
+            whale_stats.total_trades,
+            whale_stats.wins,
+            whale_stats.total_pnl,
+            CASE
+                WHEN whale_stats.total_trades > 0
+                    THEN ROUND((CAST(whale_stats.wins AS REAL) / whale_stats.total_trades) * 100.0, 1)
+                ELSE NULL
+            END AS win_rate
+        FROM whale_stats
+        LEFT JOIN whale_wallets ON whale_wallets.address = whale_stats.address
+        WHERE whale_stats.total_trades > 0
+        ORDER BY whale_stats.trust_score DESC, whale_stats.total_trades DESC, whale_stats.total_pnl DESC
+        LIMIT 10
+        "
+    );
+}
+
+function dashboard_build_whale_copy_summary(PDO $pdo): array
+{
+    $row = dashboard_fetch_one(
+        $pdo,
+        "
+        SELECT
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_whale_events,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
+                                  AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
+                                  AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
+                                  AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
+                             THEN 1 ELSE 0 END), 0) AS resolved_whale_events,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
+                                  AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
+                                  AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
+                                  AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
+                                  AND COALESCE(reason, '') NOT LIKE '%route_whale_orderflow_only%'
+                             THEN 1 ELSE 0 END), 0) AS whale_copy_candidates,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
+                                  AND action = 'reject'
+                                  AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
+                                  AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
+                                  AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
+                                  AND COALESCE(reason, '') NOT LIKE '%route_whale_orderflow_only%'
+                             THEN 1 ELSE 0 END), 0) AS gated_rejects,
+            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
+                                  AND action = 'decision'
+                             THEN 1 ELSE 0 END), 0) AS gated_decisions
+        FROM decision_audit
+        "
+    ) ?: [];
+
+    $executeQuery = "
+        SELECT COUNT(*) AS count
+        FROM trades
+        WHERE venue = 'polymarket'
+          AND strategy_profile IN ('baseline', 'sampling_relaxed')
+          AND source_signal IN ('activity', 'whale_tracker')
+    ";
+    $executeRow = dashboard_fetch_one($pdo, $executeQuery) ?: ['count' => 0];
+
+    return [
+        'total_whale_events' => (int) ($row['total_whale_events'] ?? 0),
+        'resolved_whale_events' => (int) ($row['resolved_whale_events'] ?? 0),
+        'whale_copy_candidates' => (int) ($row['whale_copy_candidates'] ?? 0),
+        'gated_rejects' => (int) ($row['gated_rejects'] ?? 0),
+        'gated_decisions' => (int) ($row['gated_decisions'] ?? 0),
+        'gated_executes' => (int) ($executeRow['count'] ?? 0),
+    ];
+}
+
+function dashboard_build_gated_reject_breakdown(PDO $pdo): array
+{
+    $rows = dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT reason
+        FROM decision_audit
+        WHERE signal_family IN ('activity_orderflow', 'whale')
+          AND action = 'reject'
+          AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
+          AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
+          AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
+          AND COALESCE(reason, '') NOT LIKE '%route_whale_orderflow_only%'
+        ORDER BY id DESC
+        LIMIT 300
+        "
+    );
+
+    $counts = [];
+    foreach ($rows as $row) {
+        $reasonText = trim((string) ($row['reason'] ?? ''));
+        if ($reasonText === '') {
+            continue;
+        }
+        foreach (explode(',', $reasonText) as $reason) {
+            $reason = trim($reason);
+            if ($reason === '') {
+                continue;
+            }
+            $counts[$reason] = ($counts[$reason] ?? 0) + 1;
+        }
+    }
+
+    arsort($counts);
+    $items = [];
+    foreach (array_slice($counts, 0, 10, true) as $reason => $count) {
+        $items[] = [
+            'reason' => $reason,
+            'count' => $count,
+        ];
+    }
+
+    return $items;
+}
+
 function dashboard_augment_recent_decisions(PDO $pdo, array $payload): array
 {
     if (!dashboard_table_has_column($pdo, 'decision_audit', 'hot_window_promoted')) {
@@ -489,6 +673,7 @@ function dashboard_augment_payload(array $payload): array
             $payload['runtime_summary'] ?? [],
             dashboard_build_hot_window_summary($pdo, $payload['runtime_summary'] ?? [])
         );
+        $payload['whale_wallet_counts'] = dashboard_fetch_whale_wallet_source_counts($pdo);
         $payload['routing_breakdown'] = dashboard_build_routing_breakdown($pdo);
         $payload['sampling_decision_summary'] = dashboard_build_sampling_decision_summary($pdo);
         $payload['mapping_miss_breakdown'] = dashboard_build_mapping_miss_breakdown($pdo);
@@ -496,6 +681,10 @@ function dashboard_augment_payload(array $payload): array
         $payload['alias_persistence_summary'] = dashboard_build_alias_persistence_summary($pdo, $payload['runtime_summary'] ?? []);
         $payload['source_quality_summary'] = dashboard_build_source_quality_summary($pdo);
         $payload['unsupported_side_summary'] = dashboard_build_unsupported_side_summary($pdo);
+        $payload['whale_universe_summary'] = dashboard_build_whale_universe_summary($pdo, $payload['runtime_summary'] ?? []);
+        $payload['trusted_whale_summary'] = dashboard_build_trusted_whale_summary($pdo);
+        $payload['whale_copy_summary'] = dashboard_build_whale_copy_summary($pdo);
+        $payload['gated_reject_breakdown'] = dashboard_build_gated_reject_breakdown($pdo);
         $payload = dashboard_augment_recent_decisions($pdo, $payload);
     } else {
         $payload['top_unresolved_aliases'] = [];
@@ -507,6 +696,10 @@ function dashboard_augment_payload(array $payload): array
         $payload['alias_persistence_summary'] = [];
         $payload['source_quality_summary'] = [];
         $payload['unsupported_side_summary'] = [];
+        $payload['whale_universe_summary'] = [];
+        $payload['trusted_whale_summary'] = [];
+        $payload['whale_copy_summary'] = [];
+        $payload['gated_reject_breakdown'] = [];
         $payload['runtime_summary'] = array_merge(
             $payload['runtime_summary'] ?? [],
             [

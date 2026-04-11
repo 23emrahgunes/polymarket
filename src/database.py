@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from itertools import combinations
 from typing import Iterable, List, Optional
 
 import aiosqlite
@@ -178,6 +179,30 @@ class Database:
         )
         await self.conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS whale_wallet_sources (
+                address TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (address, source_type)
+            )
+            """
+        )
+        await self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whale_wallet_graph_edges (
+                wallet_a TEXT NOT NULL,
+                wallet_b TEXT NOT NULL,
+                last_market_ref TEXT,
+                side TEXT,
+                co_occurrence_count INTEGER NOT NULL DEFAULT 0,
+                total_notional REAL NOT NULL DEFAULT 0,
+                last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (wallet_a, wallet_b)
+            )
+            """
+        )
+        await self.conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS decision_audit (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 occurred_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -312,6 +337,30 @@ class Database:
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 metrics_json TEXT NOT NULL
+            )
+            """
+        )
+        await self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whale_wallet_sources (
+                address TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (address, source_type)
+            )
+            """
+        )
+        await self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whale_wallet_graph_edges (
+                wallet_a TEXT NOT NULL,
+                wallet_b TEXT NOT NULL,
+                last_market_ref TEXT,
+                side TEXT,
+                co_occurrence_count INTEGER NOT NULL DEFAULT 0,
+                total_notional REAL NOT NULL DEFAULT 0,
+                last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (wallet_a, wallet_b)
             )
             """
         )
@@ -603,6 +652,88 @@ class Database:
         async with self.conn.execute("SELECT * FROM whale_wallets WHERE address = ?", (address,)) as cursor:
             return await cursor.fetchone()
 
+    async def upsert_whale_wallet_source(
+        self,
+        address: str,
+        source_type: str,
+        seen_at: str | None = None,
+        *,
+        commit: bool = True,
+    ) -> None:
+        persisted_address = str(address or "").strip()
+        if not persisted_address:
+            return
+        seen_at = seen_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        await self.conn.execute(
+            """
+            INSERT INTO whale_wallet_sources (address, source_type, last_seen_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(address, source_type) DO UPDATE SET
+                last_seen_at = excluded.last_seen_at
+            """,
+            (persisted_address, source_type, seen_at),
+        )
+        if commit:
+            await self.conn.commit()
+
+    async def upsert_whale_wallet_graph_cluster(
+        self,
+        wallets: Iterable[str],
+        *,
+        market_ref: str | None = None,
+        side: str | None = None,
+        total_notional: float = 0.0,
+        event_category: str | None = None,
+        seen_at: str | None = None,
+    ) -> None:
+        seen_at = seen_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        normalized_wallets: list[str] = []
+        for wallet in wallets:
+            normalized_wallet = normalize_market_alias(wallet)
+            if normalized_wallet and normalized_wallet not in normalized_wallets:
+                normalized_wallets.append(normalized_wallet)
+
+        if len(normalized_wallets) < 2:
+            return
+
+        per_wallet_notional = float(total_notional or 0.0) / max(len(normalized_wallets), 1)
+        for wallet in normalized_wallets:
+            await self.upsert_whale_wallet(
+                wallet,
+                "graph_discovery",
+                event_amount=per_wallet_notional if per_wallet_notional > 0 else None,
+                event_category=event_category,
+                seen_at=seen_at,
+                commit=False,
+            )
+
+        normalized_market_ref = normalize_market_alias(market_ref)
+        normalized_side = str(side or "").upper() or None
+        for wallet_a, wallet_b in combinations(sorted(normalized_wallets), 2):
+            await self.conn.execute(
+                """
+                INSERT INTO whale_wallet_graph_edges (
+                    wallet_a, wallet_b, last_market_ref, side, co_occurrence_count, total_notional, last_seen_at
+                )
+                VALUES (?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT(wallet_a, wallet_b) DO UPDATE SET
+                    last_market_ref = excluded.last_market_ref,
+                    side = excluded.side,
+                    co_occurrence_count = whale_wallet_graph_edges.co_occurrence_count + 1,
+                    total_notional = whale_wallet_graph_edges.total_notional + excluded.total_notional,
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (
+                    wallet_a,
+                    wallet_b,
+                    normalized_market_ref,
+                    normalized_side,
+                    float(total_notional or 0.0),
+                    seen_at,
+                ),
+            )
+        await self.conn.commit()
+
     async def upsert_market_aliases(
         self,
         market_id: str,
@@ -840,7 +971,12 @@ class Database:
         event_amount: float | None = None,
         event_category: str | None = None,
         seen_at: str | None = None,
+        *,
+        commit: bool = True,
     ) -> None:
+        address = str(address or "").strip()
+        if not address:
+            return
         seen_at = seen_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         existing = await self.get_whale_wallet(address)
         source_type = self._prefer_whale_source(existing["source_type"] if existing else None, source_type)
@@ -866,7 +1002,9 @@ class Database:
                     event_count_24h,
                 ),
             )
-            await self.conn.commit()
+            await self.upsert_whale_wallet_source(address, source_type, seen_at=seen_at, commit=False)
+            if commit:
+                await self.conn.commit()
             return
 
         event_count_24h = int(existing["event_count_24h"] or 0)
@@ -905,7 +1043,9 @@ class Database:
                 address,
             ),
         )
-        await self.conn.commit()
+        await self.upsert_whale_wallet_source(address, source_type, seen_at=seen_at, commit=False)
+        if commit:
+            await self.conn.commit()
 
     async def record_whale_wallet_success(self, address: str, seen_at: str | None = None) -> None:
         seen_at = seen_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -972,9 +1112,10 @@ class Database:
         if source_type is not None:
             query += " AND whale_wallets.source_type = ?"
             params.append(source_type)
-        if source_type == "activity_discovery":
+        if source_type in {"activity_discovery", "graph_discovery"}:
             query += " AND (whale_wallets.event_count_24h >= ? OR whale_wallets.last_event_amount >= ?)"
-            params.extend([min_event_count_24h, single_event_min_usd])
+            threshold = single_event_min_usd if source_type == "activity_discovery" else (single_event_min_usd * 0.5)
+            params.extend([min_event_count_24h, threshold])
 
         async with self.conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
@@ -987,34 +1128,84 @@ class Database:
             "persisted_wallets": 0,
             "activity_discovered_wallets": 0,
             "leaderboard_wallets": 0,
+            "graph_discovered_wallets": 0,
             "manual_seed_wallets": 0,
             "static_seed_wallets": 0,
         }
         async with self.conn.execute(
             """
-            SELECT source_type, COUNT(*) AS count
-            FROM whale_wallets
-            WHERE enabled = 1
-            GROUP BY source_type
+            SELECT whale_wallet_sources.source_type, COUNT(DISTINCT LOWER(whale_wallet_sources.address)) AS count
+            FROM whale_wallet_sources
+            INNER JOIN whale_wallets ON LOWER(whale_wallets.address) = LOWER(whale_wallet_sources.address)
+            WHERE whale_wallets.enabled = 1
+            GROUP BY whale_wallet_sources.source_type
             """
         ) as cursor:
             rows = await cursor.fetchall()
 
-        total = 0
         for row in rows:
             source_type = str(row["source_type"])
             count = int(row["count"])
-            total += count
             if source_type == "activity_discovery":
                 counts["activity_discovered_wallets"] = count
             elif source_type == "leaderboard":
                 counts["leaderboard_wallets"] = count
+            elif source_type == "graph_discovery":
+                counts["graph_discovered_wallets"] = count
             elif source_type == "manual_seed":
                 counts["manual_seed_wallets"] = count
             elif source_type == "static_seed":
                 counts["static_seed_wallets"] = count
-        counts["persisted_wallets"] = total
+        async with self.conn.execute(
+            "SELECT COUNT(DISTINCT address) AS count FROM whale_wallets WHERE enabled = 1"
+        ) as cursor:
+            total_row = await cursor.fetchone()
+        counts["persisted_wallets"] = int((total_row["count"] if total_row else 0) or 0)
         return counts
+
+    async def get_whale_universe_summary(self) -> dict:
+        counts = await self.get_whale_wallet_counts()
+        async with self.conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM whale_stats
+            WHERE total_trades > 0
+            """
+        ) as cursor:
+            trusted_row = await cursor.fetchone()
+        return {
+            "tracked_whales": int(counts["persisted_wallets"] or 0),
+            "leaderboard_wallets": int(counts["leaderboard_wallets"] or 0),
+            "activity_discovered_wallets": int(counts["activity_discovered_wallets"] or 0),
+            "graph_discovered_wallets": int(counts["graph_discovered_wallets"] or 0),
+            "trusted_whales": int((trusted_row["count"] if trusted_row else 0) or 0),
+        }
+
+    async def get_trusted_whales(self, limit: int = 10) -> List[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT
+                whale_stats.address,
+                COALESCE(whale_wallets.source_type, 'trusted_only') AS source_type,
+                COALESCE(whale_wallets.discovery_score, 0) AS discovery_score,
+                whale_stats.trust_score,
+                whale_stats.total_trades,
+                whale_stats.wins,
+                whale_stats.total_pnl,
+                CASE
+                    WHEN whale_stats.total_trades > 0
+                        THEN ROUND((CAST(whale_stats.wins AS REAL) / whale_stats.total_trades) * 100.0, 1)
+                    ELSE NULL
+                END AS win_rate
+            FROM whale_stats
+            LEFT JOIN whale_wallets ON whale_wallets.address = whale_stats.address
+            WHERE whale_stats.total_trades > 0
+            ORDER BY whale_stats.trust_score DESC, whale_stats.total_trades DESC, whale_stats.total_pnl DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ) as cursor:
+            return await cursor.fetchall()
 
     @staticmethod
     def _prefer_whale_source(existing_source: str | None, incoming_source: str) -> str:
@@ -1023,7 +1214,8 @@ class Database:
             "static_seed": 1,
             "manual_seed": 2,
             "leaderboard": 3,
-            "activity_discovery": 4,
+            "graph_discovery": 4,
+            "activity_discovery": 5,
         }
         if precedence.get(incoming_source, 0) >= precedence.get(existing_source, 0):
             return incoming_source

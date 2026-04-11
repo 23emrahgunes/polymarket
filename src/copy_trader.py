@@ -25,6 +25,9 @@ UNRESOLVED_ALIAS_RETRY_MIN_UNIQUE_WALLETS = 2
 SAMPLING_ORDERFLOW_WINDOW_SECONDS = 300.0
 SAMPLING_ORDERFLOW_MIN_EVENTS = 2
 SAMPLING_ORDERFLOW_MIN_TOTAL_AMOUNT = 500.0
+WHALE_COPY_WINDOW_SECONDS = 600.0
+WHALE_COPY_MIN_TOTAL_AMOUNT = 500.0
+WHALE_COPY_MIN_UNIQUE_WALLETS = 2
 
 
 class CopyTrader:
@@ -56,6 +59,7 @@ class CopyTrader:
         self.sampling_stop_reason: Optional[str] = None
         self.unresolved_alias_retry_state: Dict[str, Dict] = {}
         self.sampling_orderflow_state: Dict[str, Dict] = {}
+        self.whale_copy_state: Dict[str, Dict] = {}
 
     def update_market_contexts(self, market_context_by_id: Dict[str, Dict], token_to_market_id: Dict[str, str]) -> None:
         self.market_context_by_id = {
@@ -212,6 +216,17 @@ class CopyTrader:
             stats = await self.db.get_whale_stats(wallet)
             whale_trust = float(stats["trust_score"]) if stats else 0.5
 
+        whale_copy_summary = None
+        whale_copy_applicable = category in SAMPLING_ELIGIBLE_CATEGORIES and wallet is not None and source in {"whale_tracker", "activity"}
+        if whale_copy_applicable:
+            whale_copy_summary = self._record_whale_copy_candidate(
+                context=context,
+                event=event,
+                source=source,
+                wallet=wallet,
+                whale_trust=whale_trust,
+            )
+
         scored_inputs = DecisionInputs(
             source=source,
             category=category,
@@ -245,19 +260,40 @@ class CopyTrader:
                 wallet=wallet,
                 whale_trust=whale_trust,
             )
-        decision = self.decision_engine.score_orderflow(scored_inputs)
+        evaluation_inputs = scored_inputs
+        if whale_copy_summary is not None and whale_copy_summary.get("ready_for_gate"):
+            evaluation_inputs = self._build_whale_copy_inputs(scored_inputs, whale_copy_summary)
+        decision = self.decision_engine.score_orderflow(evaluation_inputs)
+        if whale_copy_summary is not None:
+            decision.inputs.update(
+                {
+                    "copy_policy": "gated_whale_copy",
+                    "gated_whale_event_count": whale_copy_summary["event_count"],
+                    "gated_total_notional": round(whale_copy_summary["total_amount"], 4),
+                    "gated_unique_wallets": whale_copy_summary["unique_wallets"],
+                    "gated_max_trust": round(whale_copy_summary["max_trust"], 4),
+                    "gated_source_count": whale_copy_summary["source_count"],
+                }
+            )
 
         if not decision.should_trade and sampling_applicable:
             if self.sampling_enabled:
-                if sampling_orderflow_summary is not None and sampling_orderflow_summary.get("ready_for_retry"):
-                    sampling_inputs = self._build_sampling_orderflow_inputs(scored_inputs, sampling_orderflow_summary)
+                retry_summary = None
+                if whale_copy_summary is not None and whale_copy_summary.get("ready_for_retry"):
+                    retry_summary = whale_copy_summary
+                elif sampling_orderflow_summary is not None and sampling_orderflow_summary.get("ready_for_retry"):
+                    retry_summary = sampling_orderflow_summary
+
+                if retry_summary is not None:
+                    sampling_inputs = self._build_sampling_orderflow_inputs(evaluation_inputs, retry_summary)
                     decision = self.decision_engine.score_orderflow(sampling_inputs)
                     decision.inputs.update(
                         {
-                            "aggregated_orderflow_events": sampling_orderflow_summary["event_count"],
-                            "aggregated_total_notional": round(sampling_orderflow_summary["total_amount"], 4),
-                            "aggregated_unique_wallets": sampling_orderflow_summary["unique_wallets"],
-                            "aggregated_source_count": sampling_orderflow_summary["source_count"],
+                            "copy_policy": "gated_whale_copy" if retry_summary is whale_copy_summary else "sampling_relaxed",
+                            "aggregated_orderflow_events": retry_summary["event_count"],
+                            "aggregated_total_notional": round(retry_summary["total_amount"], 4),
+                            "aggregated_unique_wallets": retry_summary["unique_wallets"],
+                            "aggregated_source_count": retry_summary["source_count"],
                         }
                     )
             elif self.sampling_target_reached:
@@ -585,6 +621,74 @@ class CopyTrader:
             "max_wallets_count": max_wallets_count,
             "ready_for_retry": len(events) >= SAMPLING_ORDERFLOW_MIN_EVENTS or total_amount >= SAMPLING_ORDERFLOW_MIN_TOTAL_AMOUNT,
         }
+
+    def _record_whale_copy_candidate(
+        self,
+        *,
+        context: Dict,
+        event: Dict,
+        source: str,
+        wallet: Optional[str],
+        whale_trust: float,
+    ) -> Dict:
+        market_id = normalize_market_alias(context.get("market_id"))
+        if not market_id:
+            return {
+                "event_count": 1,
+                "total_amount": float(event.get("amount", 0.0) or 0.0),
+                "unique_wallets": max(int(event.get("wallets_count", 1) or 1), 1),
+                "source_count": 1,
+                "max_trust": whale_trust,
+                "max_wallets_count": int(event.get("wallets_count", 1) or 1),
+                "ready_for_gate": False,
+                "ready_for_retry": False,
+            }
+
+        now_ts = time.time()
+        state = self.whale_copy_state.setdefault(market_id, {"events": []})
+        events = [
+            item
+            for item in state["events"]
+            if now_ts - float(item.get("ts", 0.0)) <= WHALE_COPY_WINDOW_SECONDS
+        ]
+        events.append(
+            {
+                "ts": now_ts,
+                "amount": float(event.get("amount", 0.0) or 0.0),
+                "wallet": normalize_market_alias(wallet),
+                "source": str(source or event.get("source") or "unknown"),
+                "wallets_count": int(event.get("wallets_count", 1) or 1),
+                "trust": float(whale_trust),
+            }
+        )
+        state["events"] = events
+
+        wallets = {item["wallet"] for item in events if item.get("wallet")}
+        total_amount = sum(float(item.get("amount", 0.0) or 0.0) for item in events)
+        max_wallets_count = max(int(item.get("wallets_count", 1) or 1) for item in events)
+        unique_wallets = max(len(wallets), max_wallets_count)
+        ready_for_gate = total_amount >= WHALE_COPY_MIN_TOTAL_AMOUNT or unique_wallets >= WHALE_COPY_MIN_UNIQUE_WALLETS
+        return {
+            "event_count": len(events),
+            "total_amount": total_amount,
+            "unique_wallets": unique_wallets,
+            "source_count": len({item.get("source") for item in events if item.get("source")}),
+            "max_trust": max(float(item.get("trust", whale_trust) or whale_trust) for item in events),
+            "max_wallets_count": max_wallets_count,
+            "ready_for_gate": ready_for_gate,
+            "ready_for_retry": ready_for_gate,
+        }
+
+    @staticmethod
+    def _build_whale_copy_inputs(inputs: DecisionInputs, summary: Dict) -> DecisionInputs:
+        return DecisionInputs(
+            **{
+                **inputs.__dict__,
+                "event_amount": max(float(inputs.event_amount or 0.0), float(summary["total_amount"])),
+                "wallets_count": max(int(inputs.wallets_count or 1), int(summary["unique_wallets"]), int(summary["max_wallets_count"])),
+                "whale_trust": max(float(inputs.whale_trust), float(summary["max_trust"])),
+            }
+        )
 
     @staticmethod
     def _build_sampling_orderflow_inputs(inputs: DecisionInputs, summary: Optional[Dict]) -> DecisionInputs:

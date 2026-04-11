@@ -41,6 +41,7 @@ class WhaleTracker:
         self.source_mode = "hybrid_cache"
         self.leaderboard_wallets_count = 0
         self.activity_discovered_wallets_count = 0
+        self.graph_discovered_wallets_count = 0
         self.persisted_wallets_count = 0
         self.wallet_timeouts_last_cycle = 0
         self.last_leaderboard_refresh = 0.0
@@ -107,6 +108,12 @@ class WhaleTracker:
             min_event_count_24h=self.discovery_min_events,
             single_event_min_usd=self.discovery_single_event_usd,
         )
+        graph_rows = await self.db.get_ranked_whale_wallets(
+            limit=limit * 3,
+            source_type="graph_discovery",
+            min_event_count_24h=self.discovery_min_events,
+            single_event_min_usd=self.discovery_single_event_usd,
+        )
         persisted_rows = await self.db.get_ranked_whale_wallets(
             limit=limit * 4,
             min_event_count_24h=self.discovery_min_events,
@@ -114,20 +121,22 @@ class WhaleTracker:
         )
 
         await self._refresh_wallet_scores(activity_rows)
+        await self._refresh_wallet_scores(graph_rows)
         await self._refresh_wallet_scores(persisted_rows)
 
         activity_wallets = [row["address"] for row in activity_rows]
+        graph_wallets = [row["address"] for row in graph_rows]
         persisted_wallets = [row["address"] for row in persisted_rows]
         persisted_cache_wallets = [
             row["address"]
             for row in persisted_rows
-            if str(row["source_type"]) in {"activity_discovery", "leaderboard"}
+            if str(row["source_type"]) in {"activity_discovery", "leaderboard", "graph_discovery"}
         ]
         counts = await self.db.get_whale_wallet_counts()
 
         selected: List[str] = []
         seen = set()
-        for group in [activity_wallets, leaderboard_wallets, persisted_cache_wallets, manual_wallets, static_wallets, persisted_wallets]:
+        for group in [activity_wallets, leaderboard_wallets, graph_wallets, persisted_cache_wallets, manual_wallets, static_wallets, persisted_wallets]:
             for wallet in group:
                 if wallet in seen:
                     continue
@@ -141,10 +150,12 @@ class WhaleTracker:
         self.top_whales = selected[:limit]
         self.leaderboard_wallets_count = len(leaderboard_wallets)
         self.activity_discovered_wallets_count = counts["activity_discovered_wallets"]
+        self.graph_discovered_wallets_count = counts["graph_discovered_wallets"]
         self.persisted_wallets_count = counts["persisted_wallets"]
         self.source_mode = self._resolve_source_mode(
             leaderboard_wallets,
             activity_wallets,
+            graph_wallets,
             persisted_cache_wallets,
             manual_wallets,
             static_wallets,
@@ -160,11 +171,12 @@ class WhaleTracker:
             logger.info("WhaleTracker: source_mode=seed_only_mode using manual/static seeds until stronger wallet sources recover.")
         else:
             logger.info(
-                "WhaleTracker: source_mode=%s selected=%s leaderboard_wallets=%s activity_discovered_wallets=%s persisted_wallets=%s",
+                "WhaleTracker: source_mode=%s selected=%s leaderboard_wallets=%s activity_discovered_wallets=%s graph_discovered_wallets=%s persisted_wallets=%s",
                 self.source_mode,
                 len(self.top_whales),
                 self.leaderboard_wallets_count,
                 self.activity_discovered_wallets_count,
+                self.graph_discovered_wallets_count,
                 self.persisted_wallets_count,
             )
         return self.top_whales
@@ -294,15 +306,20 @@ class WhaleTracker:
     def _resolve_source_mode(
         leaderboard_wallets: List[str],
         activity_wallets: List[str],
+        graph_wallets: List[str],
         persisted_cache_wallets: List[str],
         manual_wallets: List[str],
         static_wallets: List[str],
         selected_wallets: List[str],
     ) -> str:
-        if activity_wallets and leaderboard_wallets:
+        if activity_wallets and (leaderboard_wallets or graph_wallets):
             return "hybrid_cache"
         if activity_wallets:
             return "cache_only"
+        if graph_wallets and leaderboard_wallets:
+            return "graph_plus_leaderboard"
+        if graph_wallets:
+            return "graph_discovery"
         if leaderboard_wallets:
             return "leaderboard_live"
         if persisted_cache_wallets:
