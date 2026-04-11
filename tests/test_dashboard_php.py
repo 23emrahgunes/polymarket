@@ -103,6 +103,7 @@ def _create_dashboard_db(path: Path) -> None:
             (4, '2026-04-09 10:03:00', 'polymarket', 'market-4', 'POLITICS', 'whale', 'sampling_relaxed', 'activity', 'reject', 'slippage_guard_rejection,score_below_threshold,missing_polymarket_token_price,token_recovery_failed', 0.48, 0.58, 35.0, 0.48, 'lazy_lookup', 1, 0, '["sampling-token","sampling-market"]', 0, '{"copy_policy":"gated_whale_copy","whale_copy_relaxed_gate":true,"token_recovery_attempted":true,"token_recovery_failed":true}'),
             (5, '2026-04-09 10:04:00', 'polymarket', 'market-5', 'SPORTS', 'discovery', 'baseline', 'discovery', 'reject', 'route_whale_orderflow_only', 0.0, 0.72, 40.0, 0.0, 'active_context', 0, 0, '["route-only-market"]', 0, '{}'),
             (6, '2026-04-09 10:05:00', 'polymarket', 'market-6', 'OTHER', 'whale', 'baseline', 'whale_tracker', 'reject', 'unsupported_side_filtered', 0.0, 0.78, 25.0, 0.0, 'alias_cache', 0, 0, '["unsupported-market"]', 0, '{}'),
+            (7, '2026-04-09 10:06:00', 'polymarket', 'market-3', 'SPORTS', 'whale', 'sampling_relaxed', 'whale_tracker', 'execute', None, 0.71, None, 40.0, 0.71, 'hot_window', 1, 1, '["hot-token","hot-market"]', 1, '{"copy_policy":"gated_whale_copy","whale_copy_relaxed_gate":true,"token_recovery_attempted":true,"token_recovery_hit":true,"gated_whale_event_count":2,"gated_total_notional":900.0,"gated_unique_wallets":2,"gated_source_count":2,"gated_max_trust":0.66}'),
         ],
     )
     cur.execute(
@@ -333,23 +334,29 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     whale_copy_summary = payload['whale_copy_summary']
     assert whale_copy_summary['total_whale_events'] == 5
     assert whale_copy_summary['resolved_whale_events'] == 3
-    assert whale_copy_summary['whale_copy_candidates'] == 3
-    assert whale_copy_summary['gated_rejects'] == 2
+    assert whale_copy_summary['whale_copy_candidates'] == 2
+    assert whale_copy_summary['gated_rejects'] == 1
     assert whale_copy_summary['gated_decisions'] == 1
-    assert whale_copy_summary['gated_executes'] == 2
+    assert whale_copy_summary['gated_executes'] == 1
     whale_copy_recovery = payload['whale_copy_recovery_summary']
     assert whale_copy_recovery['relaxed_gate_attempts'] == 2
+    assert whale_copy_recovery['relaxed_gate_rejects'] == 1
     assert whale_copy_recovery['relaxed_gate_decisions'] == 1
+    assert whale_copy_recovery['relaxed_gate_executes'] == 1
     assert whale_copy_recovery['token_recovery_attempts'] == 2
     assert whale_copy_recovery['token_recovery_hits'] == 1
     assert whale_copy_recovery['token_recovery_failed'] == 1
     assert whale_copy_recovery['missing_token_rejects'] == 1
     gated_breakdown = {row['reason']: row['count'] for row in payload['gated_reject_breakdown']}
-    assert gated_breakdown['liquidity_guard'] == 1
     assert gated_breakdown['score_below_threshold'] == 1
     assert gated_breakdown['slippage_guard_rejection'] == 1
     assert gated_breakdown['missing_polymarket_token_price'] == 1
     assert gated_breakdown['token_recovery_failed'] == 1
+    relaxed_breakdown = {row['reason']: row['count'] for row in payload['relaxed_gate_reject_breakdown']}
+    assert relaxed_breakdown['score_below_threshold'] == 1
+    assert relaxed_breakdown['slippage_guard_rejection'] == 1
+    assert relaxed_breakdown['missing_polymarket_token_price'] == 1
+    assert relaxed_breakdown['token_recovery_failed'] == 1
     assert payload['sampling_summary']['strategy_profile'] == 'sampling_relaxed'
     assert payload['sampling_summary']['closed_trades'] == 1
     assert payload['performance_summary']['evidence']['live_paper_closed'] == 3
@@ -432,6 +439,7 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Whale-Copy' in html
     assert 'Whale-copy recovery' in html
     assert 'Gated Whale-Copy Red Nedenleri' in html
+    assert 'Relaxed Gate Sonrasi Kalan Red Nedenleri' in html
     assert 'Henüz kapanmış whale geçmişi yok; nötr güven.' in html
     assert '&mdash;' in html
 

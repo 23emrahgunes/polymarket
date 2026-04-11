@@ -37,40 +37,131 @@ def _print_row(row) -> None:
     print(row)
 
 
+def _parse_inputs_json(raw):
+    if isinstance(raw, dict):
+        return raw
+    if raw in (None, ""):
+        return {}
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _reason_parts(reason: str) -> list[str]:
+    return [part.strip() for part in str(reason or "").split(",") if part.strip()]
+
+
+def _is_gated_copy_inputs(inputs: dict) -> bool:
+    return str(inputs.get("copy_policy") or "").strip().lower() == "gated_whale_copy"
+
+
+def _is_relaxed_gate_inputs(inputs: dict) -> bool:
+    return bool(inputs.get("whale_copy_relaxed_gate"))
+
+
+def _has_excluded_whale_copy_reason(reason: str) -> bool:
+    normalized = str(reason or "")
+    return (
+        "market_not_mapped" in normalized
+        or "unsupported_side_filtered" in normalized
+        or "sell_side_not_supported" in normalized
+        or "route_whale_orderflow_only" in normalized
+    )
+
+
+def _summarize_whale_copy(rows) -> dict[str, int]:
+    summary = {
+        "total_whale_events": 0,
+        "resolved_whale_events": 0,
+        "whale_copy_candidates": 0,
+        "gated_rejects": 0,
+        "gated_decisions": 0,
+        "gated_executes": 0,
+    }
+    for row in rows or []:
+        action = str(row["action"] if isinstance(row, sqlite3.Row) else row[0] or "").lower()
+        reason = str(row["reason"] if isinstance(row, sqlite3.Row) else row[1] or "")
+        raw_inputs = row["inputs_json"] if isinstance(row, sqlite3.Row) else row[2]
+        inputs = _parse_inputs_json(raw_inputs)
+        is_gated_copy = _is_gated_copy_inputs(inputs)
+        is_event_evaluation = action in {"reject", "decision"}
+
+        if is_event_evaluation:
+            summary["total_whale_events"] += 1
+            if not _has_excluded_whale_copy_reason(reason):
+                summary["resolved_whale_events"] += 1
+            if is_gated_copy:
+                summary["whale_copy_candidates"] += 1
+                if action == "reject":
+                    summary["gated_rejects"] += 1
+                elif action == "decision":
+                    summary["gated_decisions"] += 1
+        elif action == "execute" and is_gated_copy:
+            summary["gated_executes"] += 1
+    return summary
+
+
 def _summarize_whale_copy_recovery(rows) -> dict[str, int]:
     summary = {
         "relaxed_gate_attempts": 0,
+        "relaxed_gate_rejects": 0,
         "relaxed_gate_decisions": 0,
+        "relaxed_gate_executes": 0,
         "token_recovery_attempts": 0,
         "token_recovery_hits": 0,
         "token_recovery_failed": 0,
         "missing_token_rejects": 0,
     }
     for row in rows or []:
-        action = row["action"] if isinstance(row, sqlite3.Row) else row[0]
+        action = str(row["action"] if isinstance(row, sqlite3.Row) else row[0] or "").lower()
         reason = str((row["reason"] if isinstance(row, sqlite3.Row) else row[1]) or "")
         raw_inputs = (row["inputs_json"] if isinstance(row, sqlite3.Row) else row[2]) or "{}"
-        try:
-            inputs = json.loads(raw_inputs)
-        except (TypeError, json.JSONDecodeError):
+        inputs = _parse_inputs_json(raw_inputs)
+        is_gated_copy = _is_gated_copy_inputs(inputs) or _is_relaxed_gate_inputs(inputs)
+        if not is_gated_copy and "token_recovery" not in reason and "missing_polymarket_token_price" not in reason:
             continue
-        copy_policy = str(inputs.get("copy_policy") or "").lower()
-        is_gated_copy = copy_policy == "gated_whale_copy" or bool(inputs.get("whale_copy_relaxed_gate"))
-        if not is_gated_copy and "token_recovery" not in reason:
-            continue
-        if inputs.get("whale_copy_relaxed_gate"):
-            summary["relaxed_gate_attempts"] += 1
-            if action == "decision":
+        is_relaxed_gate = _is_relaxed_gate_inputs(inputs)
+        if is_relaxed_gate:
+            if action in {"reject", "decision"}:
+                summary["relaxed_gate_attempts"] += 1
+            if action == "reject":
+                summary["relaxed_gate_rejects"] += 1
+            elif action == "decision":
                 summary["relaxed_gate_decisions"] += 1
-        if inputs.get("token_recovery_attempted"):
+            elif action == "execute":
+                summary["relaxed_gate_executes"] += 1
+        if action in {"reject", "decision"} and inputs.get("token_recovery_attempted"):
             summary["token_recovery_attempts"] += 1
-        if inputs.get("token_recovery_hit"):
+        if action in {"reject", "decision"} and inputs.get("token_recovery_hit"):
             summary["token_recovery_hits"] += 1
-        if inputs.get("token_recovery_failed") or "token_recovery_failed" in reason:
+        if action in {"reject", "decision"} and (inputs.get("token_recovery_failed") or "token_recovery_failed" in reason):
             summary["token_recovery_failed"] += 1
-        if "missing_polymarket_token_price" in reason:
+        if action in {"reject", "decision"} and "missing_polymarket_token_price" in reason:
             summary["missing_token_rejects"] += 1
     return summary
+
+
+def _summarize_reason_breakdown(rows, *, relaxed_only: bool) -> list[tuple[str, int]]:
+    counts: dict[str, int] = {}
+    for row in rows or []:
+        action = str(row["action"] if isinstance(row, sqlite3.Row) else row[0] or "").lower()
+        if action != "reject":
+            continue
+        reason = str((row["reason"] if isinstance(row, sqlite3.Row) else row[1]) or "").strip()
+        if not reason or _has_excluded_whale_copy_reason(reason):
+            continue
+        raw_inputs = (row["inputs_json"] if isinstance(row, sqlite3.Row) else row[2]) or "{}"
+        inputs = _parse_inputs_json(raw_inputs)
+        if relaxed_only:
+            if not _is_relaxed_gate_inputs(inputs):
+                continue
+        elif not _is_gated_copy_inputs(inputs):
+            continue
+        for part in _reason_parts(reason):
+            counts[part] = counts.get(part, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:10]
 
 
 def _read_latest_status_metrics() -> dict:
@@ -140,6 +231,7 @@ def _fetch_orderflow_mapping_stats(cursor: sqlite3.Cursor, recent_window: bool =
                 SELECT MAX(occurred_at) AS max_occurred_at
                 FROM decision_audit
                 WHERE signal_family IN ('activity_orderflow', 'whale')
+                  AND action IN ('reject', 'decision')
             )
             SELECT
                 COALESCE(SUM(CASE WHEN decision_audit.signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_orderflow,
@@ -147,6 +239,7 @@ def _fetch_orderflow_mapping_stats(cursor: sqlite3.Cursor, recent_window: bool =
             FROM decision_audit
             CROSS JOIN anchor
             WHERE anchor.max_occurred_at IS NOT NULL
+              AND decision_audit.action IN ('reject', 'decision')
               AND decision_audit.occurred_at >= datetime(anchor.max_occurred_at, '-60 minutes')
             """
         ).fetchone()
@@ -157,6 +250,7 @@ def _fetch_orderflow_mapping_stats(cursor: sqlite3.Cursor, recent_window: bool =
                 COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_orderflow,
                 COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND reason LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS unmapped_orderflow
             FROM decision_audit
+            WHERE action IN ('reject', 'decision')
             """
         ).fetchone()
 
@@ -324,6 +418,7 @@ def main() -> int:
                 END AS flow_classification,
                 COUNT(*) AS count
             FROM decision_audit
+            WHERE action IN ('reject', 'decision')
             GROUP BY flow_classification
             HAVING flow_classification != 'other'
             ORDER BY count DESC, flow_classification ASC
@@ -335,6 +430,7 @@ def main() -> int:
             FROM decision_audit
             WHERE strategy_profile = 'sampling_relaxed'
               AND signal_family IN ('activity_orderflow', 'whale')
+              AND action IN ('reject', 'decision')
             GROUP BY action
             ORDER BY count DESC, action ASC
             """
@@ -368,6 +464,7 @@ def main() -> int:
                 COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND strategy_profile != 'sampling_relaxed' THEN 1 ELSE 0 END), 0) AS baseline_orderflow,
                 COALESCE(SUM(CASE WHEN reason IN ('unsupported_side_filtered', 'sell_side_not_supported') THEN 1 ELSE 0 END), 0) AS unsupported_side_filtered
             FROM decision_audit
+            WHERE action IN ('reject', 'decision')
             """
         ).fetchone()
         unsupported_side_summary = cursor.execute(
@@ -379,46 +476,14 @@ def main() -> int:
             ORDER BY count DESC, reason ASC
             """
         ).fetchall()
-        whale_copy_summary = cursor.execute(
+        whale_copy_rows = cursor.execute(
             """
-            SELECT
-                COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_whale_events,
-                COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
-                                      AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
-                                      AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
-                                      AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
-                                 THEN 1 ELSE 0 END), 0) AS resolved_whale_events,
-                COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
-                                      AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
-                                      AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
-                                      AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
-                                      AND COALESCE(reason, '') NOT LIKE '%route_whale_orderflow_only%'
-                                 THEN 1 ELSE 0 END), 0) AS whale_copy_candidates,
-                COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
-                                      AND action = 'reject'
-                                      AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
-                                      AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
-                                      AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
-                                      AND COALESCE(reason, '') NOT LIKE '%route_whale_orderflow_only%'
-                                 THEN 1 ELSE 0 END), 0) AS gated_rejects,
-                COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
-                                      AND action = 'decision'
-                                 THEN 1 ELSE 0 END), 0) AS gated_decisions
-            FROM decision_audit
-            """
-        ).fetchone()
-        gated_reject_breakdown = cursor.execute(
-            """
-            SELECT reason
+            SELECT action, reason, inputs_json
             FROM decision_audit
             WHERE signal_family IN ('activity_orderflow', 'whale')
-              AND action = 'reject'
-              AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
-              AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
-              AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
-              AND COALESCE(reason, '') NOT LIKE '%route_whale_orderflow_only%'
+              AND action IN ('reject', 'decision', 'execute')
             ORDER BY id DESC
-            LIMIT 300
+            LIMIT 500
             """
         ).fetchall()
     except sqlite3.OperationalError:
@@ -428,21 +493,7 @@ def main() -> int:
         mapping_miss_breakdown = []
         source_quality_summary = (0, 0, 0, 0, 0, 0)
         unsupported_side_summary = []
-        whale_copy_summary = (0, 0, 0, 0, 0)
-        gated_reject_breakdown = []
-    try:
-        whale_copy_recovery_rows = cursor.execute(
-            """
-            SELECT action, reason, inputs_json
-            FROM decision_audit
-            WHERE signal_family IN ('activity_orderflow', 'whale')
-              AND inputs_json IS NOT NULL
-            ORDER BY id DESC
-            LIMIT 500
-            """
-        ).fetchall()
-    except sqlite3.OperationalError:
-        whale_copy_recovery_rows = []
+        whale_copy_rows = []
     try:
         alias_integrity = cursor.execute(
             """
@@ -460,6 +511,10 @@ def main() -> int:
     except sqlite3.OperationalError:
         historical_total_orderflow, historical_unmapped_orderflow = (0, 0)
         recent_total_orderflow, recent_unmapped_orderflow = (0, 0)
+    whale_copy_summary = _summarize_whale_copy(whale_copy_rows)
+    whale_copy_recovery_summary = _summarize_whale_copy_recovery(whale_copy_rows)
+    gated_reject_breakdown = _summarize_reason_breakdown(whale_copy_rows, relaxed_only=False)
+    relaxed_gate_reject_breakdown = _summarize_reason_breakdown(whale_copy_rows, relaxed_only=True)
     connection.close()
 
     print(f"DB_PATH={db_path}")
@@ -547,28 +602,16 @@ def main() -> int:
     print(("graph_discovered_wallets", whale_count_map.get("graph_discovery", 0)))
     print(("trusted_whales", trusted_whale_count))
     print("WHALE_COPY_SUMMARY")
-    whale_copy_labels = (
-        "total_whale_events",
-        "resolved_whale_events",
-        "whale_copy_candidates",
-        "gated_rejects",
-        "gated_decisions",
-    )
-    for label, value in zip(whale_copy_labels, whale_copy_summary or ()):
+    for label, value in whale_copy_summary.items():
         print((label, value))
-    print(("gated_executes", sampling_execute_count[0] if sampling_execute_count else 0))
     print("WHALE_COPY_RECOVERY_SUMMARY")
-    for label, value in _summarize_whale_copy_recovery(whale_copy_recovery_rows).items():
+    for label, value in whale_copy_recovery_summary.items():
         print((label, value))
     print("GATED_REJECT_BREAKDOWN")
-    gated_counts: dict[str, int] = {}
-    for row in gated_reject_breakdown:
-        reason_text = str(row[0] if not isinstance(row, sqlite3.Row) else row["reason"] or "").strip()
-        if not reason_text:
-            continue
-        for reason in [part.strip() for part in reason_text.split(",") if part.strip()]:
-            gated_counts[reason] = gated_counts.get(reason, 0) + 1
-    for reason, count in sorted(gated_counts.items(), key=lambda item: (-item[1], item[0]))[:10]:
+    for reason, count in gated_reject_breakdown:
+        print((reason, count))
+    print("RELAXED_GATE_REJECT_BREAKDOWN")
+    for reason, count in relaxed_gate_reject_breakdown:
         print((reason, count))
     print("UNSUPPORTED_SIDE_SUMMARY")
     for row in unsupported_side_summary:

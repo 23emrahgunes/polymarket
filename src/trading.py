@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import json
 import logging
 import os
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -76,6 +77,7 @@ class TradeExecutor:
         entry_spread_pct: float | None = None,
         slippage_proxy_bps: float | None = None,
         whale_trust_at_entry: float | None = None,
+        audit_inputs: Optional[Dict[str, Any]] = None,
     ):
         async with self.lock:
             normalized_sample_kind = sample_kind or self.sample_kind
@@ -173,6 +175,13 @@ class TradeExecutor:
                 whale_trust_at_entry=whale_trust_at_entry,
                 execution_mode=execution_mode,
             )
+            execute_audit_inputs = {
+                **(audit_inputs or {}),
+                "trade_id": trade_id,
+                "side": side,
+                "price": price,
+                "edge": edge,
+            }
             await self.db.add_decision_audit(
                 venue=venue,
                 market_id=market_id,
@@ -190,7 +199,7 @@ class TradeExecutor:
                 whale_trust=whale_trust_at_entry,
                 spread_pct=entry_spread_pct,
                 slippage_proxy_bps=normalized_slippage_proxy,
-                inputs_json=str({"trade_id": trade_id, "side": side, "price": price, "edge": edge}),
+                inputs_json=json.dumps(execute_audit_inputs, sort_keys=True, default=str),
             )
 
             mode_prefix = "LIVE" if self.live_mode else "PAPER"

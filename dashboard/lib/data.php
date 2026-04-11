@@ -209,6 +209,7 @@ function dashboard_fetch_orderflow_mapping_stats(PDO $pdo, bool $recentWindow = 
                 SELECT MAX(occurred_at) AS max_occurred_at
                 FROM recent_decisions
                 WHERE signal_family IN ('activity_orderflow', 'whale')
+                  AND action IN ('reject', 'decision')
             )
             SELECT
                 COALESCE(SUM(CASE WHEN decision_audit.signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_orderflow,
@@ -218,6 +219,7 @@ function dashboard_fetch_orderflow_mapping_stats(PDO $pdo, bool $recentWindow = 
             FROM recent_decisions AS decision_audit
             CROSS JOIN anchor
             WHERE anchor.max_occurred_at IS NOT NULL
+              AND decision_audit.action IN ('reject', 'decision')
               AND decision_audit.occurred_at >= datetime(anchor.max_occurred_at, '-60 minutes')
             "
         ) ?? ['total_orderflow' => 0, 'unmapped_orderflow' => 0, 'alias_cache_hits' => 0, 'lazy_lookup_hits' => 0];
@@ -233,6 +235,7 @@ function dashboard_fetch_orderflow_mapping_stats(PDO $pdo, bool $recentWindow = 
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND mapping_stage = 'alias_cache' AND reason NOT LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS alias_cache_hits,
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND lazy_lookup_hit = 1 THEN 1 ELSE 0 END), 0) AS lazy_lookup_hits
         FROM recent_decisions
+        WHERE action IN ('reject', 'decision')
         "
     ) ?? ['total_orderflow' => 0, 'unmapped_orderflow' => 0, 'alias_cache_hits' => 0, 'lazy_lookup_hits' => 0];
 }

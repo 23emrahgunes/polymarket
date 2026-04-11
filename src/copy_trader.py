@@ -342,6 +342,7 @@ class CopyTrader:
             entry_spread_pct=snapshot["spread_pct"],
             whale_trust_at_entry=whale_trust,
             execution_mode="paper",
+            audit_inputs=decision.inputs,
         )
         if success:
             logger.info(

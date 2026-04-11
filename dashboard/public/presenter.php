@@ -56,6 +56,68 @@ function dashboard_decode_alias_candidates(?string $json): array
     return $aliases;
 }
 
+function dashboard_decode_inputs_json(?string $json): array
+{
+    if ($json === null || trim($json) === '') {
+        return [];
+    }
+
+    try {
+        $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+    } catch (Throwable $exception) {
+        return [];
+    }
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+function dashboard_reason_parts(?string $reasonText): array
+{
+    $reasons = [];
+    foreach (explode(',', trim((string) $reasonText)) as $reason) {
+        $reason = trim($reason);
+        if ($reason === '' || in_array($reason, $reasons, true)) {
+            continue;
+        }
+        $reasons[] = $reason;
+    }
+    return $reasons;
+}
+
+function dashboard_inputs_is_gated_whale_copy(array $inputs): bool
+{
+    return strtolower((string) ($inputs['copy_policy'] ?? '')) === 'gated_whale_copy';
+}
+
+function dashboard_inputs_is_relaxed_gate(array $inputs): bool
+{
+    return !empty($inputs['whale_copy_relaxed_gate']);
+}
+
+function dashboard_reason_is_excluded_whale_copy(?string $reasonText): bool
+{
+    $reasonText = (string) ($reasonText ?? '');
+    return str_contains($reasonText, 'market_not_mapped')
+        || str_contains($reasonText, 'unsupported_side_filtered')
+        || str_contains($reasonText, 'sell_side_not_supported')
+        || str_contains($reasonText, 'route_whale_orderflow_only');
+}
+
+function dashboard_fetch_recent_whale_copy_audit_rows(PDO $pdo): array
+{
+    return dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT action, reason, inputs_json
+        FROM " . dashboard_decision_audit_window_sql('decision_audit') . "
+        WHERE signal_family IN ('activity_orderflow', 'whale')
+          AND action IN ('reject', 'decision', 'execute')
+        ORDER BY id DESC
+        LIMIT 500
+        "
+    );
+}
+
 function dashboard_translate_warning(string $warning): string
 {
     return str_replace(
@@ -197,6 +259,7 @@ function dashboard_build_hot_window_summary(PDO $pdo, array $runtimeSummary): ar
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND mapping_stage = 'alias_cache' AND reason NOT LIKE 'market_not_mapped%' THEN 1 ELSE 0 END), 0) AS alias_cache_hits,
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND lazy_lookup_hit = 1 THEN 1 ELSE 0 END), 0) AS lazy_lookup_hits
         FROM recent_decisions
+        WHERE action IN ('reject', 'decision')
         "
     ) ?: [];
 
@@ -326,6 +389,7 @@ function dashboard_build_routing_breakdown(PDO $pdo): array
             END AS flow_classification,
             COUNT(*) AS count
         FROM recent_decisions
+        WHERE action IN ('reject', 'decision')
         GROUP BY flow_classification
         HAVING flow_classification != 'other'
         ORDER BY count DESC, flow_classification ASC
@@ -351,6 +415,7 @@ function dashboard_build_sampling_decision_summary(PDO $pdo): array
         FROM recent_decisions
         WHERE strategy_profile = 'sampling_relaxed'
           AND signal_family IN ('activity_orderflow', 'whale')
+          AND action IN ('reject', 'decision')
         GROUP BY action
         ORDER BY count DESC, action ASC
         "
@@ -432,6 +497,7 @@ function dashboard_build_source_quality_summary(PDO $pdo): array
             COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') AND strategy_profile != 'sampling_relaxed' THEN 1 ELSE 0 END), 0) AS baseline_orderflow,
             COALESCE(SUM(CASE WHEN reason IN ('unsupported_side_filtered', 'sell_side_not_supported') THEN 1 ELSE 0 END), 0) AS unsupported_side_filtered
         FROM recent_decisions
+        WHERE action IN ('reject', 'decision')
         "
     ) ?? [];
 
@@ -558,85 +624,93 @@ function dashboard_build_trusted_whale_summary(PDO $pdo): array
 
 function dashboard_build_whale_copy_summary(PDO $pdo): array
 {
-    $row = dashboard_fetch_one(
-        $pdo,
-        "
-        WITH " . dashboard_decision_audit_window_cte('recent_decisions') . "
-        SELECT
-            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale') THEN 1 ELSE 0 END), 0) AS total_whale_events,
-            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
-                                  AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
-                                  AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
-                                  AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
-                             THEN 1 ELSE 0 END), 0) AS resolved_whale_events,
-            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
-                                  AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
-                                  AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
-                                  AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
-                                  AND COALESCE(reason, '') NOT LIKE '%route_whale_orderflow_only%'
-                             THEN 1 ELSE 0 END), 0) AS whale_copy_candidates,
-            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
-                                  AND action = 'reject'
-                                  AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
-                                  AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
-                                  AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
-                                  AND COALESCE(reason, '') NOT LIKE '%route_whale_orderflow_only%'
-                             THEN 1 ELSE 0 END), 0) AS gated_rejects,
-            COALESCE(SUM(CASE WHEN signal_family IN ('activity_orderflow', 'whale')
-                                  AND action = 'decision'
-                             THEN 1 ELSE 0 END), 0) AS gated_decisions
-        FROM recent_decisions
-        "
-    ) ?: [];
-
-    $executeQuery = "
-        SELECT COUNT(*) AS count
-        FROM trades
-        WHERE venue = 'polymarket'
-          AND strategy_profile IN ('baseline', 'sampling_relaxed')
-          AND source_signal IN ('activity', 'whale_tracker')
-    ";
-    $executeRow = dashboard_fetch_one($pdo, $executeQuery) ?: ['count' => 0];
-
-    return [
-        'total_whale_events' => (int) ($row['total_whale_events'] ?? 0),
-        'resolved_whale_events' => (int) ($row['resolved_whale_events'] ?? 0),
-        'whale_copy_candidates' => (int) ($row['whale_copy_candidates'] ?? 0),
-        'gated_rejects' => (int) ($row['gated_rejects'] ?? 0),
-        'gated_decisions' => (int) ($row['gated_decisions'] ?? 0),
-        'gated_executes' => (int) ($executeRow['count'] ?? 0),
+    $summary = [
+        'total_whale_events' => 0,
+        'resolved_whale_events' => 0,
+        'whale_copy_candidates' => 0,
+        'gated_rejects' => 0,
+        'gated_decisions' => 0,
+        'gated_executes' => 0,
     ];
+
+    foreach (dashboard_fetch_recent_whale_copy_audit_rows($pdo) as $row) {
+        $action = strtolower((string) ($row['action'] ?? ''));
+        $reason = (string) ($row['reason'] ?? '');
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        $isGatedCopy = dashboard_inputs_is_gated_whale_copy($inputs);
+
+        if (in_array($action, ['reject', 'decision'], true)) {
+            $summary['total_whale_events']++;
+            if (!dashboard_reason_is_excluded_whale_copy($reason)) {
+                $summary['resolved_whale_events']++;
+            }
+            if ($isGatedCopy) {
+                $summary['whale_copy_candidates']++;
+                if ($action === 'reject') {
+                    $summary['gated_rejects']++;
+                } elseif ($action === 'decision') {
+                    $summary['gated_decisions']++;
+                }
+            }
+            continue;
+        }
+
+        if ($action === 'execute' && $isGatedCopy) {
+            $summary['gated_executes']++;
+        }
+    }
+
+    return $summary;
 }
 
 function dashboard_build_gated_reject_breakdown(PDO $pdo): array
 {
-    $rows = dashboard_fetch_all(
-        $pdo,
-        "
-        SELECT reason
-        FROM " . dashboard_decision_audit_window_sql('decision_audit') . "
-        WHERE signal_family IN ('activity_orderflow', 'whale')
-          AND action = 'reject'
-          AND COALESCE(reason, '') NOT LIKE 'market_not_mapped%'
-          AND COALESCE(reason, '') NOT LIKE '%unsupported_side_filtered%'
-          AND COALESCE(reason, '') NOT LIKE '%sell_side_not_supported%'
-          AND COALESCE(reason, '') NOT LIKE '%route_whale_orderflow_only%'
-        ORDER BY id DESC
-        LIMIT 300
-        "
-    );
-
     $counts = [];
-    foreach ($rows as $row) {
-        $reasonText = trim((string) ($row['reason'] ?? ''));
-        if ($reasonText === '') {
+    foreach (dashboard_fetch_recent_whale_copy_audit_rows($pdo) as $row) {
+        if (strtolower((string) ($row['action'] ?? '')) !== 'reject') {
             continue;
         }
-        foreach (explode(',', $reasonText) as $reason) {
-            $reason = trim($reason);
-            if ($reason === '') {
-                continue;
-            }
+        $reasonText = trim((string) ($row['reason'] ?? ''));
+        if ($reasonText === '' || dashboard_reason_is_excluded_whale_copy($reasonText)) {
+            continue;
+        }
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        if (!dashboard_inputs_is_gated_whale_copy($inputs)) {
+            continue;
+        }
+        foreach (dashboard_reason_parts($reasonText) as $reason) {
+            $counts[$reason] = ($counts[$reason] ?? 0) + 1;
+        }
+    }
+
+    arsort($counts);
+    $items = [];
+    foreach (array_slice($counts, 0, 10, true) as $reason => $count) {
+        $items[] = [
+            'reason' => $reason,
+            'count' => $count,
+        ];
+    }
+
+    return $items;
+}
+
+function dashboard_build_relaxed_gate_reject_breakdown(PDO $pdo): array
+{
+    $counts = [];
+    foreach (dashboard_fetch_recent_whale_copy_audit_rows($pdo) as $row) {
+        if (strtolower((string) ($row['action'] ?? '')) !== 'reject') {
+            continue;
+        }
+        $reasonText = trim((string) ($row['reason'] ?? ''));
+        if ($reasonText === '' || dashboard_reason_is_excluded_whale_copy($reasonText)) {
+            continue;
+        }
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        if (!dashboard_inputs_is_relaxed_gate($inputs)) {
+            continue;
+        }
+        foreach (dashboard_reason_parts($reasonText) as $reason) {
             $counts[$reason] = ($counts[$reason] ?? 0) + 1;
         }
     }
@@ -657,7 +731,9 @@ function dashboard_build_whale_copy_recovery_summary(PDO $pdo): array
 {
     $summary = [
         'relaxed_gate_attempts' => 0,
+        'relaxed_gate_rejects' => 0,
         'relaxed_gate_decisions' => 0,
+        'relaxed_gate_executes' => 0,
         'token_recovery_attempts' => 0,
         'token_recovery_hits' => 0,
         'token_recovery_failed' => 0,
@@ -680,34 +756,37 @@ function dashboard_build_whale_copy_recovery_summary(PDO $pdo): array
     );
 
     foreach ($rows as $row) {
-        $inputs = json_decode((string) ($row['inputs_json'] ?? ''), true);
-        if (!is_array($inputs)) {
-            continue;
-        }
-
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
         $reason = (string) ($row['reason'] ?? '');
         $copyPolicy = strtolower((string) ($inputs['copy_policy'] ?? ''));
         $isGatedCopy = $copyPolicy === 'gated_whale_copy' || !empty($inputs['whale_copy_relaxed_gate']);
-        if (!$isGatedCopy && !str_contains($reason, 'token_recovery')) {
+        if (!$isGatedCopy && !str_contains($reason, 'token_recovery') && !str_contains($reason, 'missing_polymarket_token_price')) {
             continue;
         }
 
+        $action = strtolower((string) ($row['action'] ?? ''));
         if (!empty($inputs['whale_copy_relaxed_gate'])) {
-            $summary['relaxed_gate_attempts']++;
-            if (($row['action'] ?? '') === 'decision') {
+            if (in_array($action, ['reject', 'decision'], true)) {
+                $summary['relaxed_gate_attempts']++;
+            }
+            if ($action === 'reject') {
+                $summary['relaxed_gate_rejects']++;
+            } elseif ($action === 'decision') {
                 $summary['relaxed_gate_decisions']++;
+            } elseif ($action === 'execute') {
+                $summary['relaxed_gate_executes']++;
             }
         }
-        if (!empty($inputs['token_recovery_attempted'])) {
+        if (in_array($action, ['reject', 'decision'], true) && !empty($inputs['token_recovery_attempted'])) {
             $summary['token_recovery_attempts']++;
         }
-        if (!empty($inputs['token_recovery_hit'])) {
+        if (in_array($action, ['reject', 'decision'], true) && !empty($inputs['token_recovery_hit'])) {
             $summary['token_recovery_hits']++;
         }
-        if (!empty($inputs['token_recovery_failed']) || str_contains($reason, 'token_recovery_failed')) {
+        if (in_array($action, ['reject', 'decision'], true) && (!empty($inputs['token_recovery_failed']) || str_contains($reason, 'token_recovery_failed'))) {
             $summary['token_recovery_failed']++;
         }
-        if (str_contains($reason, 'missing_polymarket_token_price')) {
+        if (in_array($action, ['reject', 'decision'], true) && str_contains($reason, 'missing_polymarket_token_price')) {
             $summary['missing_token_rejects']++;
         }
     }
@@ -757,6 +836,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['trusted_whale_summary'] = dashboard_build_trusted_whale_summary($pdo);
         $payload['whale_copy_summary'] = dashboard_build_whale_copy_summary($pdo);
         $payload['gated_reject_breakdown'] = dashboard_build_gated_reject_breakdown($pdo);
+        $payload['relaxed_gate_reject_breakdown'] = dashboard_build_relaxed_gate_reject_breakdown($pdo);
         $payload['whale_copy_recovery_summary'] = dashboard_build_whale_copy_recovery_summary($pdo);
         $payload = dashboard_augment_recent_decisions($pdo, $payload);
     } else {
@@ -773,6 +853,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['trusted_whale_summary'] = [];
         $payload['whale_copy_summary'] = [];
         $payload['gated_reject_breakdown'] = [];
+        $payload['relaxed_gate_reject_breakdown'] = [];
         $payload['whale_copy_recovery_summary'] = [];
         $payload['runtime_summary'] = array_merge(
             $payload['runtime_summary'] ?? [],

@@ -1,3 +1,4 @@
+import json
 import time
 
 import pytest
@@ -8,6 +9,7 @@ from src.decision_engine import DecisionEngine
 from src.evaluation_utils import STRATEGY_PROFILE_SAMPLING_RELAXED
 from src.market_mapping import collect_alias_candidates
 from src.runtime import GhostBotRuntime, RuntimeSettings
+from src.trading import TradeExecutor
 
 
 class _FakeScanner:
@@ -58,6 +60,63 @@ class _FakeTrader:
     async def execute_trade(self, *args, **kwargs):
         self.calls.append({"args": args, "kwargs": kwargs})
         return True, "ok"
+
+
+@pytest.mark.asyncio
+async def test_trade_executor_persists_gated_whale_copy_execute_inputs(tmp_path):
+    db_path = str(tmp_path / "gated_execute_audit.db")
+    db = Database(db_path)
+    await db.connect()
+
+    trader = TradeExecutor(db, live_mode=False)
+    success, _ = await trader.execute_trade(
+        "0xMARKET-EXEC",
+        "YES",
+        25.0,
+        0.57,
+        0.04,
+        0.81,
+        source="activity",
+        category="SPORTS",
+        venue="polymarket",
+        source_signal="whale_tracker",
+        signal_family="whale",
+        strategy_profile=STRATEGY_PROFILE_SAMPLING_RELAXED,
+        audit_inputs={
+            "copy_policy": "gated_whale_copy",
+            "whale_copy_relaxed_gate": True,
+            "token_recovery_attempted": True,
+            "token_recovery_hit": True,
+            "gated_whale_event_count": 3,
+            "gated_total_notional": 1500.0,
+            "gated_unique_wallets": 2,
+            "gated_source_count": 2,
+            "gated_max_trust": 0.71,
+        },
+    )
+
+    async with db.conn.execute(
+        """
+        SELECT action, inputs_json
+        FROM decision_audit
+        WHERE action = 'execute'
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ) as cursor:
+        execute_row = await cursor.fetchone()
+    await db.close()
+
+    assert success is True
+    assert execute_row is not None
+    execute_inputs = json.loads(execute_row["inputs_json"])
+    assert execute_inputs["copy_policy"] == "gated_whale_copy"
+    assert execute_inputs["whale_copy_relaxed_gate"] is True
+    assert execute_inputs["token_recovery_attempted"] is True
+    assert execute_inputs["token_recovery_hit"] is True
+    assert execute_inputs["gated_whale_event_count"] == 3
+    assert execute_inputs["gated_total_notional"] == 1500.0
+    assert execute_inputs["trade_id"] >= 1
 
 
 def test_collect_alias_candidates_expands_hex_variants():

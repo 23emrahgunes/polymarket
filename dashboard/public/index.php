@@ -236,6 +236,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #whale-copy-summary,
         #whale-copy-recovery-summary,
         #gated-reject-breakdown,
+        #relaxed-gate-reject-breakdown,
         #performance-snapshot,
         #sampling-reject-breakdown {
             border: 1px solid rgba(132, 181, 205, 0.12);
@@ -246,6 +247,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #top-whales,
         #trusted-whale-summary,
         #gated-reject-breakdown,
+        #relaxed-gate-reject-breakdown,
         #sampling-reject-breakdown {
             margin-top: 12px;
         }
@@ -266,6 +268,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .subcard #whale-copy-summary,
         .subcard #whale-copy-recovery-summary,
         .subcard #gated-reject-breakdown,
+        .subcard #relaxed-gate-reject-breakdown,
         .subcard #performance-snapshot,
         .subcard #sampling-reject-breakdown {
             border: 0;
@@ -310,14 +313,15 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #top-market-aliases, #top-whales, #trusted-whale-summary { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
         #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary { max-height: 420px; overflow: auto; }
-        #sampling-reject-breakdown, #gated-reject-breakdown { max-height: 220px; overflow: auto; }
+        #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
         #recent-decisions table { min-width: 1040px; table-layout: auto; }
         #top-whales table, #trusted-whale-summary table { min-width: 900px; table-layout: auto; }
         #top-market-aliases table,
         #recent-unresolved-aliases table,
         #sampling-reject-breakdown table,
-        #gated-reject-breakdown table { min-width: 560px; table-layout: auto; }
+        #gated-reject-breakdown table,
+        #relaxed-gate-reject-breakdown table { min-width: 560px; table-layout: auto; }
         @media (max-width: 1100px) {
             .panel-half, .panel-third, .panel-tertiary, .panel-primary, .panel-secondary { grid-column: span 12; }
             .panel-inline-grid { grid-template-columns: 1fr; }
@@ -438,6 +442,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
             <div class="panel-subgrid">
                 <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Strateji ve Sampling</h3><span class="badge warn">Özet</span></div>
+                    <p class="subcard-copy">Bu alan yalnizca copy_policy=gated_whale_copy ile isaretlenmis eventleri sayar; generic whale/activity redlerini icermez.</p>
                     <div class="metric-list" id="whale-copy-summary"></div>
                     <div class="subsection-title">Whale-copy recovery özeti</div>
                     <div class="metric-list" id="whale-copy-recovery-summary"></div>
@@ -446,6 +451,10 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                 <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Gated Whale-Copy Red Nedenleri</h3><span class="badge warn">Gate</span></div>
                     <div id="gated-reject-breakdown"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Relaxed Gate Sonrasi Kalan Red Nedenleri</h3><span class="badge warn">Recovery</span></div>
+                    <div id="relaxed-gate-reject-breakdown"></div>
                 </div>
                 <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Sampling Red Nedenleri</h3><span class="badge warn">Blocker</span></div>
@@ -705,6 +714,7 @@ function setupDiagnosticFolds() {
     collapseSectionById('trusted-whale-summary', 'Kanıtlı Balinalar', 'info');
     collapseSectionById('top-whales', 'Balina Tablosu', 'info');
     collapseSectionById('gated-reject-breakdown', 'Gated Whale-Copy Red Nedenleri', 'warn');
+    collapseSectionById('relaxed-gate-reject-breakdown', 'Relaxed Gate Sonrasi Kalan Red Nedenleri', 'warn');
     collapseSectionById('sampling-reject-breakdown', 'Sampling Red Nedenleri', 'warn');
 }
 
@@ -949,7 +959,9 @@ function updatePanels(payload) {
     const whaleCopyRecovery = payload.whale_copy_recovery_summary || {};
     renderMetrics('whale-copy-recovery-summary', [
         { label: 'Relaxed gate denemesi', value: formatNumber(whaleCopyRecovery.relaxed_gate_attempts, 0) },
+        { label: 'Relaxed gate red', value: formatNumber(whaleCopyRecovery.relaxed_gate_rejects, 0) },
         { label: 'Relaxed gate karar', value: formatNumber(whaleCopyRecovery.relaxed_gate_decisions, 0) },
+        { label: 'Relaxed gate execute', value: formatNumber(whaleCopyRecovery.relaxed_gate_executes, 0) },
         { label: 'Token recovery denemesi', value: formatNumber(whaleCopyRecovery.token_recovery_attempts, 0) },
         { label: 'Token recovery hit', value: formatNumber(whaleCopyRecovery.token_recovery_hits, 0) },
         { label: 'Token recovery failed', value: formatNumber(whaleCopyRecovery.token_recovery_failed, 0) },
@@ -986,6 +998,11 @@ function updatePanels(payload) {
         { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
         { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
     ], payload.gated_reject_breakdown, 'Henüz gated whale-copy red nedeni birikmedi.');
+
+    renderTable('relaxed-gate-reject-breakdown', [
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.relaxed_gate_reject_breakdown, 'Henuz relaxed gate red nedeni birikmedi.');
 
     const logLines = Array.isArray(payload.service_log_excerpt) ? payload.service_log_excerpt : [];
     document.getElementById('service-log').textContent = logLines.length > 0 ? logLines.join('\n') : 'Servis logu alınamadı.';
