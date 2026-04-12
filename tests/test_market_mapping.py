@@ -25,6 +25,23 @@ class _FakeScanner:
         }
 
 
+class _CountingScanner:
+    def __init__(self):
+        self.calls = []
+
+    async def get_orderbook_snapshot(self, token_id):
+        self.calls.append(token_id)
+        return {
+            "token_id": token_id,
+            "best_bid": 0.57,
+            "best_ask": 0.58,
+            "mid_price": 0.575,
+            "spread_pct": 0.017,
+            "is_valid": True,
+            "reason": "ok",
+        }
+
+
 class _TokenFallbackScanner:
     def __init__(self, valid_token: str | None):
         self.valid_token = valid_token
@@ -193,6 +210,52 @@ async def test_copy_trader_uses_alias_cache_to_execute_trade(tmp_path):
     assert trader.calls[0]["args"][0] == "0xmarket1"
     assert trader.calls[0]["args"][1] == "YES"
     assert cached_alias is not None
+
+
+@pytest.mark.asyncio
+async def test_copy_trader_persists_aliases_before_filtering_sell_side(tmp_path):
+    db_path = str(tmp_path / "sell_side_alias_persist.db")
+    db = Database(db_path)
+    await db.connect()
+    await db.upsert_market_aliases(
+        market_id="0xMARKET-SELL",
+        aliases=["0xMARKET-SELL", "0xTOKEN-SELL"],
+        question="Will Team Sell lose?",
+        category="SPORTS",
+        volume_24h=80_000.0,
+        active=True,
+        source="explorer",
+    )
+
+    audits = []
+    trader = _FakeTrader()
+    scanner = _CountingScanner()
+    copy_trader = CopyTrader(trader, scanner, db, DecisionEngine(audit_sink=audits.append))
+
+    success = await copy_trader.evaluate_activity_event(
+        {
+            "type": "WHALE_EVENT",
+            "market_id": "0xMARKET-SELL",
+            "token_id": "0xTOKEN-SELL",
+            "side": "SELL",
+            "amount": 2_500.0,
+            "wallet": "0xSELLWHALE",
+            "source": "activity",
+            "alias_candidates": ["sell-market-slug"],
+        }
+    )
+
+    persisted_alias = await db.resolve_market_alias(["sell-market-slug"])
+    await db.close()
+
+    assert success is False
+    assert trader.calls == []
+    assert scanner.calls == []
+    assert persisted_alias is not None
+    assert audits[-1].reasons == ["unsupported_side_filtered"]
+    assert audits[-1].inputs["original_side"] == "SELL"
+    assert audits[-1].inputs["copy_eligible"] is False
+    assert audits[-1].inputs["side_filter_stage"] == "post_mapping_pre_orderbook"
 
 
 @pytest.mark.asyncio

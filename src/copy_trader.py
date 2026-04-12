@@ -27,8 +27,9 @@ SAMPLING_ORDERFLOW_WINDOW_SECONDS = 300.0
 SAMPLING_ORDERFLOW_MIN_EVENTS = 2
 SAMPLING_ORDERFLOW_MIN_TOTAL_AMOUNT = 500.0
 WHALE_COPY_WINDOW_SECONDS = 600.0
-WHALE_COPY_MIN_TOTAL_AMOUNT = 500.0
+WHALE_COPY_MIN_TOTAL_AMOUNT = 350.0
 WHALE_COPY_MIN_UNIQUE_WALLETS = 2
+WHALE_COPY_MIN_EVENTS = 2
 
 
 class CopyTrader:
@@ -174,6 +175,12 @@ class CopyTrader:
             if self.mapping_event_callback is not None:
                 await self.mapping_event_callback(mapped=False, stage=mapping_stage)
             decision = self.decision_engine.reject(base_inputs, mapping_reason)
+            decision.inputs.update(
+                {
+                    "original_side": side,
+                    "copy_eligible": side == "BUY",
+                }
+            )
             self.decision_engine.log_result(decision, logger)
             return False
         if self.mapping_event_callback is not None:
@@ -183,11 +190,24 @@ class CopyTrader:
 
         if side != "BUY":
             decision = self.decision_engine.reject(base_inputs, "unsupported_side_filtered")
+            decision.inputs.update(
+                {
+                    "original_side": side,
+                    "copy_eligible": False,
+                    "side_filter_stage": "post_mapping_pre_orderbook",
+                }
+            )
             self.decision_engine.log_result(decision, logger)
             return False
 
         if event.get("type") == "WHALE_EVENT" and not wallet:
             decision = self.decision_engine.reject(base_inputs, "whale_source_unavailable")
+            decision.inputs.update(
+                {
+                    "original_side": side,
+                    "copy_eligible": True,
+                }
+            )
             self.decision_engine.log_result(decision, logger)
             return False
 
@@ -230,7 +250,13 @@ class CopyTrader:
                 ),
                 *self._dedupe_reasons(reject_reasons),
             )
-            decision.inputs.update(token_recovery_meta)
+            decision.inputs.update(
+                {
+                    "original_side": side,
+                    "copy_eligible": True,
+                    **token_recovery_meta,
+                }
+            )
             self.decision_engine.log_result(decision, logger)
             return False
 
@@ -310,6 +336,7 @@ class CopyTrader:
             decision.inputs.update(
                 {
                     "copy_policy": COPY_POLICY_GATED_WHALE_COPY,
+                    "whale_copy_gate_ready": whale_copy_summary["ready_for_gate"],
                     "gated_whale_event_count": whale_copy_summary["event_count"],
                     "gated_total_notional": round(whale_copy_summary["total_amount"], 4),
                     "gated_unique_wallets": whale_copy_summary["unique_wallets"],
@@ -317,7 +344,13 @@ class CopyTrader:
                     "gated_source_count": whale_copy_summary["source_count"],
                 }
             )
-        decision.inputs.update(token_recovery_meta)
+        decision.inputs.update(
+            {
+                "original_side": side,
+                "copy_eligible": True,
+                **token_recovery_meta,
+            }
+        )
         self.decision_engine.log_result(decision, logger)
 
         if not decision.should_trade:
@@ -693,7 +726,11 @@ class CopyTrader:
         total_amount = sum(float(item.get("amount", 0.0) or 0.0) for item in events)
         max_wallets_count = max(int(item.get("wallets_count", 1) or 1) for item in events)
         unique_wallets = max(len(wallets), max_wallets_count)
-        ready_for_gate = total_amount >= WHALE_COPY_MIN_TOTAL_AMOUNT or unique_wallets >= WHALE_COPY_MIN_UNIQUE_WALLETS
+        ready_for_gate = (
+            total_amount >= WHALE_COPY_MIN_TOTAL_AMOUNT
+            or unique_wallets >= WHALE_COPY_MIN_UNIQUE_WALLETS
+            or len(events) >= WHALE_COPY_MIN_EVENTS
+        )
         return {
             "event_count": len(events),
             "total_amount": total_amount,

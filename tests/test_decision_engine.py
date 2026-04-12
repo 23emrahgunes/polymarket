@@ -150,7 +150,7 @@ def test_gated_whale_copy_relaxes_score_only_for_sampling_profile():
     assert sampling.should_trade is False
     assert "score_below_threshold" in sampling.reasons
     assert gated_copy.should_trade is True
-    assert gated_copy.threshold == pytest.approx(0.46)
+    assert gated_copy.threshold == pytest.approx(0.42)
     assert gated_copy.inputs["whale_copy_relaxed_gate"] is True
 
 
@@ -182,5 +182,5 @@ def test_gated_whale_copy_spread_and_liquidity_relaxation_does_not_change_sampli
     assert "liquidity_guard_rejection" in sampling.reasons
     assert "slippage_guard_rejection" in sampling.reasons
     assert gated_copy.should_trade is True
-    assert gated_copy.inputs["effective_max_spread_pct"] == pytest.approx(0.068, rel=1e-4)
-    assert gated_copy.inputs["effective_min_volume_24h"] == pytest.approx(9750.0)
+    assert gated_copy.inputs["effective_max_spread_pct"] == pytest.approx(0.076, rel=1e-4)
+    assert gated_copy.inputs["effective_min_volume_24h"] == pytest.approx(8250.0)

@@ -13,6 +13,10 @@ from src.market_mapping import collect_alias_candidates
 logger = logging.getLogger(__name__)
 
 
+GRAPH_DISCOVERY_MIN_EVENT_USD = 1_500.0
+GRAPH_DISCOVERY_MIN_TOTAL_NOTIONAL = 3_000.0
+
+
 class ActivityHunter:
     def __init__(
         self,
@@ -38,6 +42,8 @@ class ActivityHunter:
         self.discovery_min_event_usd = discovery_min_event_usd
         self.discovery_min_events = discovery_min_events
         self.discovery_single_event_usd = discovery_single_event_usd
+        self.graph_discovery_min_event_usd = GRAPH_DISCOVERY_MIN_EVENT_USD
+        self.graph_discovery_min_total_notional = GRAPH_DISCOVERY_MIN_TOTAL_NOTIONAL
         self._last_api_error_reason: Optional[str] = None
         self._last_api_error_ts = 0.0
 
@@ -183,21 +189,19 @@ class ActivityHunter:
             amount = float(activity.get("usdcSize", 0.0) or 0.0)
             if amount <= 0:
                 amount = size * price
-            if amount < self.discovery_min_event_usd:
-                continue
-
             question = str(activity.get("question") or activity.get("title") or "")
             category = classify_market_category(question) if question else "UNKNOWN"
-            await self.db.upsert_whale_wallet(
-                wallet,
-                "activity_discovery",
-                event_amount=amount,
-                event_category=category,
-            )
+            if amount >= self.discovery_min_event_usd:
+                await self.db.upsert_whale_wallet(
+                    wallet,
+                    "activity_discovery",
+                    event_amount=amount,
+                    event_category=category,
+                )
 
             market_ref = activity.get("conditionId") or activity.get("condition_id") or activity.get("market_id") or activity.get("asset")
             side = str(activity.get("side", "BUY")).upper()
-            if not market_ref:
+            if amount < self.graph_discovery_min_event_usd or not market_ref:
                 continue
             group_key = (str(market_ref), side)
             group = grouped_wallets.setdefault(
@@ -215,6 +219,8 @@ class ActivityHunter:
         for (market_ref, side), group in grouped_wallets.items():
             wallets = list(group["wallets"].keys())
             if len(wallets) < 2:
+                continue
+            if float(group["total_amount"] or 0.0) < self.graph_discovery_min_total_notional:
                 continue
             await self.db.upsert_whale_wallet_graph_cluster(
                 wallets,

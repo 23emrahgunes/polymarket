@@ -103,3 +103,51 @@ async def test_record_discovery_candidates_accepts_data_api_trade_payload(tmp_pa
 
     assert wallet is not None
     assert wallet["source_type"] == "activity_discovery"
+
+
+@pytest.mark.asyncio
+async def test_record_discovery_candidates_promotes_graph_clusters_below_activity_threshold(tmp_path):
+    from src.database import Database
+
+    db_path = str(tmp_path / "graph_discovery_low_threshold.db")
+    db = Database(db_path)
+    await db.connect()
+
+    hunter = ActivityHunter(db=db)
+    await hunter.record_discovery_candidates(
+        [
+            {
+                "transactionHash": "0xTX3",
+                "proxyWallet": "0xGRAPH1",
+                "price": 0.5,
+                "size": 3200,
+                "usdcSize": 1600,
+                "conditionId": "0xMARKET-GRAPH",
+                "asset": "0xTOKEN-GRAPH",
+                "side": "BUY",
+                "title": "Will Team Graph win?",
+            },
+            {
+                "transactionHash": "0xTX4",
+                "proxyWallet": "0xGRAPH2",
+                "price": 0.5,
+                "size": 3200,
+                "usdcSize": 1600,
+                "conditionId": "0xMARKET-GRAPH",
+                "asset": "0xTOKEN-GRAPH",
+                "side": "BUY",
+                "title": "Will Team Graph win?",
+            },
+        ]
+    )
+
+    counts = await db.get_whale_wallet_counts()
+    ranked = await db.get_ranked_whale_wallets(limit=10, source_type="graph_discovery", min_event_count_24h=1)
+    activity_wallet = await db.get_whale_wallet("0xgraph1")
+    await db.close()
+
+    assert counts["graph_discovered_wallets"] == 2
+    assert counts["activity_discovered_wallets"] == 0
+    assert {row["address"] for row in ranked} == {"0xgraph1", "0xgraph2"}
+    assert activity_wallet is not None
+    assert activity_wallet["source_type"] == "graph_discovery"

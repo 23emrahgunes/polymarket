@@ -449,6 +449,15 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                     <div class="metric-list" id="performance-snapshot"></div>
                 </div>
                 <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Whale Side Ozeti</h3><span class="badge info">Side</span></div>
+                    <p class="subcard-copy">SELL yonlu eventler mapping ve alias cache icin islenir; trade adayina cevrilmez.</p>
+                    <div class="metric-list" id="whale-side-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Whale-Copy Gate Funnel</h3><span class="badge info">Funnel</span></div>
+                    <div class="metric-list" id="whale-copy-gate-funnel"></div>
+                </div>
+                <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Gated Whale-Copy Red Nedenleri</h3><span class="badge warn">Gate</span></div>
                     <div id="gated-reject-breakdown"></div>
                 </div>
@@ -966,6 +975,23 @@ function updatePanels(payload) {
         { label: 'Token recovery hit', value: formatNumber(whaleCopyRecovery.token_recovery_hits, 0) },
         { label: 'Token recovery failed', value: formatNumber(whaleCopyRecovery.token_recovery_failed, 0) },
         { label: 'Eksik token fiyatı red', value: formatNumber(whaleCopyRecovery.missing_token_rejects, 0) }
+    ]);
+
+    const whaleSide = payload.whale_side_summary || {};
+    renderMetrics('whale-side-summary', [
+        { label: 'BUY side event', value: formatNumber(whaleSide.buy_side_events, 0) },
+        { label: 'SELL side event', value: formatNumber(whaleSide.sell_side_events, 0) },
+        { label: 'Desteklenmeyen yon filtre', value: formatNumber(whaleSide.unsupported_side_filtered, 0) }
+    ]);
+
+    const whaleCopyGateFunnel = payload.whale_copy_gate_funnel || {};
+    renderMetrics('whale-copy-gate-funnel', [
+        { label: 'Resolved whale event', value: formatNumber(whaleCopyGateFunnel.resolved_whale_events, 0) },
+        { label: 'Gate-ready aday', value: formatNumber(whaleCopyGateFunnel.gate_ready_candidates, 0) },
+        { label: 'Relaxed gate denemesi', value: formatNumber(whaleCopyGateFunnel.relaxed_gate_attempts, 0) },
+        { label: 'Gated red', value: formatNumber(whaleCopyGateFunnel.gated_rejects, 0) },
+        { label: 'Gated karar', value: formatNumber(whaleCopyGateFunnel.gated_decisions, 0) },
+        { label: 'Gated execute', value: formatNumber(whaleCopyGateFunnel.gated_executes, 0) }
     ]);
 
     const performance = payload.performance_summary || {};

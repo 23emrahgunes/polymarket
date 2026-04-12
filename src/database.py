@@ -1103,9 +1103,27 @@ class Database:
         single_event_min_usd: float = 10_000.0,
     ) -> List[aiosqlite.Row]:
         query = """
-            SELECT whale_wallets.*, COALESCE(whale_stats.trust_score, 0.5) AS trust_score
+            SELECT
+                whale_wallets.*,
+                COALESCE(whale_stats.trust_score, 0.5) AS trust_score,
+                COALESCE(graph_stats.graph_edge_count, 0) AS graph_edge_count,
+                COALESCE(graph_stats.graph_total_notional, 0) AS graph_total_notional
             FROM whale_wallets
             LEFT JOIN whale_stats ON whale_stats.address = whale_wallets.address
+            LEFT JOIN (
+                SELECT
+                    wallet_address,
+                    COUNT(*) AS graph_edge_count,
+                    COALESCE(SUM(total_notional), 0) AS graph_total_notional
+                FROM (
+                    SELECT LOWER(wallet_a) AS wallet_address, total_notional
+                    FROM whale_wallet_graph_edges
+                    UNION ALL
+                    SELECT LOWER(wallet_b) AS wallet_address, total_notional
+                    FROM whale_wallet_graph_edges
+                ) AS graph_union
+                GROUP BY wallet_address
+            ) AS graph_stats ON LOWER(whale_wallets.address) = graph_stats.wallet_address
             WHERE whale_wallets.enabled = 1
         """
         params: list = []
@@ -1223,10 +1241,13 @@ class Database:
 
     @staticmethod
     def _rank_whale_wallet_row(row: aiosqlite.Row) -> float:
+        keys = set(row.keys()) if hasattr(row, "keys") else set()
         trust_score = float(row["trust_score"] or 0.5)
         event_amount = float(row["last_event_amount"] or 0.0)
         event_count = int(row["event_count_24h"] or 0)
         failure_streak = int(row["failure_streak"] or 0)
+        graph_edge_count = int(row["graph_edge_count"] or 0) if "graph_edge_count" in keys else 0
+        graph_total_notional = float(row["graph_total_notional"] or 0.0) if "graph_total_notional" in keys else 0.0
 
         recency_reference = row["last_success_at"] or row["last_event_at"] or row["last_seen_at"]
         recency_component = 0.0
@@ -1237,12 +1258,16 @@ class Database:
 
         event_amount_component = min(event_amount / 10_000.0, 1.0)
         event_count_component = min(event_count / 5.0, 1.0)
+        graph_edge_component = min(graph_edge_count / 4.0, 1.0)
+        graph_notional_component = min(graph_total_notional / 15_000.0, 1.0)
+        graph_component = (0.6 * graph_edge_component) + (0.4 * graph_notional_component)
         failure_penalty = min(failure_streak * 0.1, 0.5)
         return round(
-            (0.35 * event_amount_component)
-            + (0.25 * event_count_component)
-            + (0.25 * trust_score)
-            + (0.15 * recency_component)
+            (0.28 * event_amount_component)
+            + (0.18 * event_count_component)
+            + (0.24 * trust_score)
+            + (0.12 * recency_component)
+            + (0.18 * graph_component)
             - failure_penalty,
             4,
         )

@@ -61,6 +61,10 @@ def _is_relaxed_gate_inputs(inputs: dict) -> bool:
     return bool(inputs.get("whale_copy_relaxed_gate"))
 
 
+def _get_original_side(inputs: dict) -> str:
+    return str(inputs.get("original_side") or "").strip().upper()
+
+
 def _has_excluded_whale_copy_reason(reason: str) -> bool:
     normalized = str(reason or "")
     return (
@@ -140,6 +144,60 @@ def _summarize_whale_copy_recovery(rows) -> dict[str, int]:
             summary["token_recovery_failed"] += 1
         if action in {"reject", "decision"} and "missing_polymarket_token_price" in reason:
             summary["missing_token_rejects"] += 1
+    return summary
+
+
+def _summarize_whale_side(rows) -> dict[str, int]:
+    summary = {
+        "buy_side_events": 0,
+        "sell_side_events": 0,
+        "unsupported_side_filtered": 0,
+    }
+    for row in rows or []:
+        action = str(row["action"] if isinstance(row, sqlite3.Row) else row[0] or "").lower()
+        if action not in {"reject", "decision"}:
+            continue
+        reason = str((row["reason"] if isinstance(row, sqlite3.Row) else row[1]) or "")
+        raw_inputs = (row["inputs_json"] if isinstance(row, sqlite3.Row) else row[2]) or "{}"
+        inputs = _parse_inputs_json(raw_inputs)
+        original_side = _get_original_side(inputs)
+        if original_side == "BUY":
+            summary["buy_side_events"] += 1
+        elif original_side == "SELL":
+            summary["sell_side_events"] += 1
+        if "unsupported_side_filtered" in reason or "sell_side_not_supported" in reason:
+            summary["unsupported_side_filtered"] += 1
+    return summary
+
+
+def _summarize_whale_copy_gate_funnel(rows) -> dict[str, int]:
+    summary = {
+        "resolved_whale_events": 0,
+        "gate_ready_candidates": 0,
+        "relaxed_gate_attempts": 0,
+        "gated_rejects": 0,
+        "gated_decisions": 0,
+        "gated_executes": 0,
+    }
+    for row in rows or []:
+        action = str(row["action"] if isinstance(row, sqlite3.Row) else row[0] or "").lower()
+        reason = str((row["reason"] if isinstance(row, sqlite3.Row) else row[1]) or "")
+        raw_inputs = (row["inputs_json"] if isinstance(row, sqlite3.Row) else row[2]) or "{}"
+        inputs = _parse_inputs_json(raw_inputs)
+        is_gated_copy = _is_gated_copy_inputs(inputs)
+        if action in {"reject", "decision"}:
+            if not _has_excluded_whale_copy_reason(reason):
+                summary["resolved_whale_events"] += 1
+            if is_gated_copy and inputs.get("whale_copy_gate_ready"):
+                summary["gate_ready_candidates"] += 1
+            if _is_relaxed_gate_inputs(inputs):
+                summary["relaxed_gate_attempts"] += 1
+            if is_gated_copy and action == "reject":
+                summary["gated_rejects"] += 1
+            elif is_gated_copy and action == "decision":
+                summary["gated_decisions"] += 1
+        elif action == "execute" and is_gated_copy:
+            summary["gated_executes"] += 1
     return summary
 
 
@@ -513,6 +571,8 @@ def main() -> int:
         recent_total_orderflow, recent_unmapped_orderflow = (0, 0)
     whale_copy_summary = _summarize_whale_copy(whale_copy_rows)
     whale_copy_recovery_summary = _summarize_whale_copy_recovery(whale_copy_rows)
+    whale_side_summary = _summarize_whale_side(whale_copy_rows)
+    whale_copy_gate_funnel = _summarize_whale_copy_gate_funnel(whale_copy_rows)
     gated_reject_breakdown = _summarize_reason_breakdown(whale_copy_rows, relaxed_only=False)
     relaxed_gate_reject_breakdown = _summarize_reason_breakdown(whale_copy_rows, relaxed_only=True)
     connection.close()
@@ -603,6 +663,12 @@ def main() -> int:
     print(("trusted_whales", trusted_whale_count))
     print("WHALE_COPY_SUMMARY")
     for label, value in whale_copy_summary.items():
+        print((label, value))
+    print("WHALE_SIDE_SUMMARY")
+    for label, value in whale_side_summary.items():
+        print((label, value))
+    print("WHALE_COPY_GATE_FUNNEL")
+    for label, value in whale_copy_gate_funnel.items():
         print((label, value))
     print("WHALE_COPY_RECOVERY_SUMMARY")
     for label, value in whale_copy_recovery_summary.items():

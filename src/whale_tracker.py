@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import time
 from typing import Dict, List, Optional
@@ -136,16 +137,28 @@ class WhaleTracker:
 
         selected: List[str] = []
         seen = set()
-        for group in [activity_wallets, leaderboard_wallets, graph_wallets, persisted_cache_wallets, manual_wallets, static_wallets, persisted_wallets]:
-            for wallet in group:
+
+        def _extend(wallets: List[str], *, cap: int | None = None) -> None:
+            nonlocal selected
+            for wallet in wallets:
                 if wallet in seen:
                     continue
                 seen.add(wallet)
                 selected.append(wallet)
                 if len(selected) >= limit:
-                    break
+                    return
+                if cap is not None and len(selected) >= cap:
+                    return
+
+        graph_quota = min(10, math.ceil(limit * 0.30))
+        primary_activity_cap = max(limit - graph_quota, 0)
+
+        _extend(activity_wallets, cap=primary_activity_cap if graph_wallets else None)
+        _extend(graph_wallets, cap=min(limit, len(selected) + graph_quota))
+        for group in [activity_wallets, leaderboard_wallets, persisted_cache_wallets, manual_wallets, static_wallets, persisted_wallets]:
             if len(selected) >= limit:
                 break
+            _extend(group)
 
         self.top_whales = selected[:limit]
         self.leaderboard_wallets_count = len(leaderboard_wallets)

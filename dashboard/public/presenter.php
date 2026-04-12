@@ -94,6 +94,11 @@ function dashboard_inputs_is_relaxed_gate(array $inputs): bool
     return !empty($inputs['whale_copy_relaxed_gate']);
 }
 
+function dashboard_inputs_original_side(array $inputs): string
+{
+    return strtoupper(trim((string) ($inputs['original_side'] ?? '')));
+}
+
 function dashboard_reason_is_excluded_whale_copy(?string $reasonText): bool
 {
     $reasonText = (string) ($reasonText ?? '');
@@ -794,6 +799,80 @@ function dashboard_build_whale_copy_recovery_summary(PDO $pdo): array
     return $summary;
 }
 
+function dashboard_build_whale_side_summary(PDO $pdo): array
+{
+    $summary = [
+        'buy_side_events' => 0,
+        'sell_side_events' => 0,
+        'unsupported_side_filtered' => 0,
+    ];
+
+    foreach (dashboard_fetch_recent_whale_copy_audit_rows($pdo) as $row) {
+        $action = strtolower((string) ($row['action'] ?? ''));
+        if (!in_array($action, ['reject', 'decision'], true)) {
+            continue;
+        }
+
+        $reason = (string) ($row['reason'] ?? '');
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        $originalSide = dashboard_inputs_original_side($inputs);
+        if ($originalSide === 'BUY') {
+            $summary['buy_side_events']++;
+        } elseif ($originalSide === 'SELL') {
+            $summary['sell_side_events']++;
+        }
+
+        if (str_contains($reason, 'unsupported_side_filtered') || str_contains($reason, 'sell_side_not_supported')) {
+            $summary['unsupported_side_filtered']++;
+        }
+    }
+
+    return $summary;
+}
+
+function dashboard_build_whale_copy_gate_funnel(PDO $pdo): array
+{
+    $summary = [
+        'resolved_whale_events' => 0,
+        'gate_ready_candidates' => 0,
+        'relaxed_gate_attempts' => 0,
+        'gated_rejects' => 0,
+        'gated_decisions' => 0,
+        'gated_executes' => 0,
+    ];
+
+    foreach (dashboard_fetch_recent_whale_copy_audit_rows($pdo) as $row) {
+        $action = strtolower((string) ($row['action'] ?? ''));
+        $reason = (string) ($row['reason'] ?? '');
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        $isGatedCopy = dashboard_inputs_is_gated_whale_copy($inputs);
+
+        if (in_array($action, ['reject', 'decision'], true)) {
+            if (!dashboard_reason_is_excluded_whale_copy($reason)) {
+                $summary['resolved_whale_events']++;
+            }
+            if ($isGatedCopy && !empty($inputs['whale_copy_gate_ready'])) {
+                $summary['gate_ready_candidates']++;
+            }
+            if (!empty($inputs['whale_copy_relaxed_gate'])) {
+                $summary['relaxed_gate_attempts']++;
+            }
+            if ($isGatedCopy && $action === 'reject') {
+                $summary['gated_rejects']++;
+            } elseif ($isGatedCopy && $action === 'decision') {
+                $summary['gated_decisions']++;
+            }
+            continue;
+        }
+
+        if ($action === 'execute' && $isGatedCopy) {
+            $summary['gated_executes']++;
+        }
+    }
+
+    return $summary;
+}
+
 function dashboard_augment_recent_decisions(PDO $pdo, array $payload): array
 {
     if (!dashboard_table_has_column($pdo, 'decision_audit', 'hot_window_promoted')) {
@@ -835,6 +914,8 @@ function dashboard_augment_payload(array $payload): array
         $payload['whale_universe_summary'] = dashboard_build_whale_universe_summary($pdo, $payload['runtime_summary'] ?? []);
         $payload['trusted_whale_summary'] = dashboard_build_trusted_whale_summary($pdo);
         $payload['whale_copy_summary'] = dashboard_build_whale_copy_summary($pdo);
+        $payload['whale_side_summary'] = dashboard_build_whale_side_summary($pdo);
+        $payload['whale_copy_gate_funnel'] = dashboard_build_whale_copy_gate_funnel($pdo);
         $payload['gated_reject_breakdown'] = dashboard_build_gated_reject_breakdown($pdo);
         $payload['relaxed_gate_reject_breakdown'] = dashboard_build_relaxed_gate_reject_breakdown($pdo);
         $payload['whale_copy_recovery_summary'] = dashboard_build_whale_copy_recovery_summary($pdo);
@@ -852,6 +933,8 @@ function dashboard_augment_payload(array $payload): array
         $payload['whale_universe_summary'] = [];
         $payload['trusted_whale_summary'] = [];
         $payload['whale_copy_summary'] = [];
+        $payload['whale_side_summary'] = [];
+        $payload['whale_copy_gate_funnel'] = [];
         $payload['gated_reject_breakdown'] = [];
         $payload['relaxed_gate_reject_breakdown'] = [];
         $payload['whale_copy_recovery_summary'] = [];
