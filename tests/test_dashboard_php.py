@@ -402,7 +402,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 'binance_technical_sampling',
                 'binance_technical_momentum',
                 'reject',
-                'score_below_threshold,macd_not_aligned',
+                'score_below_threshold,futures_spread_wide,technical_alignment_weak',
                 0.54,
                 0.62,
                 50.0,
@@ -412,7 +412,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 0,
                 '[]',
                 0,
-                '{"signal_direction":"LONG","force_sample":false}',
+                '{"symbol":"BTC/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true}',
             ),
             (
                 102,
@@ -434,7 +434,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 0,
                 '[]',
                 0,
-                '{"signal_direction":"SHORT","force_sample":true}',
+                '{"symbol":"ETH/USDT:USDT","signal_direction":"SHORT","force_sample":true,"technical_recovery_applied":true,"alignment_recovery_applied":true,"technical_alignment_recovered":true}',
             ),
             (
                 103,
@@ -456,7 +456,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 0,
                 '[]',
                 0,
-                '{"signal_direction":"LONG","force_sample":false}',
+                '{"symbol":"SOL/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true}',
             ),
         ],
     )
@@ -476,6 +476,8 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 "$pdo = dashboard_open_db($warnings);",
                 "echo json_encode([",
                 "    'summary' => dashboard_build_binance_technical_summary($pdo),",
+                "    'gate_funnel' => dashboard_build_binance_technical_gate_funnel($pdo),",
+                "    'recovery_summary' => dashboard_build_binance_technical_recovery_summary($pdo),",
                 "    'reject_breakdown' => dashboard_build_binance_technical_reject_breakdown($pdo),",
                 "], JSON_THROW_ON_ERROR);",
             ]
@@ -502,7 +504,23 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
     }
     technical_breakdown = {row['reason']: row['count'] for row in payload['reject_breakdown']}
     assert technical_breakdown['score_below_threshold'] == 1
-    assert technical_breakdown['macd_not_aligned'] == 1
+    assert technical_breakdown['futures_spread_wide'] == 1
+    assert technical_breakdown['technical_alignment_weak'] == 1
+    assert payload['gate_funnel'] == {
+        'scanned_symbols': 3,
+        'directional_signals': 3,
+        'recovered_alignment_signals': 1,
+        'spread_rejects': 1,
+        'score_rejects': 1,
+        'decisions': 1,
+        'executes': 1,
+    }
+    assert payload['recovery_summary'] == {
+        'recovery_applied_count': 3,
+        'alignment_recovery_hits': 1,
+        'force_sample_hits': 1,
+        'active_symbol_count': 3,
+    }
 
 
 def test_dashboard_prefers_runtime_status_snapshot_when_present(dashboard_server: DashboardServer):
@@ -618,6 +636,8 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Relaxed Gate Sonrasi Kalan Red Nedenleri' in html
     assert 'Henüz kapanmış whale geçmişi yok; nötr güven.' in html
     assert 'Binance teknik sampling' in html
+    assert 'Binance teknik gate funnel' in html
+    assert 'Binance teknik recovery ozeti' in html
     assert 'Binance Teknik Red Nedenleri' in html
     assert '&mdash;' in html
 

@@ -284,6 +284,78 @@ def _summarize_binance_technical_reject_breakdown(rows) -> list[tuple[str, int]]
     return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:10]
 
 
+def _technical_row_parts(row) -> tuple[str, str, dict]:
+    action = str(row["action"] if isinstance(row, sqlite3.Row) else row[0] or "").lower()
+    reason = str((row["reason"] if isinstance(row, sqlite3.Row) else row[1]) or "").strip()
+    raw_inputs = (row["inputs_json"] if isinstance(row, sqlite3.Row) else row[2]) or "{}"
+    return action, reason, _parse_inputs_json(raw_inputs)
+
+
+def _technical_active_symbol_count(rows, status_metrics: dict) -> int:
+    snapshot_count = int(status_metrics.get("binance_technical_active_symbol_count", 0) or 0)
+    if snapshot_count > 0:
+        return snapshot_count
+    symbols = set()
+    for row in rows or []:
+        _action, _reason, inputs = _technical_row_parts(row)
+        symbol = str(inputs.get("symbol") or "").strip()
+        if symbol:
+            symbols.add(symbol)
+    return len(symbols)
+
+
+def _summarize_binance_technical_gate_funnel(rows) -> dict[str, int]:
+    summary = {
+        "scanned_symbols": 0,
+        "directional_signals": 0,
+        "recovered_alignment_signals": 0,
+        "spread_rejects": 0,
+        "score_rejects": 0,
+        "decisions": 0,
+        "executes": 0,
+    }
+    symbols = set()
+    for row in rows or []:
+        action, reason, inputs = _technical_row_parts(row)
+        symbol = str(inputs.get("symbol") or "").strip()
+        if symbol:
+            symbols.add(symbol)
+        direction = str(inputs.get("signal_direction") or inputs.get("direction") or "").upper()
+        if direction in {"LONG", "SHORT"}:
+            summary["directional_signals"] += 1
+        if inputs.get("alignment_recovery_applied") or inputs.get("technical_alignment_recovered"):
+            summary["recovered_alignment_signals"] += 1
+        for part in _reason_parts(reason):
+            if part == "futures_spread_wide":
+                summary["spread_rejects"] += 1
+            elif part == "score_below_threshold":
+                summary["score_rejects"] += 1
+        if action == "decision":
+            summary["decisions"] += 1
+        elif action == "execute":
+            summary["executes"] += 1
+    summary["scanned_symbols"] = len(symbols)
+    return summary
+
+
+def _summarize_binance_technical_recovery(rows, status_metrics: dict) -> dict[str, int]:
+    summary = {
+        "recovery_applied_count": 0,
+        "alignment_recovery_hits": 0,
+        "force_sample_hits": 0,
+        "active_symbol_count": _technical_active_symbol_count(rows, status_metrics),
+    }
+    for row in rows or []:
+        _action, _reason, inputs = _technical_row_parts(row)
+        if inputs.get("technical_recovery_applied"):
+            summary["recovery_applied_count"] += 1
+        if inputs.get("alignment_recovery_applied") or inputs.get("technical_alignment_recovered"):
+            summary["alignment_recovery_hits"] += 1
+        if inputs.get("force_sample") or inputs.get("force_sample_ready"):
+            summary["force_sample_hits"] += 1
+    return summary
+
+
 def _read_latest_status_metrics() -> dict:
     try:
         result = subprocess.run(
@@ -653,6 +725,8 @@ def main() -> int:
     relaxed_gate_reject_breakdown = _summarize_reason_breakdown(whale_copy_rows, relaxed_only=True)
     technical_summary = _summarize_binance_technical(technical_rows)
     technical_reject_breakdown = _summarize_binance_technical_reject_breakdown(technical_rows)
+    technical_gate_funnel = _summarize_binance_technical_gate_funnel(technical_rows)
+    technical_recovery_summary = _summarize_binance_technical_recovery(technical_rows, status_metrics)
     connection.close()
 
     print(f"DB_PATH={db_path}")
@@ -764,6 +838,12 @@ def main() -> int:
         print((reason, count))
     print("BINANCE_TECHNICAL_SUMMARY")
     for label, value in technical_summary.items():
+        print((label, value))
+    print("BINANCE_TECHNICAL_GATE_FUNNEL")
+    for label, value in technical_gate_funnel.items():
+        print((label, value))
+    print("BINANCE_TECHNICAL_RECOVERY_SUMMARY")
+    for label, value in technical_recovery_summary.items():
         print((label, value))
     print("BINANCE_TECHNICAL_REJECT_BREAKDOWN")
     for reason, count in technical_reject_breakdown:

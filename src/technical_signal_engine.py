@@ -25,6 +25,15 @@ def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) ->
     return macd_line, signal_line, hist
 
 
+DEFAULT_MAX_SPREAD_PCT = 0.012
+DEFAULT_SPREAD_NORMALIZER = 0.006
+PAPER_RECOVERY_MAX_SPREAD_PCT = 0.018
+PAPER_RECOVERY_SPREAD_NORMALIZER = 0.010
+PAPER_RECOVERY_MIN_SCORE_FLOOR = 0.54
+PAPER_RECOVERY_MIN_SCORE_DISCOUNT = 0.08
+PAPER_RECOVERY_MOMENTUM_TOLERANCE = 0.0015
+
+
 @dataclass
 class TechnicalSignal:
     symbol: str
@@ -46,20 +55,32 @@ class TechnicalSignalEngine:
         volume_24h: float,
         min_score: float,
         timeframe: str,
+        paper_recovery: bool = False,
     ) -> TechnicalSignal:
         reasons: List[str] = []
         direction = "NEUTRAL"
+        technical_recovery_applied = bool(paper_recovery)
+        effective_min_score = max(PAPER_RECOVERY_MIN_SCORE_FLOOR, min_score - PAPER_RECOVERY_MIN_SCORE_DISCOUNT) if paper_recovery else min_score
+        effective_max_spread_pct = PAPER_RECOVERY_MAX_SPREAD_PCT if paper_recovery else DEFAULT_MAX_SPREAD_PCT
+        spread_normalizer = PAPER_RECOVERY_SPREAD_NORMALIZER if paper_recovery else DEFAULT_SPREAD_NORMALIZER
 
         if closes is None or closes.empty or len(closes) < 60:
             reasons.append("missing_price_history")
             return TechnicalSignal(
                 symbol=symbol,
                 score=0.0,
-                threshold=min_score,
+                threshold=effective_min_score,
                 should_trade=False,
                 direction=direction,
                 reasons=reasons,
-                inputs={"timeframe": timeframe},
+                inputs={
+                    "timeframe": timeframe,
+                    "technical_recovery_applied": technical_recovery_applied,
+                    "alignment_recovery_applied": False,
+                    "technical_alignment_recovered": False,
+                    "effective_min_score": round(effective_min_score, 4),
+                    "effective_max_spread_pct": round(effective_max_spread_pct, 6),
+                },
             )
 
         rsi_series = calculate_rsi(closes)
@@ -86,10 +107,32 @@ class TechnicalSignalEngine:
             momentum = 0.0
             reasons.append("missing_momentum")
 
-        if ema_fast_value > ema_slow_value and macd_hist_value > 0 and momentum > 0:
+        strict_long = ema_fast_value > ema_slow_value and macd_hist_value > 0 and momentum > 0
+        strict_short = ema_fast_value < ema_slow_value and macd_hist_value < 0 and momentum < 0
+        recovered_long = (
+            paper_recovery
+            and ema_fast_value > ema_slow_value
+            and macd_hist_value > 0
+            and momentum >= -PAPER_RECOVERY_MOMENTUM_TOLERANCE
+        )
+        recovered_short = (
+            paper_recovery
+            and ema_fast_value < ema_slow_value
+            and macd_hist_value < 0
+            and momentum <= PAPER_RECOVERY_MOMENTUM_TOLERANCE
+        )
+        alignment_recovery_applied = False
+
+        if strict_long:
             direction = "LONG"
-        elif ema_fast_value < ema_slow_value and macd_hist_value < 0 and momentum < 0:
+        elif strict_short:
             direction = "SHORT"
+        elif recovered_long:
+            direction = "LONG"
+            alignment_recovery_applied = True
+        elif recovered_short:
+            direction = "SHORT"
+            alignment_recovery_applied = True
         else:
             reasons.append("technical_alignment_weak")
 
@@ -102,7 +145,7 @@ class TechnicalSignalEngine:
         else:
             reasons.append("missing_volume")
 
-        if spread_pct <= 0 or spread_pct > 0.012:
+        if spread_pct <= 0 or spread_pct > effective_max_spread_pct:
             reasons.append("futures_spread_wide")
         if volume_24h <= 0:
             reasons.append("missing_futures_volume")
@@ -118,7 +161,7 @@ class TechnicalSignalEngine:
         macd_component = _clamp(abs(macd_hist_pct) / 0.003)
         momentum_component = _clamp(abs(momentum) / 0.01)
         volume_component = _clamp(volume_ratio / 1.5)
-        micro_component = 1.0 - _clamp(spread_pct / 0.006)
+        micro_component = 1.0 - _clamp(spread_pct / spread_normalizer)
 
         score = (
             0.30 * macd_component
@@ -128,7 +171,7 @@ class TechnicalSignalEngine:
             + 0.10 * micro_component
         )
 
-        if score < min_score:
+        if score < effective_min_score:
             reasons.append("score_below_threshold")
 
         inputs = {
@@ -145,6 +188,11 @@ class TechnicalSignalEngine:
             "spread_pct": round(spread_pct, 6),
             "volume_24h": round(volume_24h, 2),
             "direction": direction,
+            "technical_recovery_applied": technical_recovery_applied,
+            "alignment_recovery_applied": alignment_recovery_applied,
+            "technical_alignment_recovered": alignment_recovery_applied,
+            "effective_min_score": round(effective_min_score, 4),
+            "effective_max_spread_pct": round(effective_max_spread_pct, 6),
             "rsi_component": round(rsi_component, 4),
             "macd_component": round(macd_component, 4),
             "momentum_component": round(momentum_component, 4),
@@ -158,7 +206,7 @@ class TechnicalSignalEngine:
         return TechnicalSignal(
             symbol=symbol,
             score=round(score, 4),
-            threshold=min_score,
+            threshold=effective_min_score,
             should_trade=should_trade,
             direction=direction,
             reasons=list(dict.fromkeys(reasons)),

@@ -35,6 +35,8 @@ from src.whale_tracker import WhaleTracker
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_BINANCE_TECHNICAL_SYMBOLS: Tuple[str, ...] = ("BTC", "ETH", "SOL")
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
@@ -161,6 +163,7 @@ class GhostBotRuntime:
         self.sampling_stop_reason: Optional[str] = None
         self.technical_enabled = bool(settings.binance_technical_paper_enabled and self.sample_kind == "live_paper")
         self.technical_force_last_ts = 0.0
+        self.binance_technical_symbol_scope: Tuple[str, ...] = DEFAULT_BINANCE_TECHNICAL_SYMBOLS
 
         self.scanner: Optional[MarketScanner] = None
         self.db: Optional[Database] = None
@@ -557,6 +560,8 @@ class GhostBotRuntime:
             "whale_copy_accumulated_buy_events": int(whale_candidate_aggregation.get("accumulated_buy_events", 0) or 0),
             "whale_copy_accumulated_total_notional": round(float(whale_candidate_aggregation.get("accumulated_total_notional", 0.0) or 0.0), 4),
             "recent_gate_ready_candidates": whale_candidate_aggregation.get("recent_gate_ready_candidates", []),
+            "binance_technical_active_symbol_count": len(self.binance_technical_symbol_scope),
+            "binance_technical_symbol_scope": list(self.binance_technical_symbol_scope),
             "sampling_mode": sampling_mode,
             "sampling_closed_trades": self.sampling_closed_trades,
             "sampling_target_closed_trades": self.settings.paper_sampling_target_closed_trades,
@@ -635,7 +640,7 @@ class GhostBotRuntime:
     def _resolve_binance_technical_symbols(self) -> Tuple[Dict[str, str], ...]:
         raw_symbols = list(self.settings.binance_technical_symbols or tuple())
         if not raw_symbols:
-            raw_symbols = list(BINANCE_FUTURES_MAPPINGS.keys())
+            raw_symbols = list(DEFAULT_BINANCE_TECHNICAL_SYMBOLS)
 
         resolved: list[Dict[str, str]] = []
         for raw in raw_symbols:
@@ -683,6 +688,7 @@ class GhostBotRuntime:
             return
 
         symbols = self._resolve_binance_technical_symbols()
+        self.binance_technical_symbol_scope = tuple(entry["base_symbol"] for entry in symbols)
         if not symbols:
             return
 
@@ -728,6 +734,7 @@ class GhostBotRuntime:
                 volume_24h=float(futures_snapshot.get("volume_24h") or 0.0),
                 min_score=self.settings.binance_technical_min_score,
                 timeframe=self.settings.binance_technical_timeframe,
+                paper_recovery=self.sample_kind == "live_paper",
             )
 
             now_ts = time.time()
@@ -744,9 +751,12 @@ class GhostBotRuntime:
                 **signal.inputs,
                 "symbol": futures_symbol,
                 "force_sample": bool(force_ready),
+                "force_sample_ready": bool(force_ready),
                 "min_score": self.settings.binance_technical_min_score,
                 "force_min_score": self.settings.binance_technical_force_min_score,
                 "signal_direction": signal.direction,
+                "technical_symbol_scope": list(self.binance_technical_symbol_scope),
+                "technical_active_symbol_count": len(self.binance_technical_symbol_scope),
             }
             futures_decision = DecisionResult(
                 source="binance_technical_momentum",
@@ -778,7 +788,7 @@ class GhostBotRuntime:
                 market_context={},
                 strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
                 audit_inputs=inputs_payload,
-                signal_threshold=(self.settings.binance_technical_force_min_score if force_ready else self.settings.binance_technical_min_score),
+                signal_threshold=(self.settings.binance_technical_force_min_score if force_ready else signal.threshold),
             )
 
             if not self.settings.venue_configs["binance_spot"].enabled or self.binance_spot_venue is None:
@@ -850,7 +860,7 @@ class GhostBotRuntime:
                     market_context={},
                     strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
                     audit_inputs=inputs_payload,
-                    signal_threshold=(self.settings.binance_technical_force_min_score if force_ready else self.settings.binance_technical_min_score),
+                    signal_threshold=(self.settings.binance_technical_force_min_score if force_ready else signal.threshold),
                 )
 
     async def run_whale_tracker_loop(self) -> None:

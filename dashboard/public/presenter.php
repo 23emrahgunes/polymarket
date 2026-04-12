@@ -397,6 +397,95 @@ function dashboard_build_binance_technical_reject_breakdown(PDO $pdo): array
     return $items;
 }
 
+function dashboard_binance_technical_active_symbol_count(array $rows, array $runtimeSummary = []): int
+{
+    $snapshotCount = (int) ($runtimeSummary['binance_technical_active_symbol_count'] ?? 0);
+    if ($snapshotCount > 0) {
+        return $snapshotCount;
+    }
+
+    $symbols = [];
+    foreach ($rows as $row) {
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        $symbol = trim((string) ($inputs['symbol'] ?? ''));
+        if ($symbol !== '') {
+            $symbols[$symbol] = true;
+        }
+    }
+    return count($symbols);
+}
+
+function dashboard_build_binance_technical_gate_funnel(PDO $pdo): array
+{
+    $summary = [
+        'scanned_symbols' => 0,
+        'directional_signals' => 0,
+        'recovered_alignment_signals' => 0,
+        'spread_rejects' => 0,
+        'score_rejects' => 0,
+        'decisions' => 0,
+        'executes' => 0,
+    ];
+    $symbols = [];
+
+    foreach (dashboard_fetch_recent_binance_technical_rows($pdo) as $row) {
+        $action = strtolower((string) ($row['action'] ?? ''));
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        $symbol = trim((string) ($inputs['symbol'] ?? ''));
+        if ($symbol !== '') {
+            $symbols[$symbol] = true;
+        }
+        $direction = strtoupper((string) ($inputs['signal_direction'] ?? $inputs['direction'] ?? ''));
+        if ($direction === 'LONG' || $direction === 'SHORT') {
+            $summary['directional_signals']++;
+        }
+        if (!empty($inputs['alignment_recovery_applied']) || !empty($inputs['technical_alignment_recovered'])) {
+            $summary['recovered_alignment_signals']++;
+        }
+        foreach (dashboard_reason_parts($row['reason'] ?? null) as $reason) {
+            if ($reason === 'futures_spread_wide') {
+                $summary['spread_rejects']++;
+            } elseif ($reason === 'score_below_threshold') {
+                $summary['score_rejects']++;
+            }
+        }
+        if ($action === 'decision') {
+            $summary['decisions']++;
+        } elseif ($action === 'execute') {
+            $summary['executes']++;
+        }
+    }
+
+    $summary['scanned_symbols'] = count($symbols);
+    return $summary;
+}
+
+function dashboard_build_binance_technical_recovery_summary(PDO $pdo, array $runtimeSummary = []): array
+{
+    $rows = dashboard_fetch_recent_binance_technical_rows($pdo);
+    $summary = [
+        'recovery_applied_count' => 0,
+        'alignment_recovery_hits' => 0,
+        'force_sample_hits' => 0,
+        'active_symbol_count' => dashboard_binance_technical_active_symbol_count($rows, $runtimeSummary),
+    ];
+
+    foreach ($rows as $row) {
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        if (!empty($inputs['technical_recovery_applied'])) {
+            $summary['recovery_applied_count']++;
+        }
+        if (!empty($inputs['alignment_recovery_applied']) || !empty($inputs['technical_alignment_recovered'])) {
+            $summary['alignment_recovery_hits']++;
+        }
+        if (!empty($inputs['force_sample']) || !empty($inputs['force_sample_ready'])) {
+            $summary['force_sample_hits']++;
+        }
+    }
+
+    return $summary;
+}
+
 function dashboard_build_alias_persistence_summary(PDO $pdo, array $runtimeSummary): array
 {
     $integrity = dashboard_fetch_one(
@@ -1030,6 +1119,8 @@ function dashboard_augment_payload(array $payload): array
         $payload['mapping_miss_breakdown'] = dashboard_build_mapping_miss_breakdown($pdo);
         $payload['sampling_reject_breakdown'] = dashboard_build_sampling_reject_breakdown($pdo);
         $payload['binance_technical_summary'] = dashboard_build_binance_technical_summary($pdo);
+        $payload['binance_technical_gate_funnel'] = dashboard_build_binance_technical_gate_funnel($pdo);
+        $payload['binance_technical_recovery_summary'] = dashboard_build_binance_technical_recovery_summary($pdo, $payload['runtime_summary'] ?? []);
         $payload['binance_technical_reject_breakdown'] = dashboard_build_binance_technical_reject_breakdown($pdo);
         $payload['alias_persistence_summary'] = dashboard_build_alias_persistence_summary($pdo, $payload['runtime_summary'] ?? []);
         $payload['source_quality_summary'] = dashboard_build_source_quality_summary($pdo);
@@ -1054,6 +1145,8 @@ function dashboard_augment_payload(array $payload): array
         $payload['mapping_miss_breakdown'] = [];
         $payload['sampling_reject_breakdown'] = [];
         $payload['binance_technical_summary'] = [];
+        $payload['binance_technical_gate_funnel'] = [];
+        $payload['binance_technical_recovery_summary'] = [];
         $payload['binance_technical_reject_breakdown'] = [];
         $payload['alias_persistence_summary'] = [];
         $payload['source_quality_summary'] = [];

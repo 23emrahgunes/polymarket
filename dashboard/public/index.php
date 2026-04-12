@@ -236,6 +236,8 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #whale-copy-summary,
         #whale-copy-recovery-summary,
         #binance-technical-summary,
+        #binance-technical-gate-funnel,
+        #binance-technical-recovery-summary,
         #graph-discovery-summary,
         #whale-candidate-aggregation-summary,
         #recent-gate-ready-candidates,
@@ -273,6 +275,8 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .subcard #whale-copy-summary,
         .subcard #whale-copy-recovery-summary,
         .subcard #binance-technical-summary,
+        .subcard #binance-technical-gate-funnel,
+        .subcard #binance-technical-recovery-summary,
         .subcard #graph-discovery-summary,
         .subcard #whale-candidate-aggregation-summary,
         .subcard #recent-gate-ready-candidates,
@@ -322,7 +326,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #market-alias-counts, #whale-wallet-counts, #unsupported-side-summary { max-height: 180px; overflow: auto; }
         #top-market-aliases, #top-whales, #trusted-whale-summary { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
-        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #binance-technical-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
+        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #binance-technical-summary, #binance-technical-gate-funnel, #binance-technical-recovery-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
         #recent-gate-ready-candidates { max-height: 260px; overflow: auto; }
         #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown, #binance-technical-reject-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
@@ -459,6 +463,10 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                     <div class="metric-list" id="whale-copy-recovery-summary"></div>
                     <div class="subsection-title">Binance teknik sampling</div>
                     <div class="metric-list" id="binance-technical-summary"></div>
+                    <div class="subsection-title">Binance teknik gate funnel</div>
+                    <div class="metric-list" id="binance-technical-gate-funnel"></div>
+                    <div class="subsection-title">Binance teknik recovery ozeti</div>
+                    <div class="metric-list" id="binance-technical-recovery-summary"></div>
                     <div class="metric-list" id="performance-snapshot"></div>
                 </div>
                 <div class="subcard">
@@ -620,6 +628,11 @@ function translateReason(value) {
         token_recovery_failed: 'token recovery başarısız',
         cluster_threshold_not_reached: 'cluster eşiği tutmadı',
         sampling_target_reached: 'sampling hedefi dolduğu için durduruldu',
+        futures_spread_wide: 'futures spread genis',
+        technical_alignment_weak: 'teknik hizalanma zayif',
+        macd_not_aligned: 'MACD hizalanmadi',
+        missing_price_history: 'fiyat gecmisi eksik',
+        missing_futures_volume: 'futures hacmi eksik',
         none: 'yok'
     };
     return map[text] || String(value ?? 'yok');
@@ -1015,6 +1028,25 @@ function updatePanels(payload) {
         { label: 'LONG sinyal', value: formatNumber(technicalSummary.long_signals, 0) },
         { label: 'SHORT sinyal', value: formatNumber(technicalSummary.short_signals, 0) },
         { label: 'Force sample', value: formatNumber(technicalSummary.forced_samples, 0) }
+    ]);
+
+    const technicalGateFunnel = payload.binance_technical_gate_funnel || {};
+    renderMetrics('binance-technical-gate-funnel', [
+        { label: 'Taranan sembol', value: formatNumber(technicalGateFunnel.scanned_symbols, 0) },
+        { label: 'Yonlu sinyal', value: formatNumber(technicalGateFunnel.directional_signals, 0) },
+        { label: 'Recovery hizalanma', value: formatNumber(technicalGateFunnel.recovered_alignment_signals, 0) },
+        { label: 'Spread red', value: formatNumber(technicalGateFunnel.spread_rejects, 0) },
+        { label: 'Skor red', value: formatNumber(technicalGateFunnel.score_rejects, 0) },
+        { label: 'Karar', value: formatNumber(technicalGateFunnel.decisions, 0) },
+        { label: 'Execute', value: formatNumber(technicalGateFunnel.executes, 0) }
+    ]);
+
+    const technicalRecovery = payload.binance_technical_recovery_summary || {};
+    renderMetrics('binance-technical-recovery-summary', [
+        { label: 'Recovery uygulandi', value: formatNumber(technicalRecovery.recovery_applied_count, 0) },
+        { label: 'Alignment recovery hit', value: formatNumber(technicalRecovery.alignment_recovery_hits, 0) },
+        { label: 'Force sample hit', value: formatNumber(technicalRecovery.force_sample_hits, 0) },
+        { label: 'Aktif sembol', value: formatNumber(technicalRecovery.active_symbol_count, 0) }
     ]);
 
     const whaleSide = payload.whale_side_summary || {};

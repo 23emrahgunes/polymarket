@@ -317,6 +317,8 @@ function dashboard_runtime_summary_from_db(PDO $pdo): array
         'hydrated_lookup_aliases' => 0,
         'lookup_hydration_warning' => null,
         'alias_persistence_gap' => 0,
+        'binance_technical_active_symbol_count' => 0,
+        'binance_technical_symbol_scope' => [],
     ];
 }
 
@@ -359,6 +361,8 @@ function dashboard_merge_runtime_summary(array $dbSummary, array $statusMetrics)
         'whale_copy_accumulated_buy_events',
         'whale_copy_accumulated_total_notional',
         'recent_gate_ready_candidates',
+        'binance_technical_active_symbol_count',
+        'binance_technical_symbol_scope',
     ];
 
     foreach ($keys as $key) {
@@ -531,6 +535,8 @@ function dashboard_build_payload(string $view = 'full'): array
         'whale_copy_accumulated_buy_events' => 0,
         'whale_copy_accumulated_total_notional' => 0.0,
         'recent_gate_ready_candidates' => [],
+        'binance_technical_active_symbol_count' => 0,
+        'binance_technical_symbol_scope' => [],
     ];
 
     $collections = [
