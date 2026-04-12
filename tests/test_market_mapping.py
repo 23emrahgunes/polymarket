@@ -258,6 +258,59 @@ async def test_copy_trader_persists_aliases_before_filtering_sell_side(tmp_path)
     assert audits[-1].inputs["side_filter_stage"] == "post_mapping_pre_orderbook"
 
 
+def test_copy_trader_aggregates_small_buy_events_into_gate_ready_candidate():
+    copy_trader = CopyTrader(_FakeTrader(), _FakeScanner(), None, DecisionEngine())
+
+    first = copy_trader._record_whale_copy_candidate(
+        context={"market_id": "0xMARKET-AGG"},
+        event={"amount": 90.0, "wallets_count": 1, "side": "BUY", "source": "activity"},
+        source="activity",
+        wallet="0xWHALE-A",
+        whale_trust=0.45,
+    )
+    second = copy_trader._record_whale_copy_candidate(
+        context={"market_id": "0xMARKET-AGG"},
+        event={"amount": 95.0, "wallets_count": 1, "side": "BUY", "source": "whale_tracker"},
+        source="whale_tracker",
+        wallet="0xWHALE-B",
+        whale_trust=0.5,
+    )
+    aggregation = copy_trader.get_whale_candidate_aggregation_summary()
+
+    assert first["ready_for_gate"] is False
+    assert second["ready_for_gate"] is True
+    assert second["gate_ready_reason"] == "unique_wallets,event_count"
+    assert aggregation["accumulator_buckets"] == 1
+    assert aggregation["gate_ready_candidates"] == 1
+    assert aggregation["retry_candidates"] == 1
+    assert aggregation["accumulated_buy_events"] == 2
+    assert aggregation["accumulated_total_notional"] == pytest.approx(185.0)
+    assert aggregation["recent_gate_ready_candidates"][0]["market_id"] == "0xmarket-agg"
+
+
+def test_copy_trader_trust_gate_and_retry_cooldown_are_reported():
+    copy_trader = CopyTrader(_FakeTrader(), _FakeScanner(), None, DecisionEngine())
+
+    summary = copy_trader._record_whale_copy_candidate(
+        context={"market_id": "0xMARKET-TRUST"},
+        event={"amount": 160.0, "wallets_count": 1, "side": "BUY", "source": "activity"},
+        source="activity",
+        wallet="0xTRUSTED",
+        whale_trust=0.67,
+    )
+    copy_trader._mark_whale_copy_retry_attempt(summary)
+    aggregation = copy_trader.get_whale_candidate_aggregation_summary()
+    recent_candidate = aggregation["recent_gate_ready_candidates"][0]
+
+    assert summary["ready_for_gate"] is True
+    assert summary["gate_ready_reason"] == "trusted_wallet"
+    assert aggregation["gate_ready_candidates"] == 1
+    assert aggregation["retry_candidates"] == 0
+    assert recent_candidate["market_id"] == "0xmarket-trust"
+    assert recent_candidate["gate_ready_reason"] == "trusted_wallet"
+    assert recent_candidate["retry_cooldown_applied"] is True
+
+
 @pytest.mark.asyncio
 async def test_copy_trader_recovers_orderbook_token_from_same_market_aliases(tmp_path):
     db_path = str(tmp_path / "token_recovery_hit.db")

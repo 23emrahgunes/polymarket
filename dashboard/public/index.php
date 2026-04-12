@@ -235,6 +235,9 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #top-whales,
         #whale-copy-summary,
         #whale-copy-recovery-summary,
+        #graph-discovery-summary,
+        #whale-candidate-aggregation-summary,
+        #recent-gate-ready-candidates,
         #gated-reject-breakdown,
         #relaxed-gate-reject-breakdown,
         #performance-snapshot,
@@ -267,6 +270,9 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .subcard #top-whales,
         .subcard #whale-copy-summary,
         .subcard #whale-copy-recovery-summary,
+        .subcard #graph-discovery-summary,
+        .subcard #whale-candidate-aggregation-summary,
+        .subcard #recent-gate-ready-candidates,
         .subcard #gated-reject-breakdown,
         .subcard #relaxed-gate-reject-breakdown,
         .subcard #performance-snapshot,
@@ -312,7 +318,8 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #market-alias-counts, #whale-wallet-counts, #unsupported-side-summary { max-height: 180px; overflow: auto; }
         #top-market-aliases, #top-whales, #trusted-whale-summary { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
-        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary { max-height: 420px; overflow: auto; }
+        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
+        #recent-gate-ready-candidates { max-height: 260px; overflow: auto; }
         #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
         #recent-decisions table { min-width: 1040px; table-layout: auto; }
@@ -449,6 +456,10 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                     <div class="metric-list" id="performance-snapshot"></div>
                 </div>
                 <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Graph Discovery Ozeti</h3><span class="badge info">Graph</span></div>
+                    <div class="metric-list" id="graph-discovery-summary"></div>
+                </div>
+                <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Whale Side Ozeti</h3><span class="badge info">Side</span></div>
                     <p class="subcard-copy">SELL yonlu eventler mapping ve alias cache icin islenir; trade adayina cevrilmez.</p>
                     <div class="metric-list" id="whale-side-summary"></div>
@@ -456,6 +467,14 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                 <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Whale-Copy Gate Funnel</h3><span class="badge info">Funnel</span></div>
                     <div class="metric-list" id="whale-copy-gate-funnel"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Whale Candidate Birikimi</h3><span class="badge info">Agg</span></div>
+                    <div class="metric-list" id="whale-candidate-aggregation-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Gate-ready Whale Adaylari</h3><span class="badge info">Ready</span></div>
+                    <div id="recent-gate-ready-candidates"></div>
                 </div>
                 <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Gated Whale-Copy Red Nedenleri</h3><span class="badge warn">Gate</span></div>
@@ -993,6 +1012,34 @@ function updatePanels(payload) {
         { label: 'Gated karar', value: formatNumber(whaleCopyGateFunnel.gated_decisions, 0) },
         { label: 'Gated execute', value: formatNumber(whaleCopyGateFunnel.gated_executes, 0) }
     ]);
+
+    const graphDiscovery = payload.graph_discovery_summary || {};
+    renderMetrics('graph-discovery-summary', [
+        { label: 'Graph balina', value: formatNumber(graphDiscovery.graph_discovered_wallets, 0) },
+        { label: 'Promote edilen cluster', value: formatNumber(graphDiscovery.graph_clusters_promoted, 0) },
+        { label: 'Market ref eksik', value: formatNumber(graphDiscovery.graph_skipped_missing_market_ref, 0) },
+        { label: 'Tek wallet kalan', value: formatNumber(graphDiscovery.graph_skipped_single_wallet, 0) },
+        { label: 'Notional alti kalan', value: formatNumber(graphDiscovery.graph_skipped_low_notional, 0) }
+    ]);
+
+    const whaleCandidateAggregation = payload.whale_candidate_aggregation_summary || {};
+    renderMetrics('whale-candidate-aggregation-summary', [
+        { label: 'Accumulator bucket', value: formatNumber(whaleCandidateAggregation.accumulator_buckets, 0) },
+        { label: 'Gate-ready aday', value: formatNumber(whaleCandidateAggregation.gate_ready_candidates, 0) },
+        { label: 'Retry aday', value: formatNumber(whaleCandidateAggregation.retry_candidates, 0) },
+        { label: 'Biriken BUY event', value: formatNumber(whaleCandidateAggregation.accumulated_buy_events, 0) },
+        { label: 'Biriken notional', value: formatNumber(whaleCandidateAggregation.accumulated_total_notional, 2) }
+    ]);
+
+    renderTable('recent-gate-ready-candidates', [
+        { key: 'market_id', label: 'Market', mono: true, render: (row) => truncateHtml(row.market_id || '', 32) },
+        { key: 'total_amount', label: 'Toplam Notional', render: (row) => escapeHtml(formatNumber(row.total_amount, 2)) },
+        { key: 'unique_wallets', label: 'Benzersiz Wallet', render: (row) => escapeHtml(formatNumber(row.unique_wallets, 0)) },
+        { key: 'event_count', label: 'Event', render: (row) => escapeHtml(formatNumber(row.event_count, 0)) },
+        { key: 'max_trust', label: 'Max Trust', render: (row) => escapeHtml(formatNumber(row.max_trust, 3)) },
+        { key: 'gate_ready_reason', label: 'Gate Nedeni', render: (row) => escapeHtml(row.gate_ready_reason || 'yok') },
+        { key: 'last_reject_reason', label: 'Son Red', render: (row) => escapeHtml(translateReason(row.last_reject_reason || 'yok')) }
+    ], payload.recent_gate_ready_candidates, 'HenÃ¼z gate-ready whale adayi yok.');
 
     const performance = payload.performance_summary || {};
     const evidence = performance.evidence || {};

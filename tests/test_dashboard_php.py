@@ -342,6 +342,17 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert whale_side_summary['buy_side_events'] == 4
     assert whale_side_summary['sell_side_events'] == 1
     assert whale_side_summary['unsupported_side_filtered'] == 1
+    graph_discovery_summary = payload['graph_discovery_summary']
+    assert graph_discovery_summary['graph_discovered_wallets'] == 1
+    assert graph_discovery_summary['graph_clusters_promoted'] == 0
+    assert graph_discovery_summary['graph_skipped_missing_market_ref'] == 0
+    whale_candidate_aggregation = payload['whale_candidate_aggregation_summary']
+    assert whale_candidate_aggregation['accumulator_buckets'] == 0
+    assert whale_candidate_aggregation['gate_ready_candidates'] == 0
+    assert whale_candidate_aggregation['retry_candidates'] == 0
+    assert whale_candidate_aggregation['accumulated_buy_events'] == 0
+    assert whale_candidate_aggregation['accumulated_total_notional'] == 0.0
+    assert payload['recent_gate_ready_candidates'] == []
     whale_copy_gate_funnel = payload['whale_copy_gate_funnel']
     assert whale_copy_gate_funnel['resolved_whale_events'] == 3
     assert whale_copy_gate_funnel['gate_ready_candidates'] == 2
@@ -397,6 +408,27 @@ def test_dashboard_prefers_runtime_status_snapshot_when_present(dashboard_server
         'hydrated_lookup_aliases': 120,
         'lookup_hydration_warning': 'persisted_alias_rows_present_but_lookup_hydration_zero',
         'alias_persistence_gap': 138,
+        'graph_clusters_promoted': 2,
+        'graph_skipped_missing_market_ref': 1,
+        'graph_skipped_single_wallet': 3,
+        'graph_skipped_low_notional': 4,
+        'whale_copy_accumulator_buckets': 2,
+        'whale_copy_gate_ready_candidates': 1,
+        'whale_copy_retry_candidates': 1,
+        'whale_copy_accumulated_buy_events': 3,
+        'whale_copy_accumulated_total_notional': 425.5,
+        'recent_gate_ready_candidates': [
+            {
+                'market_id': 'market-snapshot',
+                'total_amount': 425.5,
+                'unique_wallets': 2,
+                'event_count': 3,
+                'max_trust': 0.82,
+                'gate_ready_reason': 'event_count',
+                'retry_cooldown_applied': False,
+                'last_reject_reason': 'slippage_guard_rejection',
+            }
+        ],
         'sampling_mode': 'enabled',
         'sampling_closed_trades': 1,
         'sampling_target_closed_trades': 20,
@@ -423,6 +455,15 @@ def test_dashboard_prefers_runtime_status_snapshot_when_present(dashboard_server
     assert payload['runtime_summary']['lookup_hydration_warning'] == 'persisted_alias_rows_present_but_lookup_hydration_zero'
     assert payload['alias_persistence_summary']['hydrated_lookup_markets'] == 21
     assert payload['alias_persistence_summary']['warning'] == 'Kalici alias cache dolu ama canli lookup hydration sifir gorunuyor.'
+    assert payload['graph_discovery_summary']['graph_clusters_promoted'] == 2
+    assert payload['graph_discovery_summary']['graph_skipped_missing_market_ref'] == 1
+    assert payload['whale_candidate_aggregation_summary']['accumulator_buckets'] == 2
+    assert payload['whale_candidate_aggregation_summary']['gate_ready_candidates'] == 1
+    assert payload['whale_candidate_aggregation_summary']['retry_candidates'] == 1
+    assert payload['whale_candidate_aggregation_summary']['accumulated_buy_events'] == 3
+    assert payload['whale_candidate_aggregation_summary']['accumulated_total_notional'] == 425.5
+    assert payload['recent_gate_ready_candidates'][0]['market_id'] == 'market-snapshot'
+    assert payload['recent_gate_ready_candidates'][0]['last_reject_reason'] == 'slippage_guard_rejection'
     assert any('canli lookup hydration sifir gorunuyor' in warning.lower() for warning in payload['warnings'])
 
 
@@ -450,6 +491,9 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Whale-Copy' in html
     assert 'Whale Side Ozeti' in html
     assert 'Whale-Copy Gate Funnel' in html
+    assert 'Graph Discovery Ozeti' in html
+    assert 'Whale Candidate Birikimi' in html
+    assert 'Gate-ready Whale Adaylari' in html
     assert 'Whale-copy recovery' in html
     assert 'Gated Whale-Copy Red Nedenleri' in html
     assert 'Relaxed Gate Sonrasi Kalan Red Nedenleri' in html

@@ -120,8 +120,8 @@ async def test_record_discovery_candidates_promotes_graph_clusters_below_activit
                 "transactionHash": "0xTX3",
                 "proxyWallet": "0xGRAPH1",
                 "price": 0.5,
-                "size": 3200,
-                "usdcSize": 1600,
+                "size": 2000,
+                "usdcSize": 1000,
                 "conditionId": "0xMARKET-GRAPH",
                 "asset": "0xTOKEN-GRAPH",
                 "side": "BUY",
@@ -131,8 +131,8 @@ async def test_record_discovery_candidates_promotes_graph_clusters_below_activit
                 "transactionHash": "0xTX4",
                 "proxyWallet": "0xGRAPH2",
                 "price": 0.5,
-                "size": 3200,
-                "usdcSize": 1600,
+                "size": 2000,
+                "usdcSize": 1000,
                 "conditionId": "0xMARKET-GRAPH",
                 "asset": "0xTOKEN-GRAPH",
                 "side": "BUY",
@@ -144,6 +144,7 @@ async def test_record_discovery_candidates_promotes_graph_clusters_below_activit
     counts = await db.get_whale_wallet_counts()
     ranked = await db.get_ranked_whale_wallets(limit=10, source_type="graph_discovery", min_event_count_24h=1)
     activity_wallet = await db.get_whale_wallet("0xgraph1")
+    graph_summary = hunter.get_graph_discovery_summary()
     await db.close()
 
     assert counts["graph_discovered_wallets"] == 2
@@ -151,3 +152,72 @@ async def test_record_discovery_candidates_promotes_graph_clusters_below_activit
     assert {row["address"] for row in ranked} == {"0xgraph1", "0xgraph2"}
     assert activity_wallet is not None
     assert activity_wallet["source_type"] == "graph_discovery"
+    assert graph_summary["graph_clusters_promoted"] == 1
+    assert graph_summary["graph_skipped_missing_market_ref"] == 0
+    assert graph_summary["graph_skipped_single_wallet"] == 0
+    assert graph_summary["graph_skipped_low_notional"] == 0
+
+
+@pytest.mark.asyncio
+async def test_record_discovery_candidates_tracks_graph_skip_reasons(tmp_path):
+    from src.database import Database
+
+    db_path = str(tmp_path / "graph_discovery_skip_reasons.db")
+    db = Database(db_path)
+    await db.connect()
+
+    hunter = ActivityHunter(db=db)
+    await hunter.record_discovery_candidates(
+        [
+            {
+                "transactionHash": "0xTX5",
+                "proxyWallet": "0xGRAPHMISS",
+                "price": 0.5,
+                "size": 2000,
+                "usdcSize": 1000,
+                "side": "BUY",
+                "title": "Missing market ref",
+            },
+            {
+                "transactionHash": "0xTX6",
+                "proxyWallet": "0xGRAPHSOLO",
+                "price": 0.5,
+                "size": 2000,
+                "usdcSize": 1000,
+                "conditionId": "0xMARKET-SOLO",
+                "asset": "0xTOKEN-SOLO",
+                "side": "BUY",
+                "title": "Single wallet only",
+            },
+            {
+                "transactionHash": "0xTX7",
+                "proxyWallet": "0xGRAPHLOW1",
+                "price": 0.5,
+                "size": 1500,
+                "usdcSize": 750,
+                "conditionId": "0xMARKET-LOW",
+                "asset": "0xTOKEN-LOW",
+                "side": "BUY",
+                "title": "Low notional graph",
+            },
+            {
+                "transactionHash": "0xTX8",
+                "proxyWallet": "0xGRAPHLOW2",
+                "price": 0.5,
+                "size": 1500,
+                "usdcSize": 750,
+                "conditionId": "0xMARKET-LOW",
+                "asset": "0xTOKEN-LOW",
+                "side": "BUY",
+                "title": "Low notional graph",
+            },
+        ]
+    )
+
+    graph_summary = hunter.get_graph_discovery_summary()
+    await db.close()
+
+    assert graph_summary["graph_clusters_promoted"] == 0
+    assert graph_summary["graph_skipped_missing_market_ref"] == 1
+    assert graph_summary["graph_skipped_single_wallet"] == 1
+    assert graph_summary["graph_skipped_low_notional"] == 0

@@ -469,6 +469,16 @@ class GhostBotRuntime:
         sampling_mode = "enabled" if self.sampling_enabled else ("target_reached" if self.sampling_stop_reason == "target_reached" else "disabled")
         alias_integrity = await self.db.get_market_alias_integrity()
         whale_universe_summary = await self.db.get_whale_universe_summary()
+        graph_discovery_summary = (
+            self.activity_hunter.get_graph_discovery_summary()
+            if self.activity_hunter is not None and hasattr(self.activity_hunter, "get_graph_discovery_summary")
+            else {}
+        )
+        whale_candidate_aggregation = (
+            self.copy_trader.get_whale_candidate_aggregation_summary()
+            if self.copy_trader is not None and hasattr(self.copy_trader, "get_whale_candidate_aggregation_summary")
+            else {}
+        )
         persisted_market_alias_rows = int(alias_integrity["alias_rows"] or 0) if alias_integrity else 0
         persisted_market_alias_markets = int(alias_integrity["market_rows"] or 0) if alias_integrity else 0
         lookup_universe_markets = len(self.lookup_market_context)
@@ -515,6 +525,16 @@ class GhostBotRuntime:
             "hydrated_lookup_aliases": self.hydrated_lookup_aliases,
             "lookup_hydration_warning": self.lookup_hydration_warning or "none",
             "alias_persistence_gap": alias_persistence_gap,
+            "graph_clusters_promoted": int(graph_discovery_summary.get("graph_clusters_promoted", 0) or 0),
+            "graph_skipped_missing_market_ref": int(graph_discovery_summary.get("graph_skipped_missing_market_ref", 0) or 0),
+            "graph_skipped_single_wallet": int(graph_discovery_summary.get("graph_skipped_single_wallet", 0) or 0),
+            "graph_skipped_low_notional": int(graph_discovery_summary.get("graph_skipped_low_notional", 0) or 0),
+            "whale_copy_accumulator_buckets": int(whale_candidate_aggregation.get("accumulator_buckets", 0) or 0),
+            "whale_copy_gate_ready_candidates": int(whale_candidate_aggregation.get("gate_ready_candidates", 0) or 0),
+            "whale_copy_retry_candidates": int(whale_candidate_aggregation.get("retry_candidates", 0) or 0),
+            "whale_copy_accumulated_buy_events": int(whale_candidate_aggregation.get("accumulated_buy_events", 0) or 0),
+            "whale_copy_accumulated_total_notional": round(float(whale_candidate_aggregation.get("accumulated_total_notional", 0.0) or 0.0), 4),
+            "recent_gate_ready_candidates": whale_candidate_aggregation.get("recent_gate_ready_candidates", []),
             "sampling_mode": sampling_mode,
             "sampling_closed_trades": self.sampling_closed_trades,
             "sampling_target_closed_trades": self.settings.paper_sampling_target_closed_trades,
@@ -523,7 +543,7 @@ class GhostBotRuntime:
         }
         await self.db.upsert_runtime_status_snapshot(status_metrics)
         logger.info(
-            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s graph_discovered_wallets=%s trusted_whales=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s mapped_orderflow_events=%s unmapped_orderflow_events=%s alias_cache_hits=%s lazy_lookup_hits=%s hot_window_markets=%s hot_window_hits=%s hot_window_promotions=%s hot_window_expiries=%s active_window_misses=%s resolver_hit_rate=%.1f active_window_miss_rate=%.1f market_not_mapped_rate=%.1f lookup_universe_markets=%s lookup_universe_aliases=%s persisted_market_alias_rows=%s persisted_market_alias_markets=%s hydrated_lookup_markets=%s hydrated_lookup_aliases=%s lookup_hydration_warning=%s alias_persistence_gap=%s sampling_mode=%s sampling_closed_trades=%s sampling_target_closed_trades=%s sampling_stop_reason=%s scan_time=%.2fs",
+            "[STATUS] active_markets=%s tracked_whales=%s leaderboard_wallets=%s activity_discovered_wallets=%s graph_discovered_wallets=%s trusted_whales=%s persisted_wallets=%s wallet_timeouts_last_cycle=%s source_mode=%s total_trades=%s win_rate=%.1f total_pnl=%.2f futures_balance=%.2f futures_realized=%.2f futures_unrealized=%.2f futures_open_positions=%s spot_balance=%.2f spot_realized=%.2f spot_unrealized=%.2f spot_open_positions=%s mapped_orderflow_events=%s unmapped_orderflow_events=%s alias_cache_hits=%s lazy_lookup_hits=%s hot_window_markets=%s hot_window_hits=%s hot_window_promotions=%s hot_window_expiries=%s active_window_misses=%s resolver_hit_rate=%.1f active_window_miss_rate=%.1f market_not_mapped_rate=%.1f lookup_universe_markets=%s lookup_universe_aliases=%s persisted_market_alias_rows=%s persisted_market_alias_markets=%s hydrated_lookup_markets=%s hydrated_lookup_aliases=%s lookup_hydration_warning=%s alias_persistence_gap=%s graph_clusters_promoted=%s graph_skipped_missing_market_ref=%s graph_skipped_single_wallet=%s graph_skipped_low_notional=%s whale_copy_accumulator_buckets=%s whale_copy_gate_ready_candidates=%s whale_copy_retry_candidates=%s whale_copy_accumulated_buy_events=%s whale_copy_accumulated_total_notional=%.2f sampling_mode=%s sampling_closed_trades=%s sampling_target_closed_trades=%s sampling_stop_reason=%s scan_time=%.2fs",
             status_metrics["active_markets"],
             status_metrics["tracked_whales"],
             status_metrics["leaderboard_wallets"],
@@ -564,6 +584,15 @@ class GhostBotRuntime:
             status_metrics["hydrated_lookup_aliases"],
             status_metrics["lookup_hydration_warning"],
             status_metrics["alias_persistence_gap"],
+            status_metrics["graph_clusters_promoted"],
+            status_metrics["graph_skipped_missing_market_ref"],
+            status_metrics["graph_skipped_single_wallet"],
+            status_metrics["graph_skipped_low_notional"],
+            status_metrics["whale_copy_accumulator_buckets"],
+            status_metrics["whale_copy_gate_ready_candidates"],
+            status_metrics["whale_copy_retry_candidates"],
+            status_metrics["whale_copy_accumulated_buy_events"],
+            status_metrics["whale_copy_accumulated_total_notional"],
             status_metrics["sampling_mode"],
             status_metrics["sampling_closed_trades"],
             status_metrics["sampling_target_closed_trades"],

@@ -349,6 +349,16 @@ function dashboard_merge_runtime_summary(array $dbSummary, array $statusMetrics)
         'hydrated_lookup_aliases',
         'lookup_hydration_warning',
         'alias_persistence_gap',
+        'graph_clusters_promoted',
+        'graph_skipped_missing_market_ref',
+        'graph_skipped_single_wallet',
+        'graph_skipped_low_notional',
+        'whale_copy_accumulator_buckets',
+        'whale_copy_gate_ready_candidates',
+        'whale_copy_retry_candidates',
+        'whale_copy_accumulated_buy_events',
+        'whale_copy_accumulated_total_notional',
+        'recent_gate_ready_candidates',
     ];
 
     foreach ($keys as $key) {
@@ -511,6 +521,16 @@ function dashboard_build_payload(string $view = 'full'): array
         'hydrated_lookup_aliases' => 0,
         'lookup_hydration_warning' => null,
         'alias_persistence_gap' => 0,
+        'graph_clusters_promoted' => 0,
+        'graph_skipped_missing_market_ref' => 0,
+        'graph_skipped_single_wallet' => 0,
+        'graph_skipped_low_notional' => 0,
+        'whale_copy_accumulator_buckets' => 0,
+        'whale_copy_gate_ready_candidates' => 0,
+        'whale_copy_retry_candidates' => 0,
+        'whale_copy_accumulated_buy_events' => 0,
+        'whale_copy_accumulated_total_notional' => 0.0,
+        'recent_gate_ready_candidates' => [],
     ];
 
     $collections = [

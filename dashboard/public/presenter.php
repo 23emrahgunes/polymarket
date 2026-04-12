@@ -113,7 +113,7 @@ function dashboard_fetch_recent_whale_copy_audit_rows(PDO $pdo): array
     return dashboard_fetch_all(
         $pdo,
         "
-        SELECT action, reason, inputs_json
+        SELECT occurred_at, market_id, action, reason, inputs_json
         FROM " . dashboard_decision_audit_window_sql('decision_audit') . "
         WHERE signal_family IN ('activity_orderflow', 'whale')
           AND action IN ('reject', 'decision', 'execute')
@@ -873,6 +873,54 @@ function dashboard_build_whale_copy_gate_funnel(PDO $pdo): array
     return $summary;
 }
 
+function dashboard_build_graph_discovery_summary(array $runtimeSummary, array $whaleUniverseSummary): array
+{
+    return [
+        'graph_discovered_wallets' => (int) ($whaleUniverseSummary['graph_discovered_wallets'] ?? $runtimeSummary['graph_discovered_wallets'] ?? 0),
+        'graph_clusters_promoted' => (int) ($runtimeSummary['graph_clusters_promoted'] ?? 0),
+        'graph_skipped_missing_market_ref' => (int) ($runtimeSummary['graph_skipped_missing_market_ref'] ?? 0),
+        'graph_skipped_single_wallet' => (int) ($runtimeSummary['graph_skipped_single_wallet'] ?? 0),
+        'graph_skipped_low_notional' => (int) ($runtimeSummary['graph_skipped_low_notional'] ?? 0),
+    ];
+}
+
+function dashboard_build_whale_candidate_aggregation_summary(array $runtimeSummary): array
+{
+    return [
+        'accumulator_buckets' => (int) ($runtimeSummary['whale_copy_accumulator_buckets'] ?? 0),
+        'gate_ready_candidates' => (int) ($runtimeSummary['whale_copy_gate_ready_candidates'] ?? 0),
+        'retry_candidates' => (int) ($runtimeSummary['whale_copy_retry_candidates'] ?? 0),
+        'accumulated_buy_events' => (int) ($runtimeSummary['whale_copy_accumulated_buy_events'] ?? 0),
+        'accumulated_total_notional' => (float) ($runtimeSummary['whale_copy_accumulated_total_notional'] ?? 0.0),
+    ];
+}
+
+function dashboard_build_recent_gate_ready_candidates(array $runtimeSummary): array
+{
+    $rows = $runtimeSummary['recent_gate_ready_candidates'] ?? [];
+    if (!is_array($rows)) {
+        return [];
+    }
+
+    $items = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $items[] = [
+            'market_id' => (string) ($row['market_id'] ?? ''),
+            'total_amount' => (float) ($row['total_amount'] ?? 0.0),
+            'unique_wallets' => (int) ($row['unique_wallets'] ?? 0),
+            'event_count' => (int) ($row['event_count'] ?? 0),
+            'max_trust' => (float) ($row['max_trust'] ?? 0.0),
+            'gate_ready_reason' => (string) ($row['gate_ready_reason'] ?? ''),
+            'retry_cooldown_applied' => !empty($row['retry_cooldown_applied']),
+            'last_reject_reason' => (string) ($row['last_reject_reason'] ?? ''),
+        ];
+    }
+    return $items;
+}
+
 function dashboard_augment_recent_decisions(PDO $pdo, array $payload): array
 {
     if (!dashboard_table_has_column($pdo, 'decision_audit', 'hot_window_promoted')) {
@@ -916,6 +964,9 @@ function dashboard_augment_payload(array $payload): array
         $payload['whale_copy_summary'] = dashboard_build_whale_copy_summary($pdo);
         $payload['whale_side_summary'] = dashboard_build_whale_side_summary($pdo);
         $payload['whale_copy_gate_funnel'] = dashboard_build_whale_copy_gate_funnel($pdo);
+        $payload['graph_discovery_summary'] = dashboard_build_graph_discovery_summary($payload['runtime_summary'] ?? [], $payload['whale_universe_summary'] ?? []);
+        $payload['whale_candidate_aggregation_summary'] = dashboard_build_whale_candidate_aggregation_summary($payload['runtime_summary'] ?? []);
+        $payload['recent_gate_ready_candidates'] = dashboard_build_recent_gate_ready_candidates($payload['runtime_summary'] ?? []);
         $payload['gated_reject_breakdown'] = dashboard_build_gated_reject_breakdown($pdo);
         $payload['relaxed_gate_reject_breakdown'] = dashboard_build_relaxed_gate_reject_breakdown($pdo);
         $payload['whale_copy_recovery_summary'] = dashboard_build_whale_copy_recovery_summary($pdo);
@@ -935,6 +986,9 @@ function dashboard_augment_payload(array $payload): array
         $payload['whale_copy_summary'] = [];
         $payload['whale_side_summary'] = [];
         $payload['whale_copy_gate_funnel'] = [];
+        $payload['graph_discovery_summary'] = [];
+        $payload['whale_candidate_aggregation_summary'] = [];
+        $payload['recent_gate_ready_candidates'] = [];
         $payload['gated_reject_breakdown'] = [];
         $payload['relaxed_gate_reject_breakdown'] = [];
         $payload['whale_copy_recovery_summary'] = [];

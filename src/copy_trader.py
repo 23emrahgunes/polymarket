@@ -26,10 +26,14 @@ UNRESOLVED_ALIAS_RETRY_MIN_UNIQUE_WALLETS = 2
 SAMPLING_ORDERFLOW_WINDOW_SECONDS = 300.0
 SAMPLING_ORDERFLOW_MIN_EVENTS = 2
 SAMPLING_ORDERFLOW_MIN_TOTAL_AMOUNT = 500.0
-WHALE_COPY_WINDOW_SECONDS = 600.0
-WHALE_COPY_MIN_TOTAL_AMOUNT = 350.0
+WHALE_COPY_WINDOW_SECONDS = 900.0
+WHALE_COPY_MIN_TOTAL_AMOUNT = 250.0
 WHALE_COPY_MIN_UNIQUE_WALLETS = 2
 WHALE_COPY_MIN_EVENTS = 2
+WHALE_COPY_TRUST_THRESHOLD = 0.60
+WHALE_COPY_TRUST_MIN_TOTAL_AMOUNT = 150.0
+WHALE_COPY_RETRY_COOLDOWN_SECONDS = 60.0
+WHALE_COPY_RECENT_BUCKET_LIMIT = 5
 
 
 class CopyTrader:
@@ -254,9 +258,11 @@ class CopyTrader:
                 {
                     "original_side": side,
                     "copy_eligible": True,
+                    **self._whale_copy_input_overrides(whale_copy_summary),
                     **token_recovery_meta,
                 }
             )
+            self._record_whale_copy_decision_outcome(whale_copy_summary, decision)
             self.decision_engine.log_result(decision, logger)
             return False
 
@@ -316,6 +322,8 @@ class CopyTrader:
                     retry_summary = sampling_orderflow_summary
 
                 if retry_summary is not None:
+                    if retry_summary is whale_copy_summary:
+                        self._mark_whale_copy_retry_attempt(retry_summary)
                     sampling_inputs = self._build_sampling_orderflow_inputs(evaluation_inputs, retry_summary)
                     decision = self.decision_engine.score_orderflow(sampling_inputs)
                     decision.inputs.update(
@@ -335,13 +343,7 @@ class CopyTrader:
         if whale_copy_summary is not None:
             decision.inputs.update(
                 {
-                    "copy_policy": COPY_POLICY_GATED_WHALE_COPY,
-                    "whale_copy_gate_ready": whale_copy_summary["ready_for_gate"],
-                    "gated_whale_event_count": whale_copy_summary["event_count"],
-                    "gated_total_notional": round(whale_copy_summary["total_amount"], 4),
-                    "gated_unique_wallets": whale_copy_summary["unique_wallets"],
-                    "gated_max_trust": round(whale_copy_summary["max_trust"], 4),
-                    "gated_source_count": whale_copy_summary["source_count"],
+                    **self._whale_copy_input_overrides(whale_copy_summary),
                 }
             )
         decision.inputs.update(
@@ -351,6 +353,7 @@ class CopyTrader:
                 **token_recovery_meta,
             }
         )
+        self._record_whale_copy_decision_outcome(whale_copy_summary, decision)
         self.decision_engine.log_result(decision, logger)
 
         if not decision.should_trade:
@@ -378,6 +381,7 @@ class CopyTrader:
             audit_inputs=decision.inputs,
         )
         if success:
+            self._record_whale_copy_execute_outcome(whale_copy_summary)
             logger.info(
                 "[EXECUTED] source=%s category=%s market=%s detail=%s",
                 source,
@@ -691,6 +695,7 @@ class CopyTrader:
         whale_trust: float,
     ) -> Dict:
         market_id = normalize_market_alias(context.get("market_id"))
+        side = str(event.get("side", "BUY")).upper()
         if not market_id:
             return {
                 "event_count": 1,
@@ -701,15 +706,28 @@ class CopyTrader:
                 "max_wallets_count": int(event.get("wallets_count", 1) or 1),
                 "ready_for_gate": False,
                 "ready_for_retry": False,
+                "accumulator_window_seconds": int(WHALE_COPY_WINDOW_SECONDS),
+                "accumulator_bucket_key": "",
+                "gate_ready_reason": "",
+                "retry_cooldown_applied": False,
             }
 
         now_ts = time.time()
-        state = self.whale_copy_state.setdefault(market_id, {"events": []})
-        events = [
-            item
-            for item in state["events"]
-            if now_ts - float(item.get("ts", 0.0)) <= WHALE_COPY_WINDOW_SECONDS
-        ]
+        self._prune_whale_copy_candidates(now_ts)
+        bucket_key = self._whale_copy_bucket_key(market_id, side)
+        state = self.whale_copy_state.setdefault(
+            bucket_key,
+            {
+                "market_id": market_id,
+                "side": side,
+                "events": [],
+                "last_retry_ts": 0.0,
+                "last_reject_reason": "",
+                "last_action": "",
+                "last_evaluated_ts": 0.0,
+            },
+        )
+        events = list(state.get("events", []))
         events.append(
             {
                 "ts": now_ts,
@@ -721,26 +739,7 @@ class CopyTrader:
             }
         )
         state["events"] = events
-
-        wallets = {item["wallet"] for item in events if item.get("wallet")}
-        total_amount = sum(float(item.get("amount", 0.0) or 0.0) for item in events)
-        max_wallets_count = max(int(item.get("wallets_count", 1) or 1) for item in events)
-        unique_wallets = max(len(wallets), max_wallets_count)
-        ready_for_gate = (
-            total_amount >= WHALE_COPY_MIN_TOTAL_AMOUNT
-            or unique_wallets >= WHALE_COPY_MIN_UNIQUE_WALLETS
-            or len(events) >= WHALE_COPY_MIN_EVENTS
-        )
-        return {
-            "event_count": len(events),
-            "total_amount": total_amount,
-            "unique_wallets": unique_wallets,
-            "source_count": len({item.get("source") for item in events if item.get("source")}),
-            "max_trust": max(float(item.get("trust", whale_trust) or whale_trust) for item in events),
-            "max_wallets_count": max_wallets_count,
-            "ready_for_gate": ready_for_gate,
-            "ready_for_retry": ready_for_gate,
-        }
+        return self._summarize_whale_copy_bucket(bucket_key, state, now_ts, whale_trust)
 
     @staticmethod
     def _build_whale_copy_inputs(inputs: DecisionInputs, summary: Dict, *, sampling_enabled: bool = False) -> DecisionInputs:
@@ -759,6 +758,161 @@ class CopyTrader:
                 **overrides,
             }
         )
+
+    @staticmethod
+    def _whale_copy_bucket_key(market_id: str, side: str) -> str:
+        return f"{normalize_market_alias(market_id)}:{str(side or 'BUY').upper()}"
+
+    def _prune_whale_copy_candidates(self, now_ts: Optional[float] = None) -> None:
+        now_ts = now_ts or time.time()
+        expired_bucket_keys = []
+        for bucket_key, state in self.whale_copy_state.items():
+            events = [
+                item
+                for item in state.get("events", [])
+                if now_ts - float(item.get("ts", 0.0)) <= WHALE_COPY_WINDOW_SECONDS
+            ]
+            if events:
+                state["events"] = events
+                continue
+            expired_bucket_keys.append(bucket_key)
+        for bucket_key in expired_bucket_keys:
+            self.whale_copy_state.pop(bucket_key, None)
+
+    def _summarize_whale_copy_bucket(
+        self,
+        bucket_key: str,
+        state: Dict,
+        now_ts: Optional[float] = None,
+        default_trust: float = 0.5,
+    ) -> Dict:
+        now_ts = now_ts or time.time()
+        events = list(state.get("events", []))
+        wallets = {item["wallet"] for item in events if item.get("wallet")}
+        total_amount = sum(float(item.get("amount", 0.0) or 0.0) for item in events)
+        max_wallets_count = max((int(item.get("wallets_count", 1) or 1) for item in events), default=1)
+        unique_wallets = max(len(wallets), max_wallets_count)
+        max_trust = max((float(item.get("trust", default_trust) or default_trust) for item in events), default=default_trust)
+        gate_ready_reasons = []
+        if total_amount >= WHALE_COPY_MIN_TOTAL_AMOUNT:
+            gate_ready_reasons.append("total_notional")
+        if unique_wallets >= WHALE_COPY_MIN_UNIQUE_WALLETS:
+            gate_ready_reasons.append("unique_wallets")
+        if len(events) >= WHALE_COPY_MIN_EVENTS:
+            gate_ready_reasons.append("event_count")
+        if max_trust >= WHALE_COPY_TRUST_THRESHOLD and total_amount >= WHALE_COPY_TRUST_MIN_TOTAL_AMOUNT:
+            gate_ready_reasons.append("trusted_wallet")
+
+        ready_for_gate = bool(gate_ready_reasons)
+        last_retry_ts = float(state.get("last_retry_ts", 0.0) or 0.0)
+        retry_cooldown_applied = ready_for_gate and last_retry_ts > 0 and (now_ts - last_retry_ts) < WHALE_COPY_RETRY_COOLDOWN_SECONDS
+        return {
+            "event_count": len(events),
+            "total_amount": total_amount,
+            "unique_wallets": unique_wallets,
+            "source_count": len({item.get("source") for item in events if item.get("source")}),
+            "max_trust": max_trust,
+            "max_wallets_count": max_wallets_count,
+            "ready_for_gate": ready_for_gate,
+            "ready_for_retry": ready_for_gate and not retry_cooldown_applied,
+            "accumulator_window_seconds": int(WHALE_COPY_WINDOW_SECONDS),
+            "accumulator_bucket_key": bucket_key,
+            "gate_ready_reason": ",".join(gate_ready_reasons),
+            "retry_cooldown_applied": retry_cooldown_applied,
+            "market_id": state.get("market_id"),
+            "side": state.get("side", "BUY"),
+            "last_seen_ts": max((float(item.get("ts", 0.0) or 0.0) for item in events), default=0.0),
+            "last_reject_reason": str(state.get("last_reject_reason") or ""),
+            "last_action": str(state.get("last_action") or ""),
+        }
+
+    def _mark_whale_copy_retry_attempt(self, summary: Optional[Dict]) -> None:
+        if not summary:
+            return
+        bucket_key = str(summary.get("accumulator_bucket_key") or "")
+        state = self.whale_copy_state.get(bucket_key)
+        if state is None:
+            return
+        state["last_retry_ts"] = time.time()
+
+    def _record_whale_copy_decision_outcome(self, summary: Optional[Dict], decision) -> None:
+        if not summary:
+            return
+        bucket_key = str(summary.get("accumulator_bucket_key") or "")
+        state = self.whale_copy_state.get(bucket_key)
+        if state is None:
+            return
+        state["last_action"] = "decision" if decision.should_trade else "reject"
+        state["last_evaluated_ts"] = time.time()
+        if not decision.should_trade:
+            state["last_reject_reason"] = ",".join(decision.reasons or [])
+
+    def _record_whale_copy_execute_outcome(self, summary: Optional[Dict]) -> None:
+        if not summary:
+            return
+        bucket_key = str(summary.get("accumulator_bucket_key") or "")
+        state = self.whale_copy_state.get(bucket_key)
+        if state is None:
+            return
+        state["last_action"] = "execute"
+        state["last_evaluated_ts"] = time.time()
+
+    @staticmethod
+    def _whale_copy_input_overrides(summary: Optional[Dict]) -> Dict:
+        if not summary:
+            return {}
+        return {
+            "copy_policy": COPY_POLICY_GATED_WHALE_COPY,
+            "whale_copy_gate_ready": summary.get("ready_for_gate", False),
+            "gated_whale_event_count": summary.get("event_count", 0),
+            "gated_total_notional": round(float(summary.get("total_amount", 0.0) or 0.0), 4),
+            "gated_unique_wallets": int(summary.get("unique_wallets", 0) or 0),
+            "gated_max_trust": round(float(summary.get("max_trust", 0.0) or 0.0), 4),
+            "gated_source_count": int(summary.get("source_count", 0) or 0),
+            "accumulator_window_seconds": int(summary.get("accumulator_window_seconds", 0) or 0),
+            "accumulator_bucket_key": str(summary.get("accumulator_bucket_key") or ""),
+            "gate_ready_reason": str(summary.get("gate_ready_reason") or ""),
+            "retry_cooldown_applied": bool(summary.get("retry_cooldown_applied")),
+        }
+
+    def get_whale_candidate_aggregation_summary(self) -> Dict:
+        now_ts = time.time()
+        self._prune_whale_copy_candidates(now_ts)
+        bucket_summaries = [
+            self._summarize_whale_copy_bucket(bucket_key, state, now_ts)
+            for bucket_key, state in self.whale_copy_state.items()
+        ]
+        gate_ready_candidates = [summary for summary in bucket_summaries if summary.get("ready_for_gate")]
+        retry_candidates = [summary for summary in bucket_summaries if summary.get("ready_for_retry")]
+        recent_gate_ready_candidates = sorted(
+            gate_ready_candidates,
+            key=lambda item: float(item.get("last_seen_ts", 0.0) or 0.0),
+            reverse=True,
+        )[:WHALE_COPY_RECENT_BUCKET_LIMIT]
+        return {
+            "accumulator_buckets": len(bucket_summaries),
+            "gate_ready_candidates": len(gate_ready_candidates),
+            "retry_candidates": len(retry_candidates),
+            "accumulated_buy_events": sum(int(summary.get("event_count", 0) or 0) for summary in bucket_summaries),
+            "accumulated_total_notional": round(
+                sum(float(summary.get("total_amount", 0.0) or 0.0) for summary in bucket_summaries),
+                4,
+            ),
+            "recent_gate_ready_candidates": [
+                {
+                    "market_id": item.get("market_id"),
+                    "bucket_key": item.get("accumulator_bucket_key"),
+                    "total_amount": round(float(item.get("total_amount", 0.0) or 0.0), 4),
+                    "unique_wallets": int(item.get("unique_wallets", 0) or 0),
+                    "event_count": int(item.get("event_count", 0) or 0),
+                    "max_trust": round(float(item.get("max_trust", 0.0) or 0.0), 4),
+                    "last_reject_reason": item.get("last_reject_reason") or "",
+                    "gate_ready_reason": item.get("gate_ready_reason") or "",
+                    "retry_cooldown_applied": bool(item.get("retry_cooldown_applied")),
+                }
+                for item in recent_gate_ready_candidates
+            ],
+        }
 
     @staticmethod
     def _build_sampling_orderflow_inputs(inputs: DecisionInputs, summary: Optional[Dict]) -> DecisionInputs:

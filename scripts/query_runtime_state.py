@@ -201,6 +201,26 @@ def _summarize_whale_copy_gate_funnel(rows) -> dict[str, int]:
     return summary
 
 
+def _summarize_graph_discovery(status_metrics: dict, whale_count_map: dict[str, int]) -> dict[str, int]:
+    return {
+        "graph_discovered_wallets": int(status_metrics.get("graph_discovered_wallets", whale_count_map.get("graph_discovery", 0)) or 0),
+        "graph_clusters_promoted": int(status_metrics.get("graph_clusters_promoted", 0) or 0),
+        "graph_skipped_missing_market_ref": int(status_metrics.get("graph_skipped_missing_market_ref", 0) or 0),
+        "graph_skipped_single_wallet": int(status_metrics.get("graph_skipped_single_wallet", 0) or 0),
+        "graph_skipped_low_notional": int(status_metrics.get("graph_skipped_low_notional", 0) or 0),
+    }
+
+
+def _summarize_whale_candidate_aggregation(status_metrics: dict) -> dict[str, float | int]:
+    return {
+        "accumulator_buckets": int(status_metrics.get("whale_copy_accumulator_buckets", 0) or 0),
+        "gate_ready_candidates": int(status_metrics.get("whale_copy_gate_ready_candidates", 0) or 0),
+        "retry_candidates": int(status_metrics.get("whale_copy_retry_candidates", 0) or 0),
+        "accumulated_buy_events": int(status_metrics.get("whale_copy_accumulated_buy_events", 0) or 0),
+        "accumulated_total_notional": round(float(status_metrics.get("whale_copy_accumulated_total_notional", 0.0) or 0.0), 4),
+    }
+
+
 def _summarize_reason_breakdown(rows, *, relaxed_only: bool) -> list[tuple[str, int]]:
     counts: dict[str, int] = {}
     for row in rows or []:
@@ -573,6 +593,9 @@ def main() -> int:
     whale_copy_recovery_summary = _summarize_whale_copy_recovery(whale_copy_rows)
     whale_side_summary = _summarize_whale_side(whale_copy_rows)
     whale_copy_gate_funnel = _summarize_whale_copy_gate_funnel(whale_copy_rows)
+    whale_count_map = {str(row[0]): int(row[1]) for row in whale_counts}
+    graph_discovery_summary = _summarize_graph_discovery(status_metrics, whale_count_map)
+    whale_candidate_aggregation_summary = _summarize_whale_candidate_aggregation(status_metrics)
     gated_reject_breakdown = _summarize_reason_breakdown(whale_copy_rows, relaxed_only=False)
     relaxed_gate_reject_breakdown = _summarize_reason_breakdown(whale_copy_rows, relaxed_only=True)
     connection.close()
@@ -655,12 +678,14 @@ def main() -> int:
     for label, value in zip(source_labels, source_quality_summary or ()):
         print((label, value))
     print("WHALE_UNIVERSE_SUMMARY")
-    whale_count_map = {str(row[0]): int(row[1]) for row in whale_counts}
     print(("tracked_whales", tracked_whale_count))
     print(("leaderboard_wallets", whale_count_map.get("leaderboard", 0)))
     print(("activity_discovered_wallets", whale_count_map.get("activity_discovery", 0)))
     print(("graph_discovered_wallets", whale_count_map.get("graph_discovery", 0)))
     print(("trusted_whales", trusted_whale_count))
+    print("GRAPH_DISCOVERY_SUMMARY")
+    for label, value in graph_discovery_summary.items():
+        print((label, value))
     print("WHALE_COPY_SUMMARY")
     for label, value in whale_copy_summary.items():
         print((label, value))
@@ -669,6 +694,9 @@ def main() -> int:
         print((label, value))
     print("WHALE_COPY_GATE_FUNNEL")
     for label, value in whale_copy_gate_funnel.items():
+        print((label, value))
+    print("WHALE_CANDIDATE_AGGREGATION_SUMMARY")
+    for label, value in whale_candidate_aggregation_summary.items():
         print((label, value))
     print("WHALE_COPY_RECOVERY_SUMMARY")
     for label, value in whale_copy_recovery_summary.items():

@@ -150,7 +150,7 @@ class WhaleTracker:
                 if cap is not None and len(selected) >= cap:
                     return
 
-        graph_quota = min(10, math.ceil(limit * 0.30))
+        graph_quota = min(15, math.ceil(limit * 0.40))
         primary_activity_cap = max(limit - graph_quota, 0)
 
         _extend(activity_wallets, cap=primary_activity_cap if graph_wallets else None)
