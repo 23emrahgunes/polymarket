@@ -123,6 +123,21 @@ function dashboard_fetch_recent_whale_copy_audit_rows(PDO $pdo): array
     );
 }
 
+function dashboard_fetch_recent_binance_technical_rows(PDO $pdo): array
+{
+    return dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT occurred_at, venue, market_id, action, reason, inputs_json
+        FROM " . dashboard_decision_audit_window_sql('decision_audit') . "
+        WHERE strategy_profile = 'binance_technical_sampling'
+          AND action IN ('reject', 'decision', 'execute')
+        ORDER BY id DESC
+        LIMIT 300
+        "
+    );
+}
+
 function dashboard_translate_warning(string $warning): string
 {
     return str_replace(
@@ -309,6 +324,64 @@ function dashboard_build_sampling_reject_breakdown(PDO $pdo): array
             if ($reason === '') {
                 continue;
             }
+            $counts[$reason] = ($counts[$reason] ?? 0) + 1;
+        }
+    }
+
+    arsort($counts);
+    $items = [];
+    foreach (array_slice($counts, 0, 8, true) as $reason => $count) {
+        $items[] = [
+            'reason' => $reason,
+            'count' => $count,
+        ];
+    }
+    return $items;
+}
+
+function dashboard_build_binance_technical_summary(PDO $pdo): array
+{
+    $summary = [
+        'decisions' => 0,
+        'rejects' => 0,
+        'executes' => 0,
+        'long_signals' => 0,
+        'short_signals' => 0,
+        'forced_samples' => 0,
+    ];
+
+    foreach (dashboard_fetch_recent_binance_technical_rows($pdo) as $row) {
+        $action = strtolower((string) ($row['action'] ?? ''));
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        $direction = strtoupper((string) ($inputs['signal_direction'] ?? $inputs['direction'] ?? ''));
+        if ($direction === 'LONG') {
+            $summary['long_signals']++;
+        } elseif ($direction === 'SHORT') {
+            $summary['short_signals']++;
+        }
+        if (!empty($inputs['force_sample'])) {
+            $summary['forced_samples']++;
+        }
+        if ($action === 'decision') {
+            $summary['decisions']++;
+        } elseif ($action === 'reject') {
+            $summary['rejects']++;
+        } elseif ($action === 'execute') {
+            $summary['executes']++;
+        }
+    }
+
+    return $summary;
+}
+
+function dashboard_build_binance_technical_reject_breakdown(PDO $pdo): array
+{
+    $counts = [];
+    foreach (dashboard_fetch_recent_binance_technical_rows($pdo) as $row) {
+        if (strtolower((string) ($row['action'] ?? '')) !== 'reject') {
+            continue;
+        }
+        foreach (dashboard_reason_parts($row['reason'] ?? null) as $reason) {
             $counts[$reason] = ($counts[$reason] ?? 0) + 1;
         }
     }
@@ -956,6 +1029,8 @@ function dashboard_augment_payload(array $payload): array
         $payload['sampling_decision_summary'] = dashboard_build_sampling_decision_summary($pdo);
         $payload['mapping_miss_breakdown'] = dashboard_build_mapping_miss_breakdown($pdo);
         $payload['sampling_reject_breakdown'] = dashboard_build_sampling_reject_breakdown($pdo);
+        $payload['binance_technical_summary'] = dashboard_build_binance_technical_summary($pdo);
+        $payload['binance_technical_reject_breakdown'] = dashboard_build_binance_technical_reject_breakdown($pdo);
         $payload['alias_persistence_summary'] = dashboard_build_alias_persistence_summary($pdo, $payload['runtime_summary'] ?? []);
         $payload['source_quality_summary'] = dashboard_build_source_quality_summary($pdo);
         $payload['unsupported_side_summary'] = dashboard_build_unsupported_side_summary($pdo);
@@ -978,6 +1053,8 @@ function dashboard_augment_payload(array $payload): array
         $payload['sampling_decision_summary'] = [];
         $payload['mapping_miss_breakdown'] = [];
         $payload['sampling_reject_breakdown'] = [];
+        $payload['binance_technical_summary'] = [];
+        $payload['binance_technical_reject_breakdown'] = [];
         $payload['alias_persistence_summary'] = [];
         $payload['source_quality_summary'] = [];
         $payload['unsupported_side_summary'] = [];

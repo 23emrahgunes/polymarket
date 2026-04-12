@@ -371,6 +371,7 @@ class Database:
         debug_profile = infer_debug_profile_from_db_path(self.db_path)
         signal_family_updates = {
             "discovery": ("discovery", "blended_crypto", "binance_futures_price_structure", "binance_spot_price_structure"),
+            "technical": ("binance_technical_momentum",),
             "whale": ("whale_tracker",),
             "activity_orderflow": ("activity", "cluster_detected"),
         }

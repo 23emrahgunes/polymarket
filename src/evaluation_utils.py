@@ -10,6 +10,7 @@ SIGNAL_FAMILY_DISCOVERY = {
     "binance_futures_price_structure",
     "binance_spot_price_structure",
 }
+SIGNAL_FAMILY_TECHNICAL = {"binance_technical_momentum"}
 SIGNAL_FAMILY_WHALE = {"whale_tracker"}
 SIGNAL_FAMILY_ACTIVITY = {"activity", "cluster_detected"}
 
@@ -18,12 +19,15 @@ SAMPLE_KIND_SYNTHETIC_VERIFY = "synthetic_verify"
 SAMPLE_KIND_REPLAY = "replay"
 STRATEGY_PROFILE_BASELINE = "baseline"
 STRATEGY_PROFILE_SAMPLING_RELAXED = "sampling_relaxed"
+STRATEGY_PROFILE_BINANCE_TECHNICAL = "binance_technical_sampling"
 
 
 def normalize_signal_family(raw_source_signal: Optional[str]) -> str:
     normalized = (raw_source_signal or "").strip().lower()
     if normalized in SIGNAL_FAMILY_DISCOVERY:
         return "discovery"
+    if normalized in SIGNAL_FAMILY_TECHNICAL:
+        return "technical"
     if normalized in SIGNAL_FAMILY_WHALE:
         return "whale"
     if normalized in SIGNAL_FAMILY_ACTIVITY:
@@ -77,4 +81,6 @@ def normalize_strategy_profile(raw_strategy_profile: Optional[str]) -> str:
     normalized = (raw_strategy_profile or STRATEGY_PROFILE_BASELINE).strip().lower()
     if normalized == STRATEGY_PROFILE_SAMPLING_RELAXED:
         return STRATEGY_PROFILE_SAMPLING_RELAXED
+    if normalized == STRATEGY_PROFILE_BINANCE_TECHNICAL:
+        return STRATEGY_PROFILE_BINANCE_TECHNICAL
     return STRATEGY_PROFILE_BASELINE

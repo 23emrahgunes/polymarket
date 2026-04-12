@@ -386,6 +386,125 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert isinstance(payload['warnings'], list)
 
 
+def test_dashboard_api_returns_binance_technical_sections(dashboard_server: DashboardServer, tmp_path: Path):
+    conn = sqlite3.connect(dashboard_server.db_path)
+    cur = conn.cursor()
+    cur.executemany(
+        'INSERT INTO decision_audit VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+            (
+                101,
+                '2026-04-09 12:10:00',
+                'binance_futures',
+                'BTC/USDT:USDT',
+                'CRYPTO',
+                'binance_technical_momentum',
+                'binance_technical_sampling',
+                'binance_technical_momentum',
+                'reject',
+                'score_below_threshold,macd_not_aligned',
+                0.54,
+                0.62,
+                50.0,
+                0.54,
+                'technical',
+                0,
+                0,
+                '[]',
+                0,
+                '{"signal_direction":"LONG","force_sample":false}',
+            ),
+            (
+                102,
+                '2026-04-09 12:11:00',
+                'binance_futures',
+                'ETH/USDT:USDT',
+                'CRYPTO',
+                'binance_technical_momentum',
+                'binance_technical_sampling',
+                'binance_technical_momentum',
+                'decision',
+                None,
+                0.68,
+                0.62,
+                60.0,
+                0.68,
+                'technical',
+                0,
+                0,
+                '[]',
+                0,
+                '{"signal_direction":"SHORT","force_sample":true}',
+            ),
+            (
+                103,
+                '2026-04-09 12:12:00',
+                'binance_futures',
+                'SOL/USDT:USDT',
+                'CRYPTO',
+                'binance_technical_momentum',
+                'binance_technical_sampling',
+                'binance_technical_momentum',
+                'execute',
+                None,
+                0.71,
+                0.62,
+                40.0,
+                0.71,
+                'technical',
+                0,
+                0,
+                '[]',
+                0,
+                '{"signal_direction":"LONG","force_sample":false}',
+            ),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    script_path = tmp_path / 'technical_probe.php'
+    script_path.write_text(
+        "\n".join(
+            [
+                "<?php",
+                "declare(strict_types=1);",
+                f"putenv('GHOST_TRADER_REPO_ROOT={REPO_ROOT.as_posix()}');",
+                f"putenv('GHOST_TRADER_DB_PATH={dashboard_server.db_path.as_posix()}');",
+                "require 'dashboard/public/presenter.php';",
+                "$warnings = [];",
+                "$pdo = dashboard_open_db($warnings);",
+                "echo json_encode([",
+                "    'summary' => dashboard_build_binance_technical_summary($pdo),",
+                "    'reject_breakdown' => dashboard_build_binance_technical_reject_breakdown($pdo),",
+                "], JSON_THROW_ON_ERROR);",
+            ]
+        ),
+        encoding='utf-8',
+    )
+
+    completed = subprocess.run(
+        [PHP_BIN, str(script_path)],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload['summary'] == {
+        'decisions': 1,
+        'rejects': 1,
+        'executes': 1,
+        'long_signals': 2,
+        'short_signals': 1,
+        'forced_samples': 1,
+    }
+    technical_breakdown = {row['reason']: row['count'] for row in payload['reject_breakdown']}
+    assert technical_breakdown['score_below_threshold'] == 1
+    assert technical_breakdown['macd_not_aligned'] == 1
+
+
 def test_dashboard_prefers_runtime_status_snapshot_when_present(dashboard_server: DashboardServer):
     metrics = {
         'mapped_orderflow_events': 7,
@@ -498,6 +617,8 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Gated Whale-Copy Red Nedenleri' in html
     assert 'Relaxed Gate Sonrasi Kalan Red Nedenleri' in html
     assert 'Henüz kapanmış whale geçmişi yok; nötr güven.' in html
+    assert 'Binance teknik sampling' in html
+    assert 'Binance Teknik Red Nedenleri' in html
     assert '&mdash;' in html
 
 

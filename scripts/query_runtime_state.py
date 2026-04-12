@@ -242,6 +242,48 @@ def _summarize_reason_breakdown(rows, *, relaxed_only: bool) -> list[tuple[str, 
     return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:10]
 
 
+def _summarize_binance_technical(rows) -> dict[str, int]:
+    summary = {
+        "decisions": 0,
+        "rejects": 0,
+        "executes": 0,
+        "long_signals": 0,
+        "short_signals": 0,
+        "forced_samples": 0,
+    }
+    for row in rows or []:
+        action = str(row["action"] if isinstance(row, sqlite3.Row) else row[0] or "").lower()
+        raw_inputs = (row["inputs_json"] if isinstance(row, sqlite3.Row) else row[2]) or "{}"
+        inputs = _parse_inputs_json(raw_inputs)
+        direction = str(inputs.get("signal_direction") or inputs.get("direction") or "").upper()
+        if direction == "LONG":
+            summary["long_signals"] += 1
+        elif direction == "SHORT":
+            summary["short_signals"] += 1
+        if inputs.get("force_sample"):
+            summary["forced_samples"] += 1
+
+        if action == "decision":
+            summary["decisions"] += 1
+        elif action == "reject":
+            summary["rejects"] += 1
+        elif action == "execute":
+            summary["executes"] += 1
+    return summary
+
+
+def _summarize_binance_technical_reject_breakdown(rows) -> list[tuple[str, int]]:
+    counts: dict[str, int] = {}
+    for row in rows or []:
+        action = str(row["action"] if isinstance(row, sqlite3.Row) else row[0] or "").lower()
+        if action != "reject":
+            continue
+        reason = str((row["reason"] if isinstance(row, sqlite3.Row) else row[1]) or "").strip()
+        for part in _reason_parts(reason):
+            counts[part] = counts.get(part, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:10]
+
+
 def _read_latest_status_metrics() -> dict:
     try:
         result = subprocess.run(
@@ -564,6 +606,16 @@ def main() -> int:
             LIMIT 500
             """
         ).fetchall()
+        technical_rows = cursor.execute(
+            """
+            SELECT action, reason, inputs_json
+            FROM decision_audit
+            WHERE strategy_profile = 'binance_technical_sampling'
+              AND action IN ('reject', 'decision', 'execute')
+            ORDER BY id DESC
+            LIMIT 500
+            """
+        ).fetchall()
     except sqlite3.OperationalError:
         routing_breakdown = []
         sampling_decision_summary = []
@@ -572,6 +624,7 @@ def main() -> int:
         source_quality_summary = (0, 0, 0, 0, 0, 0)
         unsupported_side_summary = []
         whale_copy_rows = []
+        technical_rows = []
     try:
         alias_integrity = cursor.execute(
             """
@@ -598,6 +651,8 @@ def main() -> int:
     whale_candidate_aggregation_summary = _summarize_whale_candidate_aggregation(status_metrics)
     gated_reject_breakdown = _summarize_reason_breakdown(whale_copy_rows, relaxed_only=False)
     relaxed_gate_reject_breakdown = _summarize_reason_breakdown(whale_copy_rows, relaxed_only=True)
+    technical_summary = _summarize_binance_technical(technical_rows)
+    technical_reject_breakdown = _summarize_binance_technical_reject_breakdown(technical_rows)
     connection.close()
 
     print(f"DB_PATH={db_path}")
@@ -706,6 +761,12 @@ def main() -> int:
         print((reason, count))
     print("RELAXED_GATE_REJECT_BREAKDOWN")
     for reason, count in relaxed_gate_reject_breakdown:
+        print((reason, count))
+    print("BINANCE_TECHNICAL_SUMMARY")
+    for label, value in technical_summary.items():
+        print((label, value))
+    print("BINANCE_TECHNICAL_REJECT_BREAKDOWN")
+    for reason, count in technical_reject_breakdown:
         print((reason, count))
     print("UNSUPPORTED_SIDE_SUMMARY")
     for row in unsupported_side_summary:

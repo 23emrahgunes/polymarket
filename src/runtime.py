@@ -15,10 +15,10 @@ from src.brain import Brain
 from src.copy_trader import CopyTrader
 from src.crypto_signal_engine import CryptoSignalEngine, CryptoSignalInputs
 from src.database import Database
-from src.decision_engine import DecisionEngine, DecisionInputs, classify_market_category
+from src.decision_engine import DecisionEngine, DecisionInputs, DecisionResult, classify_market_category
 from src.explorer import MarketExplorer
 from src.evaluation_utils import infer_sample_kind, normalize_signal_family, slippage_proxy_bps_from_spread
-from src.evaluation_utils import STRATEGY_PROFILE_SAMPLING_RELAXED
+from src.evaluation_utils import STRATEGY_PROFILE_BINANCE_TECHNICAL, STRATEGY_PROFILE_SAMPLING_RELAXED
 from src.gamma_client import GammaApiClient
 from src.logic import calculate_annualized_volatility, calculate_black_scholes_prob, calculate_edge, calculate_rsi
 from src.market_config import BINANCE_FUTURES_MAPPINGS, EXCHANGE_MAPPINGS, resolve_binance_futures_symbol, resolve_crypto_symbol
@@ -26,6 +26,7 @@ from src.market_mapping import build_market_aliases, collect_alias_candidates, e
 from src.parser import parse_polymarket_question
 from src.scanner import MarketScanner
 from src.scrapers.activity import ActivityHunter
+from src.technical_signal_engine import TechnicalSignalEngine
 from src.trading import TradeExecutor
 from src.venue_config import VenueConfig, build_default_venue_configs
 from src.venues import BinanceFuturesPaperVenue, BinanceSpotVenue, PolymarketVenue
@@ -59,6 +60,14 @@ class RuntimeSettings:
     market_lookup_limit: int = 15000
     paper_sampling_mode: bool = False
     paper_sampling_target_closed_trades: int = 20
+    binance_technical_paper_enabled: bool = False
+    binance_technical_force_sample: bool = False
+    binance_technical_symbols: Tuple[str, ...] = tuple()
+    binance_technical_timeframe: str = "5m"
+    binance_technical_min_score: float = 0.62
+    binance_technical_force_min_score: float = 0.5
+    binance_technical_force_cooldown_minutes: float = 30.0
+    binance_technical_interval_seconds: float = 60.0
     orderflow_hot_window_enabled: bool = True
     orderflow_hot_window_limit: int = 150
     orderflow_hot_window_ttl_seconds: float = 900.0
@@ -88,6 +97,14 @@ class RuntimeSettings:
             market_lookup_limit=max(int(os.getenv("MARKET_LOOKUP_LIMIT", "15000") or 15000), 200),
             paper_sampling_mode=_env_flag("PAPER_SAMPLING_MODE", False),
             paper_sampling_target_closed_trades=max(int(os.getenv("PAPER_SAMPLING_TARGET_CLOSED_TRADES", "20") or 20), 1),
+            binance_technical_paper_enabled=_env_flag("BINANCE_TECHNICAL_PAPER_ENABLED", False),
+            binance_technical_force_sample=_env_flag("BINANCE_TECHNICAL_FORCE_SAMPLE", False),
+            binance_technical_symbols=_env_csv("BINANCE_TECHNICAL_SYMBOLS"),
+            binance_technical_timeframe=os.getenv("BINANCE_TECHNICAL_TIMEFRAME", "5m") or "5m",
+            binance_technical_min_score=float(os.getenv("BINANCE_TECHNICAL_MIN_SCORE", "0.62") or 0.62),
+            binance_technical_force_min_score=float(os.getenv("BINANCE_TECHNICAL_FORCE_MIN_SCORE", "0.5") or 0.5),
+            binance_technical_force_cooldown_minutes=float(os.getenv("BINANCE_TECHNICAL_FORCE_COOLDOWN_MINUTES", "30") or 30),
+            binance_technical_interval_seconds=max(float(os.getenv("BINANCE_TECHNICAL_INTERVAL_SECONDS", "60") or 60), 10.0),
             orderflow_hot_window_enabled=_env_flag("ORDERFLOW_HOT_WINDOW_ENABLED", True),
             orderflow_hot_window_limit=max(int(os.getenv("ORDERFLOW_HOT_WINDOW_LIMIT", "150") or 150), 1),
             orderflow_hot_window_ttl_seconds=max(float(os.getenv("ORDERFLOW_HOT_WINDOW_TTL_SECONDS", "900") or 900), 60.0),
@@ -108,6 +125,7 @@ class GhostBotRuntime:
         self.settings = settings
         self.decision_engine = DecisionEngine()
         self.crypto_signal_engine = CryptoSignalEngine()
+        self.technical_signal_engine = TechnicalSignalEngine()
         self.sample_kind = infer_sample_kind(
             debug_signal_mode=settings.debug_signal_mode,
             debug_profile=settings.debug_signal_profile if settings.debug_signal_mode else None,
@@ -141,6 +159,8 @@ class GhostBotRuntime:
         self.sampling_enabled = bool(settings.paper_sampling_mode and self.sample_kind == "live_paper")
         self.sampling_closed_trades = 0
         self.sampling_stop_reason: Optional[str] = None
+        self.technical_enabled = bool(settings.binance_technical_paper_enabled and self.sample_kind == "live_paper")
+        self.technical_force_last_ts = 0.0
 
         self.scanner: Optional[MarketScanner] = None
         self.db: Optional[Database] = None
@@ -357,6 +377,8 @@ class GhostBotRuntime:
             asyncio.create_task(self.run_whale_tracker_loop(), name="whale_tracker"),
             asyncio.create_task(self.run_activity_hunter_loop(), name="activity_hunter"),
         ]
+        if self.technical_enabled:
+            tasks.append(asyncio.create_task(self.run_binance_technical_loop(), name="binance_technical"))
 
         try:
             if self.settings.runtime_verify_once:
@@ -609,6 +631,227 @@ class GhostBotRuntime:
             if self.stop_event.is_set():
                 break
             await self.handle_activity_event(event)
+
+    def _resolve_binance_technical_symbols(self) -> Tuple[Dict[str, str], ...]:
+        raw_symbols = list(self.settings.binance_technical_symbols or tuple())
+        if not raw_symbols:
+            raw_symbols = list(BINANCE_FUTURES_MAPPINGS.keys())
+
+        resolved: list[Dict[str, str]] = []
+        for raw in raw_symbols:
+            token = str(raw or "").strip()
+            if not token:
+                continue
+            if "/" in token:
+                futures_symbol = token
+                base_symbol = token.split("/")[0].upper()
+            else:
+                base_symbol = token.upper()
+                futures_symbol = BINANCE_FUTURES_MAPPINGS.get(base_symbol, token)
+            spot_symbol = EXCHANGE_MAPPINGS["binance"].get(base_symbol)
+            if not spot_symbol and "/" in futures_symbol:
+                fallback_base = futures_symbol.split("/")[0].upper()
+                spot_symbol = EXCHANGE_MAPPINGS["binance"].get(fallback_base, f"{fallback_base}/USDT")
+            resolved.append(
+                {
+                    "base_symbol": base_symbol,
+                    "futures_symbol": futures_symbol,
+                    "spot_symbol": spot_symbol or "",
+                }
+            )
+        return tuple(resolved)
+
+    async def run_binance_technical_loop(self) -> None:
+        if self.scanner is None:
+            return
+
+        logger.info("Ghost Intelligence v4.0: Binance technical sampler active.")
+        while not self.stop_event.is_set():
+            cycle_start = time.time()
+            try:
+                await self.process_binance_technical_signals()
+            except Exception as exc:
+                logger.info("[REJECT] venue=binance_futures source=binance_technical_momentum category=CRYPTO market=unknown reasons=technical_sampler_failed inputs=%s", {"error": str(exc)})
+            elapsed = time.time() - cycle_start
+            delay = max(0.0, self.settings.binance_technical_interval_seconds - elapsed)
+            await asyncio.sleep(delay)
+
+    async def process_binance_technical_signals(self) -> None:
+        if self.scanner is None or self.binance_futures_venue is None:
+            return
+        if not self.settings.venue_configs["binance_futures"].enabled:
+            return
+
+        symbols = self._resolve_binance_technical_symbols()
+        if not symbols:
+            return
+
+        futures_trade_size = min(
+            self.settings.venue_configs["binance_futures"].max_order_usd,
+            self.settings.venue_configs["binance_futures"].max_position_usd,
+        )
+        spot_trade_size = min(
+            self.settings.venue_configs["binance_spot"].max_order_usd,
+            self.settings.venue_configs["binance_spot"].max_position_usd,
+        )
+
+        for entry in symbols:
+            futures_symbol = entry["futures_symbol"]
+            spot_symbol = entry["spot_symbol"]
+            futures_snapshot = await self.scanner.get_futures_market_snapshot(futures_symbol)
+            if not futures_snapshot.get("is_valid"):
+                rejection = self.decision_engine.reject(
+                    DecisionInputs(
+                        source="binance_technical_momentum",
+                        category="CRYPTO",
+                        market_id=futures_symbol,
+                        venue="binance_futures",
+                        strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
+                    ),
+                    futures_snapshot.get("reason", "position_sync_failed"),
+                )
+                self.decision_engine.log_result(rejection, logger)
+                continue
+
+            futures_history = await self.scanner.get_futures_historical_data(
+                futures_symbol,
+                timeframe=self.settings.binance_technical_timeframe,
+                limit=200,
+            )
+            closes = futures_history["close"] if not futures_history.empty and "close" in futures_history else pd.Series(dtype=float)
+            volumes = futures_history["volume"] if not futures_history.empty and "volume" in futures_history else pd.Series(dtype=float)
+            signal = self.technical_signal_engine.score(
+                symbol=futures_symbol,
+                closes=closes,
+                volumes=volumes,
+                spread_pct=float(futures_snapshot.get("spread_pct") or 0.0),
+                volume_24h=float(futures_snapshot.get("volume_24h") or 0.0),
+                min_score=self.settings.binance_technical_min_score,
+                timeframe=self.settings.binance_technical_timeframe,
+            )
+
+            now_ts = time.time()
+            force_ready = (
+                self.settings.binance_technical_force_sample
+                and (now_ts - self.technical_force_last_ts) >= (self.settings.binance_technical_force_cooldown_minutes * 60.0)
+                and signal.score >= self.settings.binance_technical_force_min_score
+            )
+            should_trade = signal.should_trade or force_ready
+            if force_ready:
+                self.technical_force_last_ts = now_ts
+
+            inputs_payload = {
+                **signal.inputs,
+                "symbol": futures_symbol,
+                "force_sample": bool(force_ready),
+                "min_score": self.settings.binance_technical_min_score,
+                "force_min_score": self.settings.binance_technical_force_min_score,
+                "signal_direction": signal.direction,
+            }
+            futures_decision = DecisionResult(
+                source="binance_technical_momentum",
+                category="CRYPTO",
+                market_id=futures_symbol,
+                score=signal.score,
+                threshold=signal.threshold,
+                should_trade=bool(should_trade),
+                reasons=[] if should_trade else signal.reasons,
+                trade_size=futures_trade_size,
+                inputs=inputs_payload,
+                venue="binance_futures",
+                direction=signal.direction,
+                strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
+            )
+            self.decision_engine.log_result(futures_decision, logger)
+            if not should_trade or signal.direction == "NEUTRAL":
+                continue
+
+            await self.binance_futures_venue.place_entry_order(
+                symbol=futures_symbol,
+                side=signal.direction,
+                entry_price=float(futures_snapshot.get("mark_price") or futures_snapshot.get("last_price") or 0.0),
+                trade_size=futures_trade_size,
+                signal_score=signal.score,
+                source="binance_technical_momentum",
+                source_signal="binance_technical_momentum",
+                spread_pct=float(futures_snapshot.get("spread_pct") or 0.0),
+                market_context={},
+                strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
+                audit_inputs=inputs_payload,
+                signal_threshold=(self.settings.binance_technical_force_min_score if force_ready else self.settings.binance_technical_min_score),
+            )
+
+            if not self.settings.venue_configs["binance_spot"].enabled or self.binance_spot_venue is None:
+                continue
+            if not spot_symbol:
+                continue
+            if signal.direction != "LONG":
+                spot_reject = DecisionResult(
+                    source="binance_technical_momentum",
+                    category="CRYPTO",
+                    market_id=spot_symbol,
+                    score=signal.score,
+                    threshold=signal.threshold,
+                    should_trade=False,
+                    reasons=["spot_short_not_supported"],
+                    trade_size=spot_trade_size,
+                    inputs=inputs_payload,
+                    venue="binance_spot",
+                    direction=signal.direction,
+                    strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
+                )
+                self.decision_engine.log_result(spot_reject, logger)
+                continue
+
+            spot_snapshot = await self.scanner.get_spot_market_snapshot(spot_symbol)
+            if not spot_snapshot.get("is_valid"):
+                spot_reject = DecisionResult(
+                    source="binance_technical_momentum",
+                    category="CRYPTO",
+                    market_id=spot_symbol,
+                    score=signal.score,
+                    threshold=signal.threshold,
+                    should_trade=False,
+                    reasons=[spot_snapshot.get("reason", "exchange_filters_rejected")],
+                    trade_size=spot_trade_size,
+                    inputs=inputs_payload,
+                    venue="binance_spot",
+                    direction=signal.direction,
+                    strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
+                )
+                self.decision_engine.log_result(spot_reject, logger)
+                continue
+
+            spot_decision = DecisionResult(
+                source="binance_technical_momentum",
+                category="CRYPTO",
+                market_id=spot_symbol,
+                score=signal.score,
+                threshold=signal.threshold,
+                should_trade=bool(should_trade),
+                reasons=[] if should_trade else signal.reasons,
+                trade_size=spot_trade_size,
+                inputs=inputs_payload,
+                venue="binance_spot",
+                direction=signal.direction,
+                strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
+            )
+            self.decision_engine.log_result(spot_decision, logger)
+            if should_trade:
+                await self.binance_spot_venue.place_entry_order(
+                    symbol=spot_symbol,
+                    side="LONG",
+                    entry_price=float(spot_snapshot.get("last_price") or 0.0),
+                    trade_size=spot_trade_size,
+                    signal_score=signal.score,
+                    source="binance_technical_momentum",
+                    source_signal="binance_technical_momentum",
+                    spread_pct=float(spot_snapshot.get("spread_pct") or 0.0),
+                    market_context={},
+                    strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
+                    audit_inputs=inputs_payload,
+                    signal_threshold=(self.settings.binance_technical_force_min_score if force_ready else self.settings.binance_technical_min_score),
+                )
 
     async def run_whale_tracker_loop(self) -> None:
         if self.whale_tracker is None:

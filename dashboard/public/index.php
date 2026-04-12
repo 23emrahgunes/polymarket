@@ -235,11 +235,13 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #top-whales,
         #whale-copy-summary,
         #whale-copy-recovery-summary,
+        #binance-technical-summary,
         #graph-discovery-summary,
         #whale-candidate-aggregation-summary,
         #recent-gate-ready-candidates,
         #gated-reject-breakdown,
         #relaxed-gate-reject-breakdown,
+        #binance-technical-reject-breakdown,
         #performance-snapshot,
         #sampling-reject-breakdown {
             border: 1px solid rgba(132, 181, 205, 0.12);
@@ -270,11 +272,13 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .subcard #top-whales,
         .subcard #whale-copy-summary,
         .subcard #whale-copy-recovery-summary,
+        .subcard #binance-technical-summary,
         .subcard #graph-discovery-summary,
         .subcard #whale-candidate-aggregation-summary,
         .subcard #recent-gate-ready-candidates,
         .subcard #gated-reject-breakdown,
         .subcard #relaxed-gate-reject-breakdown,
+        .subcard #binance-technical-reject-breakdown,
         .subcard #performance-snapshot,
         .subcard #sampling-reject-breakdown {
             border: 0;
@@ -318,9 +322,9 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #market-alias-counts, #whale-wallet-counts, #unsupported-side-summary { max-height: 180px; overflow: auto; }
         #top-market-aliases, #top-whales, #trusted-whale-summary { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
-        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
+        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #binance-technical-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
         #recent-gate-ready-candidates { max-height: 260px; overflow: auto; }
-        #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown { max-height: 220px; overflow: auto; }
+        #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown, #binance-technical-reject-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
         #recent-decisions table { min-width: 1040px; table-layout: auto; }
         #top-whales table, #trusted-whale-summary table { min-width: 900px; table-layout: auto; }
@@ -453,6 +457,8 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                     <div class="metric-list" id="whale-copy-summary"></div>
                     <div class="subsection-title">Whale-copy recovery özeti</div>
                     <div class="metric-list" id="whale-copy-recovery-summary"></div>
+                    <div class="subsection-title">Binance teknik sampling</div>
+                    <div class="metric-list" id="binance-technical-summary"></div>
                     <div class="metric-list" id="performance-snapshot"></div>
                 </div>
                 <div class="subcard">
@@ -487,6 +493,10 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                 <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Sampling Red Nedenleri</h3><span class="badge warn">Blocker</span></div>
                     <div id="sampling-reject-breakdown"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Binance Teknik Red Nedenleri</h3><span class="badge warn">Momentum</span></div>
+                    <div id="binance-technical-reject-breakdown"></div>
                 </div>
             </div>
         </article>
@@ -527,7 +537,8 @@ function translateStrategyProfile(value) {
     const text = String(value ?? '').toLowerCase();
     const map = {
         baseline: 'baseline',
-        sampling_relaxed: 'sampling_relaxed'
+        sampling_relaxed: 'sampling_relaxed',
+        binance_technical_sampling: 'binance_technical_sampling'
     };
     return map[text] || String(value ?? 'yok');
 }
@@ -996,6 +1007,16 @@ function updatePanels(payload) {
         { label: 'Eksik token fiyatı red', value: formatNumber(whaleCopyRecovery.missing_token_rejects, 0) }
     ]);
 
+    const technicalSummary = payload.binance_technical_summary || {};
+    renderMetrics('binance-technical-summary', [
+        { label: 'Karar', value: formatNumber(technicalSummary.decisions, 0) },
+        { label: 'Red', value: formatNumber(technicalSummary.rejects, 0) },
+        { label: 'Execute', value: formatNumber(technicalSummary.executes, 0) },
+        { label: 'LONG sinyal', value: formatNumber(technicalSummary.long_signals, 0) },
+        { label: 'SHORT sinyal', value: formatNumber(technicalSummary.short_signals, 0) },
+        { label: 'Force sample', value: formatNumber(technicalSummary.forced_samples, 0) }
+    ]);
+
     const whaleSide = payload.whale_side_summary || {};
     renderMetrics('whale-side-summary', [
         { label: 'BUY side event', value: formatNumber(whaleSide.buy_side_events, 0) },
@@ -1076,6 +1097,11 @@ function updatePanels(payload) {
         { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
         { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
     ], payload.relaxed_gate_reject_breakdown, 'Henuz relaxed gate red nedeni birikmedi.');
+
+    renderTable('binance-technical-reject-breakdown', [
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.binance_technical_reject_breakdown, 'Henuz binance teknik red nedeni birikmedi.');
 
     const logLines = Array.isArray(payload.service_log_excerpt) ? payload.service_log_excerpt : [];
     document.getElementById('service-log').textContent = logLines.length > 0 ? logLines.join('\n') : 'Servis logu alınamadı.';
