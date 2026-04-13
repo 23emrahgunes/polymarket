@@ -181,6 +181,112 @@ def test_technical_signal_engine_microstructure_candidate_floor_is_below_force_t
     assert signal.should_trade is False
 
 
+def test_technical_signal_engine_final_score_recovery_passes_near_threshold_paper_candidate():
+    engine = TechnicalSignalEngine()
+    closes = pd.Series([100 + (index * 0.15) for index in range(80)], dtype=float)
+    volumes = pd.Series([1_000 for _ in range(80)], dtype=float)
+
+    signal = engine.score(
+        symbol="BTC/USDT:USDT",
+        closes=closes,
+        volumes=volumes,
+        spread_pct=0.001,
+        volume_24h=2_500_000.0,
+        min_score=0.62,
+        timeframe="5m",
+        paper_recovery=True,
+        force_sample_enabled=True,
+        force_min_score=0.50,
+    )
+
+    assert signal.inputs["pre_final_score_recovery_score"] < signal.inputs["effective_min_score"]
+    assert signal.inputs["post_final_score_recovery_score"] >= signal.inputs["effective_min_score"]
+    assert signal.inputs["near_threshold_candidate"] is True
+    assert signal.inputs["score_recovery_candidate"] is True
+    assert signal.inputs["final_score_recovery_applied"] is True
+    assert signal.inputs["score_recovery_passed"] is True
+    assert signal.inputs["final_score_recovery_reason"] == "near_threshold_components_ok"
+    assert "score_below_threshold" not in signal.reasons
+    assert signal.should_trade is True
+
+
+def test_technical_signal_engine_final_score_recovery_requires_force_context():
+    engine = TechnicalSignalEngine()
+    closes = pd.Series([100 + (index * 0.15) for index in range(80)], dtype=float)
+    volumes = pd.Series([1_000 for _ in range(80)], dtype=float)
+
+    signal = engine.score(
+        symbol="BTC/USDT:USDT",
+        closes=closes,
+        volumes=volumes,
+        spread_pct=0.001,
+        volume_24h=2_500_000.0,
+        min_score=0.62,
+        timeframe="5m",
+        paper_recovery=True,
+        force_sample_enabled=False,
+        force_min_score=0.50,
+    )
+
+    assert signal.inputs["near_threshold_candidate"] is True
+    assert signal.inputs["score_recovery_candidate"] is False
+    assert signal.inputs["final_score_recovery_applied"] is False
+    assert signal.inputs["score_recovery_passed"] is False
+    assert "score_below_threshold" in signal.reasons
+    assert signal.should_trade is False
+
+
+def test_technical_signal_engine_final_score_recovery_requires_component_quality():
+    engine = TechnicalSignalEngine()
+    closes = pd.Series([100 + (index * 0.15) for index in range(80)], dtype=float)
+    volumes = pd.Series([1_000 for _ in range(79)] + [100], dtype=float)
+
+    signal = engine.score(
+        symbol="BTC/USDT:USDT",
+        closes=closes,
+        volumes=volumes,
+        spread_pct=0.001,
+        volume_24h=2_500_000.0,
+        min_score=0.62,
+        timeframe="5m",
+        paper_recovery=True,
+        force_sample_enabled=True,
+        force_min_score=0.50,
+    )
+
+    assert signal.inputs["volume_component"] < 0.30
+    assert signal.inputs["score_recovery_candidate"] is False
+    assert signal.inputs["final_score_recovery_applied"] is False
+    assert "volume_drag" in signal.inputs["score_blocker_labels"]
+    assert "score_below_threshold" in signal.reasons
+    assert signal.should_trade is False
+
+
+def test_technical_signal_engine_final_score_recovery_is_paper_only():
+    engine = TechnicalSignalEngine()
+    closes = pd.Series([100 + (index * 0.15) for index in range(80)], dtype=float)
+    volumes = pd.Series([1_000 for _ in range(80)], dtype=float)
+
+    signal = engine.score(
+        symbol="BTC/USDT:USDT",
+        closes=closes,
+        volumes=volumes,
+        spread_pct=0.001,
+        volume_24h=2_500_000.0,
+        min_score=0.62,
+        timeframe="5m",
+        paper_recovery=False,
+        force_sample_enabled=True,
+        force_min_score=0.50,
+    )
+
+    assert signal.inputs["score_recovery_candidate"] is False
+    assert signal.inputs["final_score_recovery_applied"] is False
+    assert signal.inputs["score_recovery_passed"] is False
+    assert "score_below_threshold" in signal.reasons
+    assert signal.should_trade is False
+
+
 def test_technical_signal_engine_microstructure_recovery_requires_volume_floor():
     engine = TechnicalSignalEngine()
     closes = pd.Series([100 + (index * 0.2) for index in range(80)], dtype=float)

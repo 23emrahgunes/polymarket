@@ -304,6 +304,33 @@ def _technical_active_symbol_count(rows, status_metrics: dict) -> int:
     return len(symbols)
 
 
+def _float_input(inputs: dict, key: str) -> float | None:
+    try:
+        value = inputs.get(key)
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _avg(values: list[float]) -> float:
+    return round(sum(values) / len(values), 4) if values else 0.0
+
+
+def _technical_final_score(inputs: dict) -> float | None:
+    for key in (
+        "post_final_score_recovery_score",
+        "post_spread_recovery_score",
+        "post_microstructure_score",
+        "pre_microstructure_score",
+    ):
+        value = _float_input(inputs, key)
+        if value is not None:
+            return value
+    return None
+
+
 def _summarize_binance_technical_gate_funnel(rows) -> dict[str, int]:
     summary = {
         "scanned_symbols": 0,
@@ -349,6 +376,10 @@ def _summarize_binance_technical_recovery(rows, status_metrics: dict) -> dict[st
         "force_recovery_candidates": 0,
         "microstructure_candidate_floor_hits": 0,
         "force_sample_hits": 0,
+        "final_score_recovery_hits": 0,
+        "near_threshold_candidates": 0,
+        "score_recovery_candidates": 0,
+        "score_recovery_passes": 0,
         "active_symbol_count": _technical_active_symbol_count(rows, status_metrics),
     }
     for row in rows or []:
@@ -378,7 +409,114 @@ def _summarize_binance_technical_recovery(rows, status_metrics: dict) -> dict[st
                     summary["microstructure_candidate_floor_hits"] += 1
         if inputs.get("force_sample") or inputs.get("force_sample_ready"):
             summary["force_sample_hits"] += 1
+        if inputs.get("final_score_recovery_applied"):
+            summary["final_score_recovery_hits"] += 1
+        if inputs.get("near_threshold_candidate"):
+            summary["near_threshold_candidates"] += 1
+        if inputs.get("score_recovery_candidate"):
+            summary["score_recovery_candidates"] += 1
+        if inputs.get("score_recovery_passed"):
+            summary["score_recovery_passes"] += 1
     return summary
+
+
+def _summarize_binance_technical_score_components(rows) -> dict[str, float | int]:
+    component_values: dict[str, list[float]] = {
+        "rsi_component": [],
+        "macd_component": [],
+        "momentum_component": [],
+        "volume_component": [],
+        "microstructure_component": [],
+        "effective_min_score": [],
+        "final_score": [],
+    }
+    sample_count = 0
+    for row in rows or []:
+        _action, _reason, inputs = _technical_row_parts(row)
+        has_component = False
+        for key in (
+            "rsi_component",
+            "macd_component",
+            "momentum_component",
+            "volume_component",
+            "microstructure_component",
+            "effective_min_score",
+        ):
+            value = _float_input(inputs, key)
+            if value is not None:
+                component_values[key].append(value)
+                has_component = True
+        final_score = _technical_final_score(inputs)
+        if final_score is not None:
+            component_values["final_score"].append(final_score)
+            has_component = True
+        if has_component:
+            sample_count += 1
+    return {
+        "sample_count": sample_count,
+        "avg_rsi_component": _avg(component_values["rsi_component"]),
+        "avg_macd_component": _avg(component_values["macd_component"]),
+        "avg_momentum_component": _avg(component_values["momentum_component"]),
+        "avg_volume_component": _avg(component_values["volume_component"]),
+        "avg_microstructure_component": _avg(component_values["microstructure_component"]),
+        "avg_effective_min_score": _avg(component_values["effective_min_score"]),
+        "avg_final_score": _avg(component_values["final_score"]),
+    }
+
+
+def _summarize_binance_technical_score_gap(rows) -> dict[str, float | int]:
+    gaps: list[float] = []
+    below_threshold_count = 0
+    near_threshold_count = 0
+    deep_below_threshold_count = 0
+    for row in rows or []:
+        _action, reason, inputs = _technical_row_parts(row)
+        gap = _float_input(inputs, "score_gap_to_threshold")
+        if gap is None:
+            threshold = _float_input(inputs, "effective_min_score")
+            final_score = _technical_final_score(inputs)
+            gap = max((threshold or 0.0) - (final_score or 0.0), 0.0) if threshold is not None and final_score is not None else None
+        if gap is None:
+            continue
+        gaps.append(gap)
+        if "score_below_threshold" in _reason_parts(reason) or gap > 0:
+            below_threshold_count += 1
+        if 0 < gap <= 0.06:
+            near_threshold_count += 1
+        elif gap > 0.06:
+            deep_below_threshold_count += 1
+    return {
+        "avg_score_gap_to_threshold": _avg(gaps),
+        "below_threshold_count": below_threshold_count,
+        "near_threshold_count": near_threshold_count,
+        "deep_below_threshold_count": deep_below_threshold_count,
+    }
+
+
+def _summarize_binance_technical_score_blockers(rows) -> list[tuple[str, int]]:
+    counts: dict[str, int] = {}
+    for row in rows or []:
+        _action, reason, inputs = _technical_row_parts(row)
+        if "score_below_threshold" not in _reason_parts(reason):
+            continue
+        labels = inputs.get("score_blocker_labels")
+        if not isinstance(labels, list):
+            labels = []
+            components = {
+                "microstructure_drag": _float_input(inputs, "microstructure_component"),
+                "momentum_drag": _float_input(inputs, "momentum_component"),
+                "macd_drag": _float_input(inputs, "macd_component"),
+                "volume_drag": _float_input(inputs, "volume_component"),
+                "rsi_drag": _float_input(inputs, "rsi_component"),
+            }
+            labels = [label for label, value in components.items() if value is not None and value < 0.35]
+            if len(labels) >= 2:
+                labels.append("multi_factor_drag")
+        for label in labels:
+            label_text = str(label).strip()
+            if label_text:
+                counts[label_text] = counts.get(label_text, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:10]
 
 
 def _summarize_binance_futures_snapshot(rows) -> dict[str, int]:
@@ -784,6 +922,9 @@ def main() -> int:
     technical_gate_funnel = _summarize_binance_technical_gate_funnel(technical_rows)
     technical_recovery_summary = _summarize_binance_technical_recovery(technical_rows, status_metrics)
     technical_snapshot_summary = _summarize_binance_futures_snapshot(technical_rows)
+    technical_score_component_summary = _summarize_binance_technical_score_components(technical_rows)
+    technical_score_gap_summary = _summarize_binance_technical_score_gap(technical_rows)
+    technical_score_blocker_breakdown = _summarize_binance_technical_score_blockers(technical_rows)
     connection.close()
 
     print(f"DB_PATH={db_path}")
@@ -905,6 +1046,15 @@ def main() -> int:
     print("BINANCE_FUTURES_SNAPSHOT_SUMMARY")
     for label, value in technical_snapshot_summary.items():
         print((label, value))
+    print("BINANCE_TECHNICAL_SCORE_COMPONENT_SUMMARY")
+    for label, value in technical_score_component_summary.items():
+        print((label, value))
+    print("BINANCE_TECHNICAL_SCORE_GAP_SUMMARY")
+    for label, value in technical_score_gap_summary.items():
+        print((label, value))
+    print("BINANCE_TECHNICAL_SCORE_BLOCKER_BREAKDOWN")
+    for reason, count in technical_score_blocker_breakdown:
+        print((reason, count))
     print("BINANCE_TECHNICAL_REJECT_BREAKDOWN")
     for reason, count in technical_reject_breakdown:
         print((reason, count))

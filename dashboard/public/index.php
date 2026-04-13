@@ -238,6 +238,8 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #binance-technical-summary,
         #binance-technical-gate-funnel,
         #binance-technical-recovery-summary,
+        #binance-technical-score-component-summary,
+        #binance-technical-score-gap-summary,
         #graph-discovery-summary,
         #whale-candidate-aggregation-summary,
         #recent-gate-ready-candidates,
@@ -277,6 +279,8 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .subcard #binance-technical-summary,
         .subcard #binance-technical-gate-funnel,
         .subcard #binance-technical-recovery-summary,
+        .subcard #binance-technical-score-component-summary,
+        .subcard #binance-technical-score-gap-summary,
         .subcard #graph-discovery-summary,
         .subcard #whale-candidate-aggregation-summary,
         .subcard #recent-gate-ready-candidates,
@@ -326,9 +330,9 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #market-alias-counts, #whale-wallet-counts, #unsupported-side-summary { max-height: 180px; overflow: auto; }
         #top-market-aliases, #top-whales, #trusted-whale-summary { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
-        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #binance-technical-summary, #binance-technical-gate-funnel, #binance-technical-recovery-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
+        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #binance-technical-summary, #binance-technical-gate-funnel, #binance-technical-recovery-summary, #binance-technical-score-component-summary, #binance-technical-score-gap-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
         #recent-gate-ready-candidates { max-height: 260px; overflow: auto; }
-        #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown, #binance-technical-reject-breakdown { max-height: 220px; overflow: auto; }
+        #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown, #binance-technical-reject-breakdown, #binance-technical-score-blocker-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
         #recent-decisions table { min-width: 1040px; table-layout: auto; }
         #top-whales table, #trusted-whale-summary table { min-width: 900px; table-layout: auto; }
@@ -469,6 +473,10 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                     <div class="metric-list" id="binance-technical-recovery-summary"></div>
                     <div class="subsection-title">Futures snapshot ozeti</div>
                     <div class="metric-list" id="binance-futures-snapshot-summary"></div>
+                    <div class="subsection-title">Skor bilesen ozeti</div>
+                    <div class="metric-list" id="binance-technical-score-component-summary"></div>
+                    <div class="subsection-title">Skor gap ozeti</div>
+                    <div class="metric-list" id="binance-technical-score-gap-summary"></div>
                     <div class="metric-list" id="performance-snapshot"></div>
                 </div>
                 <div class="subcard">
@@ -507,6 +515,10 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                 <div class="subcard">
                     <div class="subcard-header"><h3 class="subcard-title">Binance Teknik Red Nedenleri</h3><span class="badge warn">Momentum</span></div>
                     <div id="binance-technical-reject-breakdown"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Teknik Skor Blocker Dagilimi</h3><span class="badge warn">Skor</span></div>
+                    <div id="binance-technical-score-blocker-breakdown"></div>
                 </div>
             </div>
         </article>
@@ -634,6 +646,12 @@ function translateReason(value) {
         futures_bid_ask_missing: 'futures bid ask eksik',
         futures_snapshot_untrusted: 'futures snapshot guvensiz',
         technical_alignment_weak: 'teknik hizalanma zayif',
+        microstructure_drag: 'mikro yapi skoru dusuk',
+        momentum_drag: 'momentum skoru dusuk',
+        macd_drag: 'MACD skoru dusuk',
+        volume_drag: 'hacim skoru dusuk',
+        rsi_drag: 'RSI skoru dusuk',
+        multi_factor_drag: 'coklu faktor skoru dusuk',
         macd_not_aligned: 'MACD hizalanmadi',
         missing_price_history: 'fiyat gecmisi eksik',
         missing_futures_volume: 'futures hacmi eksik',
@@ -1053,6 +1071,10 @@ function updatePanels(payload) {
         { label: 'Spread recovery hit', value: formatNumber(technicalRecovery.spread_recovery_hits, 0) },
         { label: 'Mikro yapi v2 hit', value: formatNumber(technicalRecovery.microstructure_recovery_v2_hits, 0) },
         { label: 'Spread v2 hit', value: formatNumber(technicalRecovery.spread_recovery_v2_hits, 0) },
+        { label: 'Final skor recovery hit', value: formatNumber(technicalRecovery.final_score_recovery_hits, 0) },
+        { label: 'Yakin esik adayi', value: formatNumber(technicalRecovery.near_threshold_candidates, 0) },
+        { label: 'Skor recovery adayi', value: formatNumber(technicalRecovery.score_recovery_candidates, 0) },
+        { label: 'Skor recovery gecis', value: formatNumber(technicalRecovery.score_recovery_passes, 0) },
         { label: 'Force recovery adayi', value: formatNumber(technicalRecovery.force_recovery_candidates, 0) },
         { label: 'Candidate floor hit', value: formatNumber(technicalRecovery.microstructure_candidate_floor_hits, 0) },
         { label: 'Force sample hit', value: formatNumber(technicalRecovery.force_sample_hits, 0) },
@@ -1068,6 +1090,26 @@ function updatePanels(payload) {
         { label: 'Orderbook repriced', value: formatNumber(technicalSnapshot.orderbook_reprice_hits, 0) },
         { label: 'Bid ask eksik red', value: formatNumber(technicalSnapshot.missing_bid_ask_rejects, 0) },
         { label: 'Snapshot guvensiz red', value: formatNumber(technicalSnapshot.snapshot_untrusted_rejects, 0) }
+    ]);
+
+    const technicalScoreComponents = payload.binance_technical_score_component_summary || {};
+    renderMetrics('binance-technical-score-component-summary', [
+        { label: 'Ornek sayisi', value: formatNumber(technicalScoreComponents.sample_count, 0) },
+        { label: 'Ortalama RSI', value: formatNumber(technicalScoreComponents.avg_rsi_component, 3) },
+        { label: 'Ortalama MACD', value: formatNumber(technicalScoreComponents.avg_macd_component, 3) },
+        { label: 'Ortalama momentum', value: formatNumber(technicalScoreComponents.avg_momentum_component, 3) },
+        { label: 'Ortalama hacim', value: formatNumber(technicalScoreComponents.avg_volume_component, 3) },
+        { label: 'Ortalama mikro yapi', value: formatNumber(technicalScoreComponents.avg_microstructure_component, 3) },
+        { label: 'Ortalama esik', value: formatNumber(technicalScoreComponents.avg_effective_min_score, 3) },
+        { label: 'Ortalama final skor', value: formatNumber(technicalScoreComponents.avg_final_score, 3) }
+    ]);
+
+    const technicalScoreGap = payload.binance_technical_score_gap_summary || {};
+    renderMetrics('binance-technical-score-gap-summary', [
+        { label: 'Ortalama skor farki', value: formatNumber(technicalScoreGap.avg_score_gap_to_threshold, 3) },
+        { label: 'Esik alti adet', value: formatNumber(technicalScoreGap.below_threshold_count, 0) },
+        { label: 'Yakin esik adayi', value: formatNumber(technicalScoreGap.near_threshold_count, 0) },
+        { label: 'Derin esik alti', value: formatNumber(technicalScoreGap.deep_below_threshold_count, 0) }
     ]);
 
     const whaleSide = payload.whale_side_summary || {};
@@ -1155,6 +1197,11 @@ function updatePanels(payload) {
         { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
         { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
     ], payload.binance_technical_reject_breakdown, 'Henuz binance teknik red nedeni birikmedi.');
+
+    renderTable('binance-technical-score-blocker-breakdown', [
+        { key: 'reason', label: 'Blocker', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.binance_technical_score_blocker_breakdown, 'Henuz teknik skor blocker verisi birikmedi.');
 
     const logLines = Array.isArray(payload.service_log_excerpt) ? payload.service_log_excerpt : [];
     document.getElementById('service-log').textContent = logLines.length > 0 ? logLines.join('\n') : 'Servis logu alınamadı.';

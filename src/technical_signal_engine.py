@@ -38,6 +38,15 @@ PAPER_MICROSTRUCTURE_RECOVERY_V2_MAX_SPREAD_PCT = 0.032
 PAPER_MICROSTRUCTURE_RECOVERY_V2_SPREAD_NORMALIZER = 0.018
 PAPER_MICROSTRUCTURE_RECOVERY_MIN_VOLUME_24H = 1_000_000.0
 PAPER_MICROSTRUCTURE_RECOVERY_CANDIDATE_FLOOR = 0.42
+PAPER_FINAL_SCORE_RECOVERY_MAX_GAP = 0.08
+PAPER_NEAR_THRESHOLD_GAP = 0.06
+PAPER_FINAL_SCORE_RECOVERY_MIN_MICRO_COMPONENT = 0.25
+PAPER_FINAL_SCORE_RECOVERY_MIN_VOLUME_COMPONENT = 0.30
+PAPER_FINAL_SCORE_RECOVERY_BASE_BONUS = 0.04
+PAPER_FINAL_SCORE_RECOVERY_ALIGNMENT_BONUS = 0.01
+PAPER_FINAL_SCORE_RECOVERY_MICROSTRUCTURE_BONUS = 0.01
+PAPER_FINAL_SCORE_RECOVERY_MAX_BONUS = 0.06
+SCORE_BLOCKER_COMPONENT_FLOOR = 0.35
 
 
 def _technical_score(
@@ -54,6 +63,30 @@ def _technical_score(
         + 0.15 * volume_component
         + 0.10 * micro_component
     )
+
+
+def _score_blocker_labels(
+    *,
+    rsi_component: float,
+    macd_component: float,
+    momentum_component: float,
+    volume_component: float,
+    micro_component: float,
+) -> list[str]:
+    blockers: list[str] = []
+    if micro_component < SCORE_BLOCKER_COMPONENT_FLOOR:
+        blockers.append("microstructure_drag")
+    if momentum_component < SCORE_BLOCKER_COMPONENT_FLOOR:
+        blockers.append("momentum_drag")
+    if macd_component < SCORE_BLOCKER_COMPONENT_FLOOR:
+        blockers.append("macd_drag")
+    if volume_component < SCORE_BLOCKER_COMPONENT_FLOOR:
+        blockers.append("volume_drag")
+    if rsi_component < SCORE_BLOCKER_COMPONENT_FLOOR:
+        blockers.append("rsi_drag")
+    if len(blockers) >= 2:
+        blockers.append("multi_factor_drag")
+    return blockers
 
 
 @dataclass
@@ -96,6 +129,7 @@ class TechnicalSignalEngine:
 
         if closes is None or closes.empty or len(closes) < 60:
             reasons.append("missing_price_history")
+            score_gap_to_threshold = effective_min_score
             return TechnicalSignal(
                 symbol=symbol,
                 score=0.0,
@@ -119,6 +153,16 @@ class TechnicalSignalEngine:
                     "post_microstructure_score": 0.0,
                     "pre_spread_recovery_score": 0.0,
                     "post_spread_recovery_score": 0.0,
+                    "pre_final_score_recovery_score": 0.0,
+                    "post_final_score_recovery_score": 0.0,
+                    "score_gap_to_threshold": round(score_gap_to_threshold, 4),
+                    "near_threshold_candidate": False,
+                    "score_recovery_candidate": False,
+                    "score_recovery_passed": False,
+                    "final_score_recovery_applied": False,
+                    "final_score_recovery_bonus": 0.0,
+                    "final_score_recovery_reason": "not_applicable",
+                    "score_blocker_labels": [],
                     "effective_min_score": round(effective_min_score, 4),
                     "effective_max_spread_pct": round(effective_max_spread_pct, 6),
                     "effective_spread_normalizer": round(spread_normalizer, 6),
@@ -264,7 +308,50 @@ class TechnicalSignalEngine:
             post_microstructure_score = score
             post_spread_recovery_score = score
 
-        if spread_pct <= 0 or spread_pct > effective_max_spread_pct:
+        score_blocker_labels = _score_blocker_labels(
+            rsi_component=rsi_component,
+            macd_component=macd_component,
+            momentum_component=momentum_component,
+            volume_component=volume_component,
+            micro_component=micro_component,
+        )
+        pre_final_score_recovery_score = score
+        post_final_score_recovery_score = score
+        score_gap_to_threshold = max(effective_min_score - score, 0.0)
+        near_threshold_candidate = 0.0 < score_gap_to_threshold <= PAPER_NEAR_THRESHOLD_GAP
+        spread_rejected = spread_pct <= 0 or spread_pct > effective_max_spread_pct
+        score_recovery_candidate = (
+            bool(paper_recovery)
+            and bool(force_sample_enabled)
+            and bool(force_recovery_candidate)
+            and direction in {"LONG", "SHORT"}
+            and not spread_rejected
+            and 0.0 < score_gap_to_threshold <= PAPER_FINAL_SCORE_RECOVERY_MAX_GAP
+            and micro_component >= PAPER_FINAL_SCORE_RECOVERY_MIN_MICRO_COMPONENT
+            and volume_component >= PAPER_FINAL_SCORE_RECOVERY_MIN_VOLUME_COMPONENT
+        )
+        final_score_recovery_applied = False
+        score_recovery_passed = False
+        final_score_recovery_bonus = 0.0
+        final_score_recovery_reason = "not_applicable"
+        if score_recovery_candidate:
+            final_score_recovery_reason = "near_threshold_components_ok"
+            final_score_recovery_bonus = PAPER_FINAL_SCORE_RECOVERY_BASE_BONUS
+            if alignment_recovery_applied:
+                final_score_recovery_bonus += PAPER_FINAL_SCORE_RECOVERY_ALIGNMENT_BONUS
+            if microstructure_recovery_applied or microstructure_recovery_v2_applied:
+                final_score_recovery_bonus += PAPER_FINAL_SCORE_RECOVERY_MICROSTRUCTURE_BONUS
+            final_score_recovery_bonus = min(
+                final_score_recovery_bonus,
+                PAPER_FINAL_SCORE_RECOVERY_MAX_BONUS,
+            )
+            post_final_score_recovery_score = min(score + final_score_recovery_bonus, 1.0)
+            score = post_final_score_recovery_score
+            final_score_recovery_applied = True
+            score_recovery_passed = score >= effective_min_score
+            score_gap_to_threshold = max(effective_min_score - score, 0.0)
+
+        if spread_rejected:
             reasons.append("futures_spread_wide")
 
         if score < effective_min_score:
@@ -298,6 +385,16 @@ class TechnicalSignalEngine:
             "post_microstructure_score": round(post_microstructure_score, 4),
             "pre_spread_recovery_score": round(pre_spread_recovery_score, 4),
             "post_spread_recovery_score": round(post_spread_recovery_score, 4),
+            "pre_final_score_recovery_score": round(pre_final_score_recovery_score, 4),
+            "post_final_score_recovery_score": round(post_final_score_recovery_score, 4),
+            "score_gap_to_threshold": round(score_gap_to_threshold, 4),
+            "near_threshold_candidate": near_threshold_candidate,
+            "score_recovery_candidate": score_recovery_candidate,
+            "score_recovery_passed": score_recovery_passed,
+            "final_score_recovery_applied": final_score_recovery_applied,
+            "final_score_recovery_bonus": round(final_score_recovery_bonus, 4),
+            "final_score_recovery_reason": final_score_recovery_reason,
+            "score_blocker_labels": score_blocker_labels,
             "effective_min_score": round(effective_min_score, 4),
             "effective_max_spread_pct": round(effective_max_spread_pct, 6),
             "effective_spread_normalizer": round(spread_normalizer, 6),

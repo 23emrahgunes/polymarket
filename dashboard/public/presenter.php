@@ -84,6 +84,33 @@ function dashboard_reason_parts(?string $reasonText): array
     return $reasons;
 }
 
+function dashboard_float_input(array $inputs, string $key): ?float
+{
+    if (!array_key_exists($key, $inputs) || $inputs[$key] === null || $inputs[$key] === '') {
+        return null;
+    }
+    if (!is_numeric($inputs[$key])) {
+        return null;
+    }
+    return (float) $inputs[$key];
+}
+
+function dashboard_average(array $values): float
+{
+    return $values === [] ? 0.0 : round(array_sum($values) / count($values), 4);
+}
+
+function dashboard_technical_final_score(array $inputs): ?float
+{
+    foreach (['post_final_score_recovery_score', 'post_spread_recovery_score', 'post_microstructure_score', 'pre_microstructure_score'] as $key) {
+        $value = dashboard_float_input($inputs, $key);
+        if ($value !== null) {
+            return $value;
+        }
+    }
+    return null;
+}
+
 function dashboard_inputs_is_gated_whale_copy(array $inputs): bool
 {
     return strtolower((string) ($inputs['copy_policy'] ?? '')) === 'gated_whale_copy';
@@ -473,6 +500,10 @@ function dashboard_build_binance_technical_recovery_summary(PDO $pdo, array $run
         'force_recovery_candidates' => 0,
         'microstructure_candidate_floor_hits' => 0,
         'force_sample_hits' => 0,
+        'final_score_recovery_hits' => 0,
+        'near_threshold_candidates' => 0,
+        'score_recovery_candidates' => 0,
+        'score_recovery_passes' => 0,
         'active_symbol_count' => dashboard_binance_technical_active_symbol_count($rows, $runtimeSummary),
     ];
 
@@ -508,6 +539,18 @@ function dashboard_build_binance_technical_recovery_summary(PDO $pdo, array $run
         }
         if (!empty($inputs['force_sample']) || !empty($inputs['force_sample_ready'])) {
             $summary['force_sample_hits']++;
+        }
+        if (!empty($inputs['final_score_recovery_applied'])) {
+            $summary['final_score_recovery_hits']++;
+        }
+        if (!empty($inputs['near_threshold_candidate'])) {
+            $summary['near_threshold_candidates']++;
+        }
+        if (!empty($inputs['score_recovery_candidate'])) {
+            $summary['score_recovery_candidates']++;
+        }
+        if (!empty($inputs['score_recovery_passed'])) {
+            $summary['score_recovery_passes']++;
         }
     }
 
@@ -552,6 +595,134 @@ function dashboard_build_binance_futures_snapshot_summary(PDO $pdo): array
     }
 
     return $summary;
+}
+
+function dashboard_build_binance_technical_score_component_summary(PDO $pdo): array
+{
+    $values = [
+        'rsi_component' => [],
+        'macd_component' => [],
+        'momentum_component' => [],
+        'volume_component' => [],
+        'microstructure_component' => [],
+        'effective_min_score' => [],
+        'final_score' => [],
+    ];
+    $sampleCount = 0;
+
+    foreach (dashboard_fetch_recent_binance_technical_rows($pdo) as $row) {
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        $hasComponent = false;
+        foreach (['rsi_component', 'macd_component', 'momentum_component', 'volume_component', 'microstructure_component', 'effective_min_score'] as $key) {
+            $value = dashboard_float_input($inputs, $key);
+            if ($value !== null) {
+                $values[$key][] = $value;
+                $hasComponent = true;
+            }
+        }
+        $finalScore = dashboard_technical_final_score($inputs);
+        if ($finalScore !== null) {
+            $values['final_score'][] = $finalScore;
+            $hasComponent = true;
+        }
+        if ($hasComponent) {
+            $sampleCount++;
+        }
+    }
+
+    return [
+        'sample_count' => $sampleCount,
+        'avg_rsi_component' => dashboard_average($values['rsi_component']),
+        'avg_macd_component' => dashboard_average($values['macd_component']),
+        'avg_momentum_component' => dashboard_average($values['momentum_component']),
+        'avg_volume_component' => dashboard_average($values['volume_component']),
+        'avg_microstructure_component' => dashboard_average($values['microstructure_component']),
+        'avg_effective_min_score' => dashboard_average($values['effective_min_score']),
+        'avg_final_score' => dashboard_average($values['final_score']),
+    ];
+}
+
+function dashboard_build_binance_technical_score_gap_summary(PDO $pdo): array
+{
+    $gaps = [];
+    $belowThresholdCount = 0;
+    $nearThresholdCount = 0;
+    $deepBelowThresholdCount = 0;
+
+    foreach (dashboard_fetch_recent_binance_technical_rows($pdo) as $row) {
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        $gap = dashboard_float_input($inputs, 'score_gap_to_threshold');
+        if ($gap === null) {
+            $threshold = dashboard_float_input($inputs, 'effective_min_score');
+            $finalScore = dashboard_technical_final_score($inputs);
+            $gap = ($threshold !== null && $finalScore !== null) ? max($threshold - $finalScore, 0.0) : null;
+        }
+        if ($gap === null) {
+            continue;
+        }
+        $gaps[] = $gap;
+        if ($gap > 0.0 || in_array('score_below_threshold', dashboard_reason_parts($row['reason'] ?? null), true)) {
+            $belowThresholdCount++;
+        }
+        if ($gap > 0.0 && $gap <= 0.06) {
+            $nearThresholdCount++;
+        } elseif ($gap > 0.06) {
+            $deepBelowThresholdCount++;
+        }
+    }
+
+    return [
+        'avg_score_gap_to_threshold' => dashboard_average($gaps),
+        'below_threshold_count' => $belowThresholdCount,
+        'near_threshold_count' => $nearThresholdCount,
+        'deep_below_threshold_count' => $deepBelowThresholdCount,
+    ];
+}
+
+function dashboard_build_binance_technical_score_blocker_breakdown(PDO $pdo): array
+{
+    $counts = [];
+    foreach (dashboard_fetch_recent_binance_technical_rows($pdo) as $row) {
+        if (!in_array('score_below_threshold', dashboard_reason_parts($row['reason'] ?? null), true)) {
+            continue;
+        }
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        $labels = $inputs['score_blocker_labels'] ?? [];
+        if (!is_array($labels)) {
+            $labels = [];
+        }
+        if ($labels === []) {
+            $componentMap = [
+                'microstructure_drag' => dashboard_float_input($inputs, 'microstructure_component'),
+                'momentum_drag' => dashboard_float_input($inputs, 'momentum_component'),
+                'macd_drag' => dashboard_float_input($inputs, 'macd_component'),
+                'volume_drag' => dashboard_float_input($inputs, 'volume_component'),
+                'rsi_drag' => dashboard_float_input($inputs, 'rsi_component'),
+            ];
+            foreach ($componentMap as $label => $value) {
+                if ($value !== null && $value < 0.35) {
+                    $labels[] = $label;
+                }
+            }
+            if (count($labels) >= 2) {
+                $labels[] = 'multi_factor_drag';
+            }
+        }
+        foreach ($labels as $label) {
+            $label = trim((string) $label);
+            if ($label === '') {
+                continue;
+            }
+            $counts[$label] = ($counts[$label] ?? 0) + 1;
+        }
+    }
+
+    arsort($counts);
+    $rows = [];
+    foreach (array_slice($counts, 0, 10, true) as $reason => $count) {
+        $rows[] = ['reason' => $reason, 'count' => $count];
+    }
+    return $rows;
 }
 
 function dashboard_build_alias_persistence_summary(PDO $pdo, array $runtimeSummary): array
@@ -1190,6 +1361,9 @@ function dashboard_augment_payload(array $payload): array
         $payload['binance_technical_gate_funnel'] = dashboard_build_binance_technical_gate_funnel($pdo);
         $payload['binance_technical_recovery_summary'] = dashboard_build_binance_technical_recovery_summary($pdo, $payload['runtime_summary'] ?? []);
         $payload['binance_futures_snapshot_summary'] = dashboard_build_binance_futures_snapshot_summary($pdo);
+        $payload['binance_technical_score_component_summary'] = dashboard_build_binance_technical_score_component_summary($pdo);
+        $payload['binance_technical_score_gap_summary'] = dashboard_build_binance_technical_score_gap_summary($pdo);
+        $payload['binance_technical_score_blocker_breakdown'] = dashboard_build_binance_technical_score_blocker_breakdown($pdo);
         $payload['binance_technical_reject_breakdown'] = dashboard_build_binance_technical_reject_breakdown($pdo);
         $payload['alias_persistence_summary'] = dashboard_build_alias_persistence_summary($pdo, $payload['runtime_summary'] ?? []);
         $payload['source_quality_summary'] = dashboard_build_source_quality_summary($pdo);
@@ -1217,6 +1391,9 @@ function dashboard_augment_payload(array $payload): array
         $payload['binance_technical_gate_funnel'] = [];
         $payload['binance_technical_recovery_summary'] = [];
         $payload['binance_futures_snapshot_summary'] = [];
+        $payload['binance_technical_score_component_summary'] = [];
+        $payload['binance_technical_score_gap_summary'] = [];
+        $payload['binance_technical_score_blocker_breakdown'] = [];
         $payload['binance_technical_reject_breakdown'] = [];
         $payload['alias_persistence_summary'] = [];
         $payload['source_quality_summary'] = [];
