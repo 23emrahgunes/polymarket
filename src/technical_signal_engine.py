@@ -34,6 +34,8 @@ PAPER_RECOVERY_MIN_SCORE_DISCOUNT = 0.08
 PAPER_RECOVERY_MOMENTUM_TOLERANCE = 0.0015
 PAPER_MICROSTRUCTURE_RECOVERY_MAX_SPREAD_PCT = 0.026
 PAPER_MICROSTRUCTURE_RECOVERY_SPREAD_NORMALIZER = 0.014
+PAPER_MICROSTRUCTURE_RECOVERY_V2_MAX_SPREAD_PCT = 0.032
+PAPER_MICROSTRUCTURE_RECOVERY_V2_SPREAD_NORMALIZER = 0.018
 PAPER_MICROSTRUCTURE_RECOVERY_MIN_VOLUME_24H = 1_000_000.0
 PAPER_MICROSTRUCTURE_RECOVERY_CANDIDATE_FLOOR = 0.42
 
@@ -87,7 +89,10 @@ class TechnicalSignalEngine:
         spread_normalizer = PAPER_RECOVERY_SPREAD_NORMALIZER if paper_recovery else DEFAULT_SPREAD_NORMALIZER
         microstructure_recovery_applied = False
         spread_recovery_applied = False
+        microstructure_recovery_v2_applied = False
+        spread_recovery_v2_applied = False
         force_recovery_candidate = False
+        effective_spread_cap_stage = "paper_recovery" if paper_recovery else "default"
 
         if closes is None or closes.empty or len(closes) < 60:
             reasons.append("missing_price_history")
@@ -105,10 +110,15 @@ class TechnicalSignalEngine:
                     "technical_alignment_recovered": False,
                     "microstructure_recovery_applied": microstructure_recovery_applied,
                     "spread_recovery_applied": spread_recovery_applied,
+                    "microstructure_recovery_v2_applied": microstructure_recovery_v2_applied,
+                    "spread_recovery_v2_applied": spread_recovery_v2_applied,
                     "force_recovery_candidate": force_recovery_candidate,
+                    "effective_spread_cap_stage": effective_spread_cap_stage,
                     "microstructure_candidate_floor": round(PAPER_MICROSTRUCTURE_RECOVERY_CANDIDATE_FLOOR, 4),
                     "pre_microstructure_score": 0.0,
                     "post_microstructure_score": 0.0,
+                    "pre_spread_recovery_score": 0.0,
+                    "post_spread_recovery_score": 0.0,
                     "effective_min_score": round(effective_min_score, 4),
                     "effective_max_spread_pct": round(effective_max_spread_pct, 6),
                     "effective_spread_normalizer": round(spread_normalizer, 6),
@@ -202,6 +212,8 @@ class TechnicalSignalEngine:
         )
         pre_microstructure_score = score
         post_microstructure_score = score
+        pre_spread_recovery_score = score
+        post_spread_recovery_score = score
         force_recovery_candidate = (
             bool(paper_recovery)
             and bool(force_sample_enabled)
@@ -218,6 +230,7 @@ class TechnicalSignalEngine:
             spread_recovery_applied = spread_pct > PAPER_RECOVERY_MAX_SPREAD_PCT
             effective_max_spread_pct = PAPER_MICROSTRUCTURE_RECOVERY_MAX_SPREAD_PCT
             spread_normalizer = PAPER_MICROSTRUCTURE_RECOVERY_SPREAD_NORMALIZER
+            effective_spread_cap_stage = "microstructure_recovery_v1"
             micro_component = 1.0 - _clamp(spread_pct / spread_normalizer)
             score = _technical_score(
                 macd_component=macd_component,
@@ -227,6 +240,29 @@ class TechnicalSignalEngine:
                 micro_component=micro_component,
             )
             post_microstructure_score = score
+            post_spread_recovery_score = score
+        elif (
+            force_recovery_candidate
+            and spread_pct > PAPER_MICROSTRUCTURE_RECOVERY_MAX_SPREAD_PCT
+            and spread_pct <= PAPER_MICROSTRUCTURE_RECOVERY_V2_MAX_SPREAD_PCT
+        ):
+            microstructure_recovery_applied = True
+            spread_recovery_applied = True
+            microstructure_recovery_v2_applied = True
+            spread_recovery_v2_applied = True
+            effective_max_spread_pct = PAPER_MICROSTRUCTURE_RECOVERY_V2_MAX_SPREAD_PCT
+            spread_normalizer = PAPER_MICROSTRUCTURE_RECOVERY_V2_SPREAD_NORMALIZER
+            effective_spread_cap_stage = "microstructure_recovery_v2"
+            micro_component = 1.0 - _clamp(spread_pct / spread_normalizer)
+            score = _technical_score(
+                macd_component=macd_component,
+                momentum_component=momentum_component,
+                rsi_component=rsi_component,
+                volume_component=volume_component,
+                micro_component=micro_component,
+            )
+            post_microstructure_score = score
+            post_spread_recovery_score = score
 
         if spread_pct <= 0 or spread_pct > effective_max_spread_pct:
             reasons.append("futures_spread_wide")
@@ -253,10 +289,15 @@ class TechnicalSignalEngine:
             "technical_alignment_recovered": alignment_recovery_applied,
             "microstructure_recovery_applied": microstructure_recovery_applied,
             "spread_recovery_applied": spread_recovery_applied,
+            "microstructure_recovery_v2_applied": microstructure_recovery_v2_applied,
+            "spread_recovery_v2_applied": spread_recovery_v2_applied,
             "force_recovery_candidate": force_recovery_candidate,
+            "effective_spread_cap_stage": effective_spread_cap_stage,
             "microstructure_candidate_floor": round(PAPER_MICROSTRUCTURE_RECOVERY_CANDIDATE_FLOOR, 4),
             "pre_microstructure_score": round(pre_microstructure_score, 4),
             "post_microstructure_score": round(post_microstructure_score, 4),
+            "pre_spread_recovery_score": round(pre_spread_recovery_score, 4),
+            "post_spread_recovery_score": round(post_spread_recovery_score, 4),
             "effective_min_score": round(effective_min_score, 4),
             "effective_max_spread_pct": round(effective_max_spread_pct, 6),
             "effective_spread_normalizer": round(spread_normalizer, 6),

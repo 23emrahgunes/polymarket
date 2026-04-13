@@ -468,6 +468,8 @@ function dashboard_build_binance_technical_recovery_summary(PDO $pdo, array $run
         'alignment_recovery_hits' => 0,
         'microstructure_recovery_hits' => 0,
         'spread_recovery_hits' => 0,
+        'microstructure_recovery_v2_hits' => 0,
+        'spread_recovery_v2_hits' => 0,
         'force_recovery_candidates' => 0,
         'microstructure_candidate_floor_hits' => 0,
         'force_sample_hits' => 0,
@@ -487,6 +489,12 @@ function dashboard_build_binance_technical_recovery_summary(PDO $pdo, array $run
         }
         if (!empty($inputs['spread_recovery_applied'])) {
             $summary['spread_recovery_hits']++;
+        }
+        if (!empty($inputs['microstructure_recovery_v2_applied'])) {
+            $summary['microstructure_recovery_v2_hits']++;
+        }
+        if (!empty($inputs['spread_recovery_v2_applied'])) {
+            $summary['spread_recovery_v2_hits']++;
         }
         if (!empty($inputs['force_recovery_candidate'])) {
             $summary['force_recovery_candidates']++;

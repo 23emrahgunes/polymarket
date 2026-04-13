@@ -1047,6 +1047,8 @@ function updatePanels(payload) {
         { label: 'Alignment recovery hit', value: formatNumber(technicalRecovery.alignment_recovery_hits, 0) },
         { label: 'Mikro yapi recovery hit', value: formatNumber(technicalRecovery.microstructure_recovery_hits, 0) },
         { label: 'Spread recovery hit', value: formatNumber(technicalRecovery.spread_recovery_hits, 0) },
+        { label: 'Mikro yapi v2 hit', value: formatNumber(technicalRecovery.microstructure_recovery_v2_hits, 0) },
+        { label: 'Spread v2 hit', value: formatNumber(technicalRecovery.spread_recovery_v2_hits, 0) },
         { label: 'Force recovery adayi', value: formatNumber(technicalRecovery.force_recovery_candidates, 0) },
         { label: 'Candidate floor hit', value: formatNumber(technicalRecovery.microstructure_candidate_floor_hits, 0) },
         { label: 'Force sample hit', value: formatNumber(technicalRecovery.force_sample_hits, 0) },

@@ -412,7 +412,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 0,
                 '[]',
                 0,
-                '{"symbol":"BTC/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true,"microstructure_recovery_applied":true,"spread_recovery_applied":true,"force_recovery_candidate":true,"pre_microstructure_score":0.48,"post_microstructure_score":0.48,"microstructure_candidate_floor":0.42,"force_min_score":0.5}',
+                '{"symbol":"BTC/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true,"microstructure_recovery_applied":true,"spread_recovery_applied":true,"microstructure_recovery_v2_applied":true,"spread_recovery_v2_applied":true,"force_recovery_candidate":true,"effective_spread_cap_stage":"microstructure_recovery_v2","effective_spread_normalizer":0.018,"pre_microstructure_score":0.48,"post_microstructure_score":0.56,"pre_spread_recovery_score":0.48,"post_spread_recovery_score":0.56,"microstructure_candidate_floor":0.42,"force_min_score":0.5}',
             ),
             (
                 102,
@@ -520,6 +520,8 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'alignment_recovery_hits': 1,
         'microstructure_recovery_hits': 1,
         'spread_recovery_hits': 1,
+        'microstructure_recovery_v2_hits': 1,
+        'spread_recovery_v2_hits': 1,
         'force_recovery_candidates': 1,
         'microstructure_candidate_floor_hits': 1,
         'force_sample_hits': 1,
@@ -643,6 +645,8 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Binance teknik gate funnel' in html
     assert 'Binance teknik recovery ozeti' in html
     assert 'Mikro yapi recovery hit' in html
+    assert 'Mikro yapi v2 hit' in html
+    assert 'Spread v2 hit' in html
     assert 'Candidate floor hit' in html
     assert 'Binance Teknik Red Nedenleri' in html
     assert '&mdash;' in html

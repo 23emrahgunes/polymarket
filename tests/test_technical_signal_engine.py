@@ -141,11 +141,16 @@ def test_technical_signal_engine_microstructure_recovery_requires_force_context(
     assert recovered.inputs["force_recovery_candidate"] is True
     assert recovered.inputs["microstructure_recovery_applied"] is True
     assert recovered.inputs["spread_recovery_applied"] is True
+    assert recovered.inputs["microstructure_recovery_v2_applied"] is False
+    assert recovered.inputs["spread_recovery_v2_applied"] is False
+    assert recovered.inputs["effective_spread_cap_stage"] == "microstructure_recovery_v1"
     assert recovered.inputs["effective_max_spread_pct"] == 0.026
     assert recovered.inputs["effective_spread_normalizer"] == 0.014
     assert recovered.inputs["microstructure_candidate_floor"] == 0.42
     assert recovered.inputs["pre_microstructure_score"] >= 0.5
     assert recovered.inputs["post_microstructure_score"] >= recovered.inputs["pre_microstructure_score"]
+    assert recovered.inputs["pre_spread_recovery_score"] == recovered.inputs["pre_microstructure_score"]
+    assert recovered.inputs["post_spread_recovery_score"] == recovered.inputs["post_microstructure_score"]
 
 
 def test_technical_signal_engine_microstructure_candidate_floor_is_below_force_threshold():
@@ -208,7 +213,7 @@ def test_technical_signal_engine_microstructure_recovery_keeps_hard_spread_cap()
         symbol="BTC/USDT:USDT",
         closes=closes,
         volumes=volumes,
-        spread_pct=0.027,
+        spread_pct=0.033,
         volume_24h=2_500_000.0,
         min_score=0.62,
         timeframe="5m",
@@ -220,6 +225,8 @@ def test_technical_signal_engine_microstructure_recovery_keeps_hard_spread_cap()
     assert "futures_spread_wide" in signal.reasons
     assert signal.inputs["microstructure_recovery_applied"] is False
     assert signal.inputs["spread_recovery_applied"] is False
+    assert signal.inputs["microstructure_recovery_v2_applied"] is False
+    assert signal.inputs["spread_recovery_v2_applied"] is False
 
 
 def test_technical_signal_engine_microstructure_recovery_is_paper_only():
@@ -231,7 +238,7 @@ def test_technical_signal_engine_microstructure_recovery_is_paper_only():
         symbol="BTC/USDT:USDT",
         closes=closes,
         volumes=volumes,
-        spread_pct=0.015,
+        spread_pct=0.029,
         volume_24h=2_500_000.0,
         min_score=0.62,
         timeframe="5m",
@@ -242,6 +249,49 @@ def test_technical_signal_engine_microstructure_recovery_is_paper_only():
     assert "futures_spread_wide" in signal.reasons
     assert signal.inputs["force_recovery_candidate"] is False
     assert signal.inputs["microstructure_recovery_applied"] is False
+    assert signal.inputs["microstructure_recovery_v2_applied"] is False
+
+
+def test_technical_signal_engine_microstructure_recovery_v2_extends_spread_band():
+    engine = TechnicalSignalEngine()
+    closes = pd.Series([100 + (index * 0.8) for index in range(80)], dtype=float)
+    volumes = pd.Series([1_000 for _ in range(79)] + [3_000], dtype=float)
+
+    no_force = engine.score(
+        symbol="BTC/USDT:USDT",
+        closes=closes,
+        volumes=volumes,
+        spread_pct=0.029,
+        volume_24h=2_500_000.0,
+        min_score=0.62,
+        timeframe="5m",
+        paper_recovery=True,
+    )
+    recovered = engine.score(
+        symbol="BTC/USDT:USDT",
+        closes=closes,
+        volumes=volumes,
+        spread_pct=0.029,
+        volume_24h=2_500_000.0,
+        min_score=0.62,
+        timeframe="5m",
+        paper_recovery=True,
+        force_sample_enabled=True,
+        force_min_score=0.50,
+    )
+
+    assert "futures_spread_wide" in no_force.reasons
+    assert "futures_spread_wide" not in recovered.reasons
+    assert recovered.should_trade is True
+    assert recovered.inputs["force_recovery_candidate"] is True
+    assert recovered.inputs["microstructure_recovery_applied"] is True
+    assert recovered.inputs["spread_recovery_applied"] is True
+    assert recovered.inputs["microstructure_recovery_v2_applied"] is True
+    assert recovered.inputs["spread_recovery_v2_applied"] is True
+    assert recovered.inputs["effective_spread_cap_stage"] == "microstructure_recovery_v2"
+    assert recovered.inputs["effective_max_spread_pct"] == 0.032
+    assert recovered.inputs["effective_spread_normalizer"] == 0.018
+    assert recovered.inputs["post_spread_recovery_score"] >= recovered.inputs["pre_spread_recovery_score"]
 
 
 def test_technical_signal_engine_recovers_near_long_alignment_for_paper_only():
