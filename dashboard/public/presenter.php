@@ -469,6 +469,7 @@ function dashboard_build_binance_technical_recovery_summary(PDO $pdo, array $run
         'microstructure_recovery_hits' => 0,
         'spread_recovery_hits' => 0,
         'force_recovery_candidates' => 0,
+        'microstructure_candidate_floor_hits' => 0,
         'force_sample_hits' => 0,
         'active_symbol_count' => dashboard_binance_technical_active_symbol_count($rows, $runtimeSummary),
     ];
@@ -489,6 +490,13 @@ function dashboard_build_binance_technical_recovery_summary(PDO $pdo, array $run
         }
         if (!empty($inputs['force_recovery_candidate'])) {
             $summary['force_recovery_candidates']++;
+            if (array_key_exists('pre_microstructure_score', $inputs)) {
+                $preScore = (float) ($inputs['pre_microstructure_score'] ?? 0.0);
+                $forceFloor = (float) ($inputs['force_min_score'] ?? 0.5);
+                if ($preScore < $forceFloor) {
+                    $summary['microstructure_candidate_floor_hits']++;
+                }
+            }
         }
         if (!empty($inputs['force_sample']) || !empty($inputs['force_sample_ready'])) {
             $summary['force_sample_hits']++;

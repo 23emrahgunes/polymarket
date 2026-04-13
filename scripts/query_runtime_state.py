@@ -345,6 +345,7 @@ def _summarize_binance_technical_recovery(rows, status_metrics: dict) -> dict[st
         "microstructure_recovery_hits": 0,
         "spread_recovery_hits": 0,
         "force_recovery_candidates": 0,
+        "microstructure_candidate_floor_hits": 0,
         "force_sample_hits": 0,
         "active_symbol_count": _technical_active_symbol_count(rows, status_metrics),
     }
@@ -360,6 +361,15 @@ def _summarize_binance_technical_recovery(rows, status_metrics: dict) -> dict[st
             summary["spread_recovery_hits"] += 1
         if inputs.get("force_recovery_candidate"):
             summary["force_recovery_candidates"] += 1
+            if "pre_microstructure_score" in inputs:
+                try:
+                    pre_score = float(inputs.get("pre_microstructure_score") or 0.0)
+                    force_floor = float(inputs.get("force_min_score") or 0.5)
+                except (TypeError, ValueError):
+                    pre_score = 0.0
+                    force_floor = 0.5
+                if pre_score < force_floor:
+                    summary["microstructure_candidate_floor_hits"] += 1
         if inputs.get("force_sample") or inputs.get("force_sample_ready"):
             summary["force_sample_hits"] += 1
     return summary

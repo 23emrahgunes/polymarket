@@ -1048,6 +1048,7 @@ function updatePanels(payload) {
         { label: 'Mikro yapi recovery hit', value: formatNumber(technicalRecovery.microstructure_recovery_hits, 0) },
         { label: 'Spread recovery hit', value: formatNumber(technicalRecovery.spread_recovery_hits, 0) },
         { label: 'Force recovery adayi', value: formatNumber(technicalRecovery.force_recovery_candidates, 0) },
+        { label: 'Candidate floor hit', value: formatNumber(technicalRecovery.microstructure_candidate_floor_hits, 0) },
         { label: 'Force sample hit', value: formatNumber(technicalRecovery.force_sample_hits, 0) },
         { label: 'Aktif sembol', value: formatNumber(technicalRecovery.active_symbol_count, 0) }
     ]);

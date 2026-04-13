@@ -35,6 +35,7 @@ PAPER_RECOVERY_MOMENTUM_TOLERANCE = 0.0015
 PAPER_MICROSTRUCTURE_RECOVERY_MAX_SPREAD_PCT = 0.026
 PAPER_MICROSTRUCTURE_RECOVERY_SPREAD_NORMALIZER = 0.014
 PAPER_MICROSTRUCTURE_RECOVERY_MIN_VOLUME_24H = 1_000_000.0
+PAPER_MICROSTRUCTURE_RECOVERY_CANDIDATE_FLOOR = 0.42
 
 
 def _technical_score(
@@ -105,6 +106,9 @@ class TechnicalSignalEngine:
                     "microstructure_recovery_applied": microstructure_recovery_applied,
                     "spread_recovery_applied": spread_recovery_applied,
                     "force_recovery_candidate": force_recovery_candidate,
+                    "microstructure_candidate_floor": round(PAPER_MICROSTRUCTURE_RECOVERY_CANDIDATE_FLOOR, 4),
+                    "pre_microstructure_score": 0.0,
+                    "post_microstructure_score": 0.0,
                     "effective_min_score": round(effective_min_score, 4),
                     "effective_max_spread_pct": round(effective_max_spread_pct, 6),
                     "effective_spread_normalizer": round(spread_normalizer, 6),
@@ -196,12 +200,14 @@ class TechnicalSignalEngine:
             volume_component=volume_component,
             micro_component=micro_component,
         )
+        pre_microstructure_score = score
+        post_microstructure_score = score
         force_recovery_candidate = (
             bool(paper_recovery)
             and bool(force_sample_enabled)
             and direction in {"LONG", "SHORT"}
             and volume_24h >= PAPER_MICROSTRUCTURE_RECOVERY_MIN_VOLUME_24H
-            and score >= force_min_score
+            and pre_microstructure_score >= PAPER_MICROSTRUCTURE_RECOVERY_CANDIDATE_FLOOR
         )
         if (
             force_recovery_candidate
@@ -220,6 +226,7 @@ class TechnicalSignalEngine:
                 volume_component=volume_component,
                 micro_component=micro_component,
             )
+            post_microstructure_score = score
 
         if spread_pct <= 0 or spread_pct > effective_max_spread_pct:
             reasons.append("futures_spread_wide")
@@ -247,6 +254,9 @@ class TechnicalSignalEngine:
             "microstructure_recovery_applied": microstructure_recovery_applied,
             "spread_recovery_applied": spread_recovery_applied,
             "force_recovery_candidate": force_recovery_candidate,
+            "microstructure_candidate_floor": round(PAPER_MICROSTRUCTURE_RECOVERY_CANDIDATE_FLOOR, 4),
+            "pre_microstructure_score": round(pre_microstructure_score, 4),
+            "post_microstructure_score": round(post_microstructure_score, 4),
             "effective_min_score": round(effective_min_score, 4),
             "effective_max_spread_pct": round(effective_max_spread_pct, 6),
             "effective_spread_normalizer": round(spread_normalizer, 6),
