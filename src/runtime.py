@@ -735,6 +735,8 @@ class GhostBotRuntime:
                 min_score=self.settings.binance_technical_min_score,
                 timeframe=self.settings.binance_technical_timeframe,
                 paper_recovery=self.sample_kind == "live_paper",
+                force_sample_enabled=self.settings.binance_technical_force_sample,
+                force_min_score=self.settings.binance_technical_force_min_score,
             )
 
             now_ts = time.time()

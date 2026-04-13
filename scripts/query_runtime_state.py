@@ -342,6 +342,9 @@ def _summarize_binance_technical_recovery(rows, status_metrics: dict) -> dict[st
     summary = {
         "recovery_applied_count": 0,
         "alignment_recovery_hits": 0,
+        "microstructure_recovery_hits": 0,
+        "spread_recovery_hits": 0,
+        "force_recovery_candidates": 0,
         "force_sample_hits": 0,
         "active_symbol_count": _technical_active_symbol_count(rows, status_metrics),
     }
@@ -351,6 +354,12 @@ def _summarize_binance_technical_recovery(rows, status_metrics: dict) -> dict[st
             summary["recovery_applied_count"] += 1
         if inputs.get("alignment_recovery_applied") or inputs.get("technical_alignment_recovered"):
             summary["alignment_recovery_hits"] += 1
+        if inputs.get("microstructure_recovery_applied"):
+            summary["microstructure_recovery_hits"] += 1
+        if inputs.get("spread_recovery_applied"):
+            summary["spread_recovery_hits"] += 1
+        if inputs.get("force_recovery_candidate"):
+            summary["force_recovery_candidates"] += 1
         if inputs.get("force_sample") or inputs.get("force_sample_ready"):
             summary["force_sample_hits"] += 1
     return summary

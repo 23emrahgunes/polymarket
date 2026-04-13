@@ -412,7 +412,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 0,
                 '[]',
                 0,
-                '{"symbol":"BTC/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true}',
+                '{"symbol":"BTC/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true,"microstructure_recovery_applied":true,"spread_recovery_applied":true,"force_recovery_candidate":true}',
             ),
             (
                 102,
@@ -518,6 +518,9 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
     assert payload['recovery_summary'] == {
         'recovery_applied_count': 3,
         'alignment_recovery_hits': 1,
+        'microstructure_recovery_hits': 1,
+        'spread_recovery_hits': 1,
+        'force_recovery_candidates': 1,
         'force_sample_hits': 1,
         'active_symbol_count': 3,
     }
@@ -638,6 +641,7 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Binance teknik sampling' in html
     assert 'Binance teknik gate funnel' in html
     assert 'Binance teknik recovery ozeti' in html
+    assert 'Mikro yapi recovery hit' in html
     assert 'Binance Teknik Red Nedenleri' in html
     assert '&mdash;' in html
 
