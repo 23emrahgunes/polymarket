@@ -467,6 +467,8 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                     <div class="metric-list" id="binance-technical-gate-funnel"></div>
                     <div class="subsection-title">Binance teknik recovery ozeti</div>
                     <div class="metric-list" id="binance-technical-recovery-summary"></div>
+                    <div class="subsection-title">Futures snapshot ozeti</div>
+                    <div class="metric-list" id="binance-futures-snapshot-summary"></div>
                     <div class="metric-list" id="performance-snapshot"></div>
                 </div>
                 <div class="subcard">
@@ -629,6 +631,8 @@ function translateReason(value) {
         cluster_threshold_not_reached: 'cluster eşiği tutmadı',
         sampling_target_reached: 'sampling hedefi dolduğu için durduruldu',
         futures_spread_wide: 'futures spread genis',
+        futures_bid_ask_missing: 'futures bid ask eksik',
+        futures_snapshot_untrusted: 'futures snapshot guvensiz',
         technical_alignment_weak: 'teknik hizalanma zayif',
         macd_not_aligned: 'MACD hizalanmadi',
         missing_price_history: 'fiyat gecmisi eksik',
@@ -1053,6 +1057,17 @@ function updatePanels(payload) {
         { label: 'Candidate floor hit', value: formatNumber(technicalRecovery.microstructure_candidate_floor_hits, 0) },
         { label: 'Force sample hit', value: formatNumber(technicalRecovery.force_sample_hits, 0) },
         { label: 'Aktif sembol', value: formatNumber(technicalRecovery.active_symbol_count, 0) }
+    ]);
+
+    const technicalSnapshot = payload.binance_futures_snapshot_summary || {};
+    renderMetrics('binance-futures-snapshot-summary', [
+        { label: 'Ticker book', value: formatNumber(technicalSnapshot.trusted_ticker_book_hits, 0) },
+        { label: 'Info book', value: formatNumber(technicalSnapshot.trusted_info_book_hits, 0) },
+        { label: 'Orderbook book', value: formatNumber(technicalSnapshot.trusted_orderbook_book_hits, 0) },
+        { label: 'Orderbook fallback', value: formatNumber(technicalSnapshot.orderbook_fallback_hits, 0) },
+        { label: 'Orderbook repriced', value: formatNumber(technicalSnapshot.orderbook_reprice_hits, 0) },
+        { label: 'Bid ask eksik red', value: formatNumber(technicalSnapshot.missing_bid_ask_rejects, 0) },
+        { label: 'Snapshot guvensiz red', value: formatNumber(technicalSnapshot.snapshot_untrusted_rejects, 0) }
     ]);
 
     const whaleSide = payload.whale_side_summary || {};

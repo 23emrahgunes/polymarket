@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import os
 import time
 from typing import Dict, List, Optional
@@ -228,12 +229,145 @@ class MarketScanner:
         return pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
 
     def _extract_price(self, entry) -> float:
+        number = self._coerce_float(entry)
+        return number if number is not None else 0.0
+
+    def _coerce_float(self, value) -> Optional[float]:
         try:
-            if isinstance(entry, dict):
-                return float(entry.get("price", 0))
-            return float(getattr(entry, "price", 0))
+            if value is None:
+                return None
+            if isinstance(value, dict):
+                value = value.get("price")
+            elif isinstance(value, (list, tuple)):
+                if not value:
+                    return None
+                value = value[0]
+            elif hasattr(value, "price"):
+                value = getattr(value, "price")
+            number = float(value)
+            if not math.isfinite(number):
+                return None
+            return number
         except (AttributeError, TypeError, ValueError):
-            return 0.0
+            return None
+
+    def _extract_book_levels(self, orderbook) -> tuple[list, list]:
+        bids, asks = [], []
+        if hasattr(orderbook, "bids") and hasattr(orderbook, "asks"):
+            bids, asks = orderbook.bids, orderbook.asks
+        elif isinstance(orderbook, dict):
+            bids = orderbook.get("bids", [])
+            asks = orderbook.get("asks", [])
+        return list(bids or []), list(asks or [])
+
+    def _gap_pct(self, reference_price: float, mid_price: float) -> Optional[float]:
+        if reference_price <= 0 or mid_price <= 0:
+            return None
+        return abs(reference_price - mid_price) / mid_price
+
+    def _invalid_futures_snapshot(
+        self,
+        symbol: str,
+        reason: str,
+        *,
+        fetched_at: float,
+        last_price: float = 0.0,
+        mark_price: float = 0.0,
+        volume_24h: float = 0.0,
+        open_interest: float = 0.0,
+        funding_rate: float = 0.0,
+        bid_source: Optional[str] = None,
+        ask_source: Optional[str] = None,
+        spread_source: Optional[str] = None,
+        orderbook_fallback_used: bool = False,
+        orderbook_repriced: bool = False,
+        raw_ticker_bid: Optional[float] = None,
+        raw_ticker_ask: Optional[float] = None,
+        raw_info_bid: Optional[float] = None,
+        raw_info_ask: Optional[float] = None,
+        snapshot_quality: str = "invalid_missing_bid_ask",
+    ) -> Dict:
+        return {
+            "symbol": symbol,
+            "last_price": last_price,
+            "mark_price": mark_price,
+            "best_bid": None,
+            "best_ask": None,
+            "mid_price": None,
+            "spread_pct": None,
+            "volume_24h": volume_24h,
+            "open_interest": open_interest,
+            "funding_rate": funding_rate,
+            "bid_source": bid_source,
+            "ask_source": ask_source,
+            "spread_source": spread_source,
+            "orderbook_fallback_used": orderbook_fallback_used,
+            "orderbook_repriced": orderbook_repriced,
+            "raw_ticker_bid": raw_ticker_bid,
+            "raw_ticker_ask": raw_ticker_ask,
+            "raw_info_bid": raw_info_bid,
+            "raw_info_ask": raw_info_ask,
+            "mark_mid_gap_pct": None,
+            "last_mid_gap_pct": None,
+            "snapshot_quality": snapshot_quality,
+            "is_valid": False,
+            "reason": reason,
+            "fetched_at": fetched_at,
+        }
+
+    def _build_futures_snapshot(
+        self,
+        *,
+        symbol: str,
+        last_price: float,
+        mark_price: float,
+        best_bid: float,
+        best_ask: float,
+        volume_24h: float,
+        open_interest: float,
+        funding_rate: float,
+        fetched_at: float,
+        bid_source: str,
+        ask_source: str,
+        spread_source: str,
+        orderbook_fallback_used: bool,
+        orderbook_repriced: bool,
+        raw_ticker_bid: Optional[float],
+        raw_ticker_ask: Optional[float],
+        raw_info_bid: Optional[float],
+        raw_info_ask: Optional[float],
+        snapshot_quality: str,
+        reason: str = "ok",
+    ) -> Dict:
+        mid_price = (best_bid + best_ask) / 2
+        spread_pct = (best_ask - best_bid) / mid_price if mid_price > 0 else 1.0
+        return {
+            "symbol": symbol,
+            "last_price": last_price,
+            "mark_price": mark_price,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "mid_price": mid_price,
+            "spread_pct": spread_pct,
+            "volume_24h": volume_24h,
+            "open_interest": open_interest,
+            "funding_rate": funding_rate,
+            "bid_source": bid_source,
+            "ask_source": ask_source,
+            "spread_source": spread_source,
+            "orderbook_fallback_used": orderbook_fallback_used,
+            "orderbook_repriced": orderbook_repriced,
+            "raw_ticker_bid": raw_ticker_bid,
+            "raw_ticker_ask": raw_ticker_ask,
+            "raw_info_bid": raw_info_bid,
+            "raw_info_ask": raw_info_ask,
+            "mark_mid_gap_pct": self._gap_pct(mark_price, mid_price),
+            "last_mid_gap_pct": self._gap_pct(last_price, mid_price),
+            "snapshot_quality": snapshot_quality,
+            "is_valid": True,
+            "reason": reason,
+            "fetched_at": fetched_at,
+        }
 
     async def get_orderbook_snapshot(self, token_id: str) -> Dict:
         now = time.time()
@@ -315,31 +449,64 @@ class MarketScanner:
 
         if self.debug_signal_mode and symbol in self._debug_futures:
             data = self._debug_futures[symbol]
-            mid_price = (data["best_bid"] + data["best_ask"]) / 2
-            snapshot = {
-                "symbol": symbol,
-                "last_price": data["last_price"],
-                "mark_price": data["mark_price"],
-                "best_bid": data["best_bid"],
-                "best_ask": data["best_ask"],
-                "spread_pct": (data["best_ask"] - data["best_bid"]) / mid_price,
-                "volume_24h": data["volume_24h"],
-                "open_interest": data["open_interest"],
-                "funding_rate": data["funding_rate"],
-                "is_valid": True,
-                "reason": "debug_futures",
-                "fetched_at": now,
-            }
+            snapshot = self._build_futures_snapshot(
+                symbol=symbol,
+                last_price=data["last_price"],
+                mark_price=data["mark_price"],
+                best_bid=data["best_bid"],
+                best_ask=data["best_ask"],
+                volume_24h=data["volume_24h"],
+                open_interest=data["open_interest"],
+                funding_rate=data["funding_rate"],
+                fetched_at=now,
+                bid_source="debug.bid",
+                ask_source="debug.ask",
+                spread_source="debug_book",
+                orderbook_fallback_used=False,
+                orderbook_repriced=False,
+                raw_ticker_bid=data["best_bid"],
+                raw_ticker_ask=data["best_ask"],
+                raw_info_bid=None,
+                raw_info_ask=None,
+                snapshot_quality="trusted_ticker_book",
+                reason="debug_futures",
+            )
             self.futures_snapshot_cache[symbol] = snapshot
             return snapshot
 
         try:
             ticker = await self.futures_exchange.fetch_ticker(symbol)
-            best_bid = float(ticker.get("bid") or ticker.get("last") or 0.0)
-            best_ask = float(ticker.get("ask") or ticker.get("last") or 0.0)
-            last_price = float(ticker.get("last") or 0.0)
-            mark_price = float(ticker.get("info", {}).get("markPrice") or last_price or 0.0)
-            volume_24h = float(ticker.get("quoteVolume") or 0.0)
+            info = ticker.get("info", {}) or {}
+            raw_ticker_bid = self._coerce_float(ticker.get("bid"))
+            raw_ticker_ask = self._coerce_float(ticker.get("ask"))
+            raw_info_bid = self._coerce_float(info.get("bidPrice"))
+            raw_info_ask = self._coerce_float(info.get("askPrice"))
+
+            best_bid = 0.0
+            best_ask = 0.0
+            bid_source = None
+            ask_source = None
+            if raw_ticker_bid is not None and raw_ticker_bid > 0:
+                best_bid = raw_ticker_bid
+                bid_source = "ticker.bid"
+            elif raw_info_bid is not None and raw_info_bid > 0:
+                best_bid = raw_info_bid
+                bid_source = "info.bidPrice"
+
+            if raw_ticker_ask is not None and raw_ticker_ask > 0:
+                best_ask = raw_ticker_ask
+                ask_source = "ticker.ask"
+            elif raw_info_ask is not None and raw_info_ask > 0:
+                best_ask = raw_info_ask
+                ask_source = "info.askPrice"
+
+            last_price = self._coerce_float(ticker.get("last")) or self._coerce_float(ticker.get("close")) or 0.0
+            mark_price = self._coerce_float(info.get("markPrice")) or last_price or 0.0
+            if last_price <= 0 < mark_price:
+                last_price = mark_price
+            elif mark_price <= 0 < last_price:
+                mark_price = last_price
+            volume_24h = self._coerce_float(ticker.get("quoteVolume")) or self._coerce_float(info.get("quoteVolume")) or 0.0
 
             funding_rate = 0.0
             open_interest = 0.0
@@ -354,29 +521,147 @@ class MarketScanner:
             except Exception:
                 open_interest = 0.0
 
-            if best_bid <= 0 or best_ask <= 0 or last_price <= 0 or mark_price <= 0:
-                return {
-                    "symbol": symbol,
-                    "is_valid": False,
-                    "reason": "position_sync_failed",
-                    "fetched_at": now,
-                }
+            if last_price <= 0 or mark_price <= 0:
+                return self._invalid_futures_snapshot(
+                    symbol,
+                    "position_sync_failed",
+                    fetched_at=now,
+                    last_price=last_price,
+                    mark_price=mark_price,
+                    volume_24h=volume_24h,
+                    open_interest=open_interest,
+                    funding_rate=funding_rate,
+                    bid_source=bid_source,
+                    ask_source=ask_source,
+                    raw_ticker_bid=raw_ticker_bid,
+                    raw_ticker_ask=raw_ticker_ask,
+                    raw_info_bid=raw_info_bid,
+                    raw_info_ask=raw_info_ask,
+                    snapshot_quality="invalid_missing_bid_ask",
+                )
 
-            mid_price = (best_bid + best_ask) / 2
-            snapshot = {
-                "symbol": symbol,
-                "last_price": last_price,
-                "mark_price": mark_price,
-                "best_bid": best_bid,
-                "best_ask": best_ask,
-                "spread_pct": (best_ask - best_bid) / mid_price if mid_price > 0 else 1.0,
-                "volume_24h": volume_24h,
-                "open_interest": open_interest,
-                "funding_rate": funding_rate,
-                "is_valid": True,
-                "reason": "ok",
-                "fetched_at": now,
-            }
+            initial_book_valid = best_bid > 0 and best_ask > 0 and best_ask >= best_bid
+            initial_spread_pct = None
+            if initial_book_valid:
+                initial_mid_price = (best_bid + best_ask) / 2
+                initial_spread_pct = (best_ask - best_bid) / initial_mid_price if initial_mid_price > 0 else 1.0
+
+            snapshot_quality = None
+            spread_source = None
+            if initial_book_valid:
+                if bid_source == "ticker.bid" and ask_source == "ticker.ask":
+                    snapshot_quality = "trusted_ticker_book"
+                    spread_source = "ticker_book"
+                else:
+                    snapshot_quality = "trusted_info_book"
+                    spread_source = "info_book"
+
+            orderbook_fallback_used = False
+            orderbook_repriced = False
+            needs_orderbook_validation = (not initial_book_valid) or (
+                initial_spread_pct is not None and initial_spread_pct > 0.018
+            )
+
+            if needs_orderbook_validation:
+                orderbook_fallback_used = True
+                try:
+                    orderbook = await self.futures_exchange.fetch_order_book(symbol, limit=5)
+                    bids, asks = self._extract_book_levels(orderbook)
+                except Exception:
+                    bids, asks = [], []
+
+                orderbook_bid = self._extract_price(bids[0]) if bids else 0.0
+                orderbook_ask = self._extract_price(asks[0]) if asks else 0.0
+                orderbook_valid = orderbook_bid > 0 and orderbook_ask > 0 and orderbook_ask >= orderbook_bid
+
+                if not initial_book_valid:
+                    if orderbook_valid:
+                        best_bid = orderbook_bid
+                        best_ask = orderbook_ask
+                        bid_source = "orderbook.bid"
+                        ask_source = "orderbook.ask"
+                        spread_source = "orderbook"
+                        snapshot_quality = "trusted_orderbook_book"
+                    else:
+                        invalid_reason = "futures_bid_ask_missing"
+                        if (best_bid > 0 and best_ask > 0 and best_ask < best_bid) or (
+                            (bids or asks) and (orderbook_bid <= 0 or orderbook_ask <= 0 or orderbook_ask < orderbook_bid)
+                        ):
+                            invalid_reason = "futures_snapshot_untrusted"
+                        return self._invalid_futures_snapshot(
+                            symbol,
+                            invalid_reason,
+                            fetched_at=now,
+                            last_price=last_price,
+                            mark_price=mark_price,
+                            volume_24h=volume_24h,
+                            open_interest=open_interest,
+                            funding_rate=funding_rate,
+                            bid_source=bid_source,
+                            ask_source=ask_source,
+                            spread_source=spread_source,
+                            orderbook_fallback_used=orderbook_fallback_used,
+                            raw_ticker_bid=raw_ticker_bid,
+                            raw_ticker_ask=raw_ticker_ask,
+                            raw_info_bid=raw_info_bid,
+                            raw_info_ask=raw_info_ask,
+                            snapshot_quality="invalid_missing_bid_ask" if invalid_reason == "futures_bid_ask_missing" else "invalid_untrusted",
+                        )
+                elif orderbook_valid:
+                    orderbook_mid_price = (orderbook_bid + orderbook_ask) / 2
+                    orderbook_spread_pct = (orderbook_ask - orderbook_bid) / orderbook_mid_price if orderbook_mid_price > 0 else 1.0
+                    if initial_spread_pct is not None and orderbook_spread_pct < initial_spread_pct:
+                        best_bid = orderbook_bid
+                        best_ask = orderbook_ask
+                        bid_source = "orderbook.bid"
+                        ask_source = "orderbook.ask"
+                        spread_source = "orderbook"
+                        snapshot_quality = "trusted_orderbook_book"
+                        orderbook_repriced = True
+
+            if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid or snapshot_quality is None or spread_source is None:
+                return self._invalid_futures_snapshot(
+                    symbol,
+                    "futures_bid_ask_missing" if best_bid <= 0 or best_ask <= 0 else "futures_snapshot_untrusted",
+                    fetched_at=now,
+                    last_price=last_price,
+                    mark_price=mark_price,
+                    volume_24h=volume_24h,
+                    open_interest=open_interest,
+                    funding_rate=funding_rate,
+                    bid_source=bid_source,
+                    ask_source=ask_source,
+                    spread_source=spread_source,
+                    orderbook_fallback_used=orderbook_fallback_used,
+                    orderbook_repriced=orderbook_repriced,
+                    raw_ticker_bid=raw_ticker_bid,
+                    raw_ticker_ask=raw_ticker_ask,
+                    raw_info_bid=raw_info_bid,
+                    raw_info_ask=raw_info_ask,
+                    snapshot_quality="invalid_missing_bid_ask" if best_bid <= 0 or best_ask <= 0 else "invalid_untrusted",
+                )
+
+            snapshot = self._build_futures_snapshot(
+                symbol=symbol,
+                last_price=last_price,
+                mark_price=mark_price,
+                best_bid=best_bid,
+                best_ask=best_ask,
+                volume_24h=volume_24h,
+                open_interest=open_interest,
+                funding_rate=funding_rate,
+                fetched_at=now,
+                bid_source=bid_source,
+                ask_source=ask_source,
+                spread_source=spread_source,
+                orderbook_fallback_used=orderbook_fallback_used,
+                orderbook_repriced=orderbook_repriced,
+                raw_ticker_bid=raw_ticker_bid,
+                raw_ticker_ask=raw_ticker_ask,
+                raw_info_bid=raw_info_bid,
+                raw_info_ask=raw_info_ask,
+                snapshot_quality=snapshot_quality,
+            )
             self.futures_snapshot_cache[symbol] = snapshot
             return snapshot
         except Exception as exc:
@@ -385,12 +670,7 @@ class MarketScanner:
                 symbol,
                 {"symbol": symbol, "error": str(exc)},
             )
-            return {
-                "symbol": symbol,
-                "is_valid": False,
-                "reason": "position_sync_failed",
-                "fetched_at": now,
-            }
+            return self._invalid_futures_snapshot(symbol, "position_sync_failed", fetched_at=now)
 
     async def get_spot_market_snapshot(self, symbol: str) -> Dict:
         now = time.time()

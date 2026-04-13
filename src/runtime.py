@@ -711,6 +711,9 @@ class GhostBotRuntime:
                         source="binance_technical_momentum",
                         category="CRYPTO",
                         market_id=futures_symbol,
+                        volume_24h=float(futures_snapshot.get("volume_24h") or 0.0),
+                        mid_price=futures_snapshot.get("mid_price"),
+                        spread_pct=futures_snapshot.get("spread_pct"),
                         venue="binance_futures",
                         strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
                     ),
@@ -749,8 +752,26 @@ class GhostBotRuntime:
             if force_ready:
                 self.technical_force_last_ts = now_ts
 
+            snapshot_inputs = {
+                "snapshot_quality": futures_snapshot.get("snapshot_quality"),
+                "spread_source": futures_snapshot.get("spread_source"),
+                "bid_source": futures_snapshot.get("bid_source"),
+                "ask_source": futures_snapshot.get("ask_source"),
+                "orderbook_fallback_used": bool(futures_snapshot.get("orderbook_fallback_used")),
+                "orderbook_repriced": bool(futures_snapshot.get("orderbook_repriced")),
+                "raw_ticker_bid": futures_snapshot.get("raw_ticker_bid"),
+                "raw_ticker_ask": futures_snapshot.get("raw_ticker_ask"),
+                "raw_info_bid": futures_snapshot.get("raw_info_bid"),
+                "raw_info_ask": futures_snapshot.get("raw_info_ask"),
+                "snapshot_mid_price": futures_snapshot.get("mid_price"),
+                "snapshot_mark_price": futures_snapshot.get("mark_price"),
+                "snapshot_last_price": futures_snapshot.get("last_price"),
+                "mark_mid_gap_pct": futures_snapshot.get("mark_mid_gap_pct"),
+                "last_mid_gap_pct": futures_snapshot.get("last_mid_gap_pct"),
+            }
             inputs_payload = {
                 **signal.inputs,
+                **snapshot_inputs,
                 "symbol": futures_symbol,
                 "force_sample": bool(force_ready),
                 "force_sample_ready": bool(force_ready),

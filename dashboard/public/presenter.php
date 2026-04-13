@@ -514,6 +514,46 @@ function dashboard_build_binance_technical_recovery_summary(PDO $pdo, array $run
     return $summary;
 }
 
+function dashboard_build_binance_futures_snapshot_summary(PDO $pdo): array
+{
+    $summary = [
+        'trusted_ticker_book_hits' => 0,
+        'trusted_info_book_hits' => 0,
+        'trusted_orderbook_book_hits' => 0,
+        'orderbook_fallback_hits' => 0,
+        'orderbook_reprice_hits' => 0,
+        'missing_bid_ask_rejects' => 0,
+        'snapshot_untrusted_rejects' => 0,
+    ];
+
+    foreach (dashboard_fetch_recent_binance_technical_rows($pdo) as $row) {
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        $snapshotQuality = strtolower((string) ($inputs['snapshot_quality'] ?? ''));
+        if ($snapshotQuality === 'trusted_ticker_book') {
+            $summary['trusted_ticker_book_hits']++;
+        } elseif ($snapshotQuality === 'trusted_info_book') {
+            $summary['trusted_info_book_hits']++;
+        } elseif ($snapshotQuality === 'trusted_orderbook_book') {
+            $summary['trusted_orderbook_book_hits']++;
+        }
+        if (!empty($inputs['orderbook_fallback_used'])) {
+            $summary['orderbook_fallback_hits']++;
+        }
+        if (!empty($inputs['orderbook_repriced'])) {
+            $summary['orderbook_reprice_hits']++;
+        }
+        foreach (dashboard_reason_parts($row['reason'] ?? null) as $reason) {
+            if ($reason === 'futures_bid_ask_missing') {
+                $summary['missing_bid_ask_rejects']++;
+            } elseif ($reason === 'futures_snapshot_untrusted') {
+                $summary['snapshot_untrusted_rejects']++;
+            }
+        }
+    }
+
+    return $summary;
+}
+
 function dashboard_build_alias_persistence_summary(PDO $pdo, array $runtimeSummary): array
 {
     $integrity = dashboard_fetch_one(
@@ -1149,6 +1189,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['binance_technical_summary'] = dashboard_build_binance_technical_summary($pdo);
         $payload['binance_technical_gate_funnel'] = dashboard_build_binance_technical_gate_funnel($pdo);
         $payload['binance_technical_recovery_summary'] = dashboard_build_binance_technical_recovery_summary($pdo, $payload['runtime_summary'] ?? []);
+        $payload['binance_futures_snapshot_summary'] = dashboard_build_binance_futures_snapshot_summary($pdo);
         $payload['binance_technical_reject_breakdown'] = dashboard_build_binance_technical_reject_breakdown($pdo);
         $payload['alias_persistence_summary'] = dashboard_build_alias_persistence_summary($pdo, $payload['runtime_summary'] ?? []);
         $payload['source_quality_summary'] = dashboard_build_source_quality_summary($pdo);
@@ -1175,6 +1216,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['binance_technical_summary'] = [];
         $payload['binance_technical_gate_funnel'] = [];
         $payload['binance_technical_recovery_summary'] = [];
+        $payload['binance_futures_snapshot_summary'] = [];
         $payload['binance_technical_reject_breakdown'] = [];
         $payload['alias_persistence_summary'] = [];
         $payload['source_quality_summary'] = [];

@@ -381,6 +381,37 @@ def _summarize_binance_technical_recovery(rows, status_metrics: dict) -> dict[st
     return summary
 
 
+def _summarize_binance_futures_snapshot(rows) -> dict[str, int]:
+    summary = {
+        "trusted_ticker_book_hits": 0,
+        "trusted_info_book_hits": 0,
+        "trusted_orderbook_book_hits": 0,
+        "orderbook_fallback_hits": 0,
+        "orderbook_reprice_hits": 0,
+        "missing_bid_ask_rejects": 0,
+        "snapshot_untrusted_rejects": 0,
+    }
+    for row in rows or []:
+        _action, reason, inputs = _technical_row_parts(row)
+        snapshot_quality = str(inputs.get("snapshot_quality") or "").strip().lower()
+        if snapshot_quality == "trusted_ticker_book":
+            summary["trusted_ticker_book_hits"] += 1
+        elif snapshot_quality == "trusted_info_book":
+            summary["trusted_info_book_hits"] += 1
+        elif snapshot_quality == "trusted_orderbook_book":
+            summary["trusted_orderbook_book_hits"] += 1
+        if inputs.get("orderbook_fallback_used"):
+            summary["orderbook_fallback_hits"] += 1
+        if inputs.get("orderbook_repriced"):
+            summary["orderbook_reprice_hits"] += 1
+        for part in _reason_parts(reason):
+            if part == "futures_bid_ask_missing":
+                summary["missing_bid_ask_rejects"] += 1
+            elif part == "futures_snapshot_untrusted":
+                summary["snapshot_untrusted_rejects"] += 1
+    return summary
+
+
 def _read_latest_status_metrics() -> dict:
     try:
         result = subprocess.run(
@@ -752,6 +783,7 @@ def main() -> int:
     technical_reject_breakdown = _summarize_binance_technical_reject_breakdown(technical_rows)
     technical_gate_funnel = _summarize_binance_technical_gate_funnel(technical_rows)
     technical_recovery_summary = _summarize_binance_technical_recovery(technical_rows, status_metrics)
+    technical_snapshot_summary = _summarize_binance_futures_snapshot(technical_rows)
     connection.close()
 
     print(f"DB_PATH={db_path}")
@@ -869,6 +901,9 @@ def main() -> int:
         print((label, value))
     print("BINANCE_TECHNICAL_RECOVERY_SUMMARY")
     for label, value in technical_recovery_summary.items():
+        print((label, value))
+    print("BINANCE_FUTURES_SNAPSHOT_SUMMARY")
+    for label, value in technical_snapshot_summary.items():
         print((label, value))
     print("BINANCE_TECHNICAL_REJECT_BREAKDOWN")
     for reason, count in technical_reject_breakdown:

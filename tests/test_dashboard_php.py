@@ -412,7 +412,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 0,
                 '[]',
                 0,
-                '{"symbol":"BTC/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true,"microstructure_recovery_applied":true,"spread_recovery_applied":true,"microstructure_recovery_v2_applied":true,"spread_recovery_v2_applied":true,"force_recovery_candidate":true,"effective_spread_cap_stage":"microstructure_recovery_v2","effective_spread_normalizer":0.018,"pre_microstructure_score":0.48,"post_microstructure_score":0.56,"pre_spread_recovery_score":0.48,"post_spread_recovery_score":0.56,"microstructure_candidate_floor":0.42,"force_min_score":0.5}',
+                '{"symbol":"BTC/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true,"microstructure_recovery_applied":true,"spread_recovery_applied":true,"microstructure_recovery_v2_applied":true,"spread_recovery_v2_applied":true,"force_recovery_candidate":true,"effective_spread_cap_stage":"microstructure_recovery_v2","effective_spread_normalizer":0.018,"pre_microstructure_score":0.48,"post_microstructure_score":0.56,"pre_spread_recovery_score":0.48,"post_spread_recovery_score":0.56,"microstructure_candidate_floor":0.42,"force_min_score":0.5,"snapshot_quality":"trusted_orderbook_book","spread_source":"orderbook","bid_source":"orderbook.bid","ask_source":"orderbook.ask","orderbook_fallback_used":true,"orderbook_repriced":true}',
             ),
             (
                 102,
@@ -434,7 +434,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 0,
                 '[]',
                 0,
-                '{"symbol":"ETH/USDT:USDT","signal_direction":"SHORT","force_sample":true,"technical_recovery_applied":true,"alignment_recovery_applied":true,"technical_alignment_recovered":true}',
+                '{"symbol":"ETH/USDT:USDT","signal_direction":"SHORT","force_sample":true,"technical_recovery_applied":true,"alignment_recovery_applied":true,"technical_alignment_recovered":true,"snapshot_quality":"trusted_info_book","spread_source":"info_book","bid_source":"info.bidPrice","ask_source":"info.askPrice","orderbook_fallback_used":false,"orderbook_repriced":false}',
             ),
             (
                 103,
@@ -456,7 +456,29 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 0,
                 '[]',
                 0,
-                '{"symbol":"SOL/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true}',
+                '{"symbol":"SOL/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true,"snapshot_quality":"trusted_ticker_book","spread_source":"ticker_book","bid_source":"ticker.bid","ask_source":"ticker.ask","orderbook_fallback_used":false,"orderbook_repriced":false}',
+            ),
+            (
+                104,
+                '2026-04-09 12:13:00',
+                'binance_futures',
+                'BTC/USDT:USDT',
+                'CRYPTO',
+                'binance_technical_momentum',
+                'binance_technical_sampling',
+                'binance_technical_momentum',
+                'reject',
+                'futures_bid_ask_missing',
+                0.0,
+                0.62,
+                50.0,
+                0.0,
+                'technical',
+                0,
+                0,
+                '[]',
+                0,
+                '{"symbol":"BTC/USDT:USDT","snapshot_quality":"invalid_missing_bid_ask","orderbook_fallback_used":true,"orderbook_repriced":false}',
             ),
         ],
     )
@@ -478,6 +500,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 "    'summary' => dashboard_build_binance_technical_summary($pdo),",
                 "    'gate_funnel' => dashboard_build_binance_technical_gate_funnel($pdo),",
                 "    'recovery_summary' => dashboard_build_binance_technical_recovery_summary($pdo),",
+                "    'snapshot_summary' => dashboard_build_binance_futures_snapshot_summary($pdo),",
                 "    'reject_breakdown' => dashboard_build_binance_technical_reject_breakdown($pdo),",
                 "], JSON_THROW_ON_ERROR);",
             ]
@@ -496,7 +519,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
 
     assert payload['summary'] == {
         'decisions': 1,
-        'rejects': 1,
+        'rejects': 2,
         'executes': 1,
         'long_signals': 2,
         'short_signals': 1,
@@ -506,6 +529,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
     assert technical_breakdown['score_below_threshold'] == 1
     assert technical_breakdown['futures_spread_wide'] == 1
     assert technical_breakdown['technical_alignment_weak'] == 1
+    assert technical_breakdown['futures_bid_ask_missing'] == 1
     assert payload['gate_funnel'] == {
         'scanned_symbols': 3,
         'directional_signals': 3,
@@ -526,6 +550,15 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'microstructure_candidate_floor_hits': 1,
         'force_sample_hits': 1,
         'active_symbol_count': 3,
+    }
+    assert payload['snapshot_summary'] == {
+        'trusted_ticker_book_hits': 1,
+        'trusted_info_book_hits': 1,
+        'trusted_orderbook_book_hits': 1,
+        'orderbook_fallback_hits': 2,
+        'orderbook_reprice_hits': 1,
+        'missing_bid_ask_rejects': 1,
+        'snapshot_untrusted_rejects': 0,
     }
 
 
@@ -644,10 +677,12 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Binance teknik sampling' in html
     assert 'Binance teknik gate funnel' in html
     assert 'Binance teknik recovery ozeti' in html
+    assert 'Futures snapshot ozeti' in html
     assert 'Mikro yapi recovery hit' in html
     assert 'Mikro yapi v2 hit' in html
     assert 'Spread v2 hit' in html
     assert 'Candidate floor hit' in html
+    assert 'Orderbook repriced' in html
     assert 'Binance Teknik Red Nedenleri' in html
     assert '&mdash;' in html
 
