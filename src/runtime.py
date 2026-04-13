@@ -666,6 +666,41 @@ class GhostBotRuntime:
             )
         return tuple(resolved)
 
+    async def _build_binance_technical_position_plan(
+        self,
+        venue_id: str,
+        *,
+        minimum_trade_size: float = 0.0,
+    ) -> Dict[str, float | int | bool]:
+        config = self.settings.venue_configs[venue_id]
+        base_trade_size = min(config.max_order_usd, config.max_position_usd)
+        if self.db is None:
+            return {
+                "base_trade_size": float(base_trade_size),
+                "effective_trade_size": float(base_trade_size),
+                "remaining_position_capacity_usd": float(config.max_position_usd),
+                "position_capacity_sized_down": False,
+                "open_position_count_at_decision": 0,
+                "open_position_notional_usd_at_decision": 0.0,
+                "minimum_trade_size": float(minimum_trade_size),
+            }
+
+        open_positions = await self.db.get_open_positions(venue=venue_id)
+        open_position_count = len(open_positions)
+        open_notional = sum(float(position["notional_usd"] or 0.0) for position in open_positions)
+        remaining_capacity_usd = max(0.0, float(config.max_position_usd) - open_notional)
+        effective_trade_size = min(float(base_trade_size), remaining_capacity_usd)
+        position_capacity_sized_down = effective_trade_size < float(base_trade_size) and effective_trade_size >= float(minimum_trade_size)
+        return {
+            "base_trade_size": float(base_trade_size),
+            "effective_trade_size": float(effective_trade_size),
+            "remaining_position_capacity_usd": float(remaining_capacity_usd),
+            "position_capacity_sized_down": bool(position_capacity_sized_down),
+            "open_position_count_at_decision": int(open_position_count),
+            "open_position_notional_usd_at_decision": float(open_notional),
+            "minimum_trade_size": float(minimum_trade_size),
+        }
+
     async def run_binance_technical_loop(self) -> None:
         if self.scanner is None:
             return
@@ -692,14 +727,7 @@ class GhostBotRuntime:
         if not symbols:
             return
 
-        futures_trade_size = min(
-            self.settings.venue_configs["binance_futures"].max_order_usd,
-            self.settings.venue_configs["binance_futures"].max_position_usd,
-        )
-        spot_trade_size = min(
-            self.settings.venue_configs["binance_spot"].max_order_usd,
-            self.settings.venue_configs["binance_spot"].max_position_usd,
-        )
+        technical_min_trade_size = 25.0 if self.sample_kind == "live_paper" else 0.0
 
         for entry in symbols:
             futures_symbol = entry["futures_symbol"]
@@ -752,6 +780,10 @@ class GhostBotRuntime:
             if force_ready:
                 self.technical_force_last_ts = now_ts
 
+            futures_position_plan = await self._build_binance_technical_position_plan(
+                "binance_futures",
+                minimum_trade_size=technical_min_trade_size,
+            )
             snapshot_inputs = {
                 "snapshot_quality": futures_snapshot.get("snapshot_quality"),
                 "spread_source": futures_snapshot.get("spread_source"),
@@ -769,7 +801,7 @@ class GhostBotRuntime:
                 "mark_mid_gap_pct": futures_snapshot.get("mark_mid_gap_pct"),
                 "last_mid_gap_pct": futures_snapshot.get("last_mid_gap_pct"),
             }
-            inputs_payload = {
+            common_inputs_payload = {
                 **signal.inputs,
                 **snapshot_inputs,
                 "symbol": futures_symbol,
@@ -781,6 +813,10 @@ class GhostBotRuntime:
                 "technical_symbol_scope": list(self.binance_technical_symbol_scope),
                 "technical_active_symbol_count": len(self.binance_technical_symbol_scope),
             }
+            futures_inputs_payload = {
+                **common_inputs_payload,
+                **futures_position_plan,
+            }
             futures_decision = DecisionResult(
                 source="binance_technical_momentum",
                 category="CRYPTO",
@@ -789,8 +825,8 @@ class GhostBotRuntime:
                 threshold=signal.threshold,
                 should_trade=bool(should_trade),
                 reasons=[] if should_trade else signal.reasons,
-                trade_size=futures_trade_size,
-                inputs=inputs_payload,
+                trade_size=float(futures_position_plan["effective_trade_size"]),
+                inputs=futures_inputs_payload,
                 venue="binance_futures",
                 direction=signal.direction,
                 strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
@@ -803,21 +839,31 @@ class GhostBotRuntime:
                 symbol=futures_symbol,
                 side=signal.direction,
                 entry_price=float(futures_snapshot.get("mark_price") or futures_snapshot.get("last_price") or 0.0),
-                trade_size=futures_trade_size,
+                trade_size=float(futures_position_plan["effective_trade_size"]),
                 signal_score=signal.score,
                 source="binance_technical_momentum",
                 source_signal="binance_technical_momentum",
                 spread_pct=float(futures_snapshot.get("spread_pct") or 0.0),
                 market_context={},
                 strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
-                audit_inputs=inputs_payload,
+                audit_inputs=futures_inputs_payload,
                 signal_threshold=(self.settings.binance_technical_force_min_score if force_ready else signal.threshold),
+                min_trade_size=technical_min_trade_size,
             )
 
             if not self.settings.venue_configs["binance_spot"].enabled or self.binance_spot_venue is None:
                 continue
             if not spot_symbol:
                 continue
+            spot_position_plan = await self._build_binance_technical_position_plan(
+                "binance_spot",
+                minimum_trade_size=technical_min_trade_size,
+            )
+            spot_inputs_payload = {
+                **common_inputs_payload,
+                "symbol": spot_symbol,
+                **spot_position_plan,
+            }
             if signal.direction != "LONG":
                 spot_reject = DecisionResult(
                     source="binance_technical_momentum",
@@ -827,8 +873,8 @@ class GhostBotRuntime:
                     threshold=signal.threshold,
                     should_trade=False,
                     reasons=["spot_short_not_supported"],
-                    trade_size=spot_trade_size,
-                    inputs=inputs_payload,
+                    trade_size=float(spot_position_plan["effective_trade_size"]),
+                    inputs=spot_inputs_payload,
                     venue="binance_spot",
                     direction=signal.direction,
                     strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
@@ -846,8 +892,8 @@ class GhostBotRuntime:
                     threshold=signal.threshold,
                     should_trade=False,
                     reasons=[spot_snapshot.get("reason", "exchange_filters_rejected")],
-                    trade_size=spot_trade_size,
-                    inputs=inputs_payload,
+                    trade_size=float(spot_position_plan["effective_trade_size"]),
+                    inputs=spot_inputs_payload,
                     venue="binance_spot",
                     direction=signal.direction,
                     strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
@@ -863,8 +909,8 @@ class GhostBotRuntime:
                 threshold=signal.threshold,
                 should_trade=bool(should_trade),
                 reasons=[] if should_trade else signal.reasons,
-                trade_size=spot_trade_size,
-                inputs=inputs_payload,
+                trade_size=float(spot_position_plan["effective_trade_size"]),
+                inputs=spot_inputs_payload,
                 venue="binance_spot",
                 direction=signal.direction,
                 strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
@@ -875,15 +921,16 @@ class GhostBotRuntime:
                     symbol=spot_symbol,
                     side="LONG",
                     entry_price=float(spot_snapshot.get("last_price") or 0.0),
-                    trade_size=spot_trade_size,
+                    trade_size=float(spot_position_plan["effective_trade_size"]),
                     signal_score=signal.score,
                     source="binance_technical_momentum",
                     source_signal="binance_technical_momentum",
                     spread_pct=float(spot_snapshot.get("spread_pct") or 0.0),
                     market_context={},
                     strategy_profile=STRATEGY_PROFILE_BINANCE_TECHNICAL,
-                    audit_inputs=inputs_payload,
+                    audit_inputs=spot_inputs_payload,
                     signal_threshold=(self.settings.binance_technical_force_min_score if force_ready else signal.threshold),
+                    min_trade_size=technical_min_trade_size,
                 )
 
     async def run_whale_tracker_loop(self) -> None:

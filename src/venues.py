@@ -161,6 +161,7 @@ class BinanceFuturesRiskManager(VenueRiskManager):
         spread_pct: float,
         signal_score: float,
         signal_threshold: float | None = None,
+        min_trade_size: float | None = None,
     ) -> List[str]:
         reasons: List[str] = []
         threshold = signal_threshold if signal_threshold is not None else self.config.signal_threshold
@@ -179,17 +180,19 @@ class BinanceFuturesRiskManager(VenueRiskManager):
         if spread_pct * 10_000 > self.config.slippage_limit_bps:
             reasons.append("exchange_filters_rejected")
         if trade_size > self.config.max_order_usd:
-            reasons.append("max_position_exceeded")
+            reasons.append("max_order_usd_exceeded")
+        if min_trade_size is not None and trade_size < min_trade_size:
+            reasons.append("max_total_position_usd_exceeded")
         if available_balance < required_margin:
             reasons.append("insufficient_futures_balance")
 
         open_positions = await self.db.get_open_positions(venue="binance_futures")
         if len(open_positions) >= self.config.max_open_positions:
-            reasons.append("max_position_exceeded")
+            reasons.append("max_open_positions_exceeded")
 
         current_notional = sum(float(position["notional_usd"]) for position in open_positions)
         if current_notional + trade_size > self.config.max_position_usd:
-            reasons.append("max_position_exceeded")
+            reasons.append("max_total_position_usd_exceeded")
 
         realized_pnl_today = await self.db.get_realized_pnl_since(
             "binance_futures",
@@ -321,6 +324,7 @@ class BinanceFuturesPaperVenue(ExecutionVenue):
         strategy_profile: str | None = None,
         audit_inputs: Optional[Dict[str, Any]] = None,
         signal_threshold: float | None = None,
+        min_trade_size: float | None = None,
     ) -> Tuple[bool, str]:
         async with self.lock:
             signal_family = normalize_signal_family(source_signal)
@@ -337,6 +341,7 @@ class BinanceFuturesPaperVenue(ExecutionVenue):
                 spread_pct=spread_pct,
                 signal_score=signal_score,
                 signal_threshold=signal_threshold,
+                min_trade_size=min_trade_size,
             )
             if reasons:
                 await self.db.add_decision_audit(
@@ -730,6 +735,7 @@ class BinanceSpotVenue(ExecutionVenue):
         strategy_profile: str | None = None,
         audit_inputs: Optional[Dict[str, Any]] = None,
         signal_threshold: float | None = None,
+        min_trade_size: float | None = None,
     ) -> Tuple[bool, str]:
         async with self.lock:
             signal_family = normalize_signal_family(source_signal)
@@ -746,6 +752,7 @@ class BinanceSpotVenue(ExecutionVenue):
                 spread_pct=spread_pct,
                 signal_score=signal_score,
                 signal_threshold=signal_threshold,
+                min_trade_size=min_trade_size,
             )
             if reasons:
                 await self.db.add_decision_audit(
@@ -1061,6 +1068,7 @@ class BinanceSpotRiskManager(VenueRiskManager):
         spread_pct: float,
         signal_score: float,
         signal_threshold: float | None = None,
+        min_trade_size: float | None = None,
     ) -> List[str]:
         reasons: List[str] = []
         threshold = signal_threshold if signal_threshold is not None else self.config.signal_threshold
@@ -1076,17 +1084,19 @@ class BinanceSpotRiskManager(VenueRiskManager):
         if spread_pct * 10_000 > self.config.slippage_limit_bps:
             reasons.append("exchange_filters_rejected")
         if trade_size > self.config.max_order_usd:
-            reasons.append("max_position_exceeded")
+            reasons.append("max_order_usd_exceeded")
+        if min_trade_size is not None and trade_size < min_trade_size:
+            reasons.append("max_total_position_usd_exceeded")
         if available_balance < trade_size:
             reasons.append("insufficient_spot_balance")
 
         open_positions = await self.db.get_open_positions(venue="binance_spot")
         if len(open_positions) >= self.config.max_open_positions:
-            reasons.append("max_position_exceeded")
+            reasons.append("max_open_positions_exceeded")
 
         current_notional = sum(float(position["notional_usd"]) for position in open_positions)
         if current_notional + trade_size > self.config.max_position_usd:
-            reasons.append("max_position_exceeded")
+            reasons.append("max_total_position_usd_exceeded")
 
         realized_pnl_today = await self.db.get_realized_pnl_since(
             "binance_spot",

@@ -10,12 +10,33 @@ from pathlib import Path
 
 
 STATUS_METRIC_PATTERN = re.compile(r"([A-Za-z_]+)=([^\s]+)")
+TECHNICAL_NEAR_THRESHOLD_GAP = 0.10
 
 
 def _coerce_metric_value(raw: str):
     if raw.replace(".", "", 1).isdigit():
         return float(raw) if "." in raw else int(raw)
     return raw
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return float(default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return int(default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return int(default)
 
 
 def _print_row(row) -> None:
@@ -427,6 +448,9 @@ def _summarize_binance_technical_score_components(rows) -> dict[str, float | int
         "momentum_component": [],
         "volume_component": [],
         "microstructure_component": [],
+        "macd_normalizer": [],
+        "momentum_normalizer": [],
+        "volume_ratio_normalizer": [],
         "effective_min_score": [],
         "final_score": [],
     }
@@ -440,6 +464,9 @@ def _summarize_binance_technical_score_components(rows) -> dict[str, float | int
             "momentum_component",
             "volume_component",
             "microstructure_component",
+            "macd_normalizer",
+            "momentum_normalizer",
+            "volume_ratio_normalizer",
             "effective_min_score",
         ):
             value = _float_input(inputs, key)
@@ -459,6 +486,9 @@ def _summarize_binance_technical_score_components(rows) -> dict[str, float | int
         "avg_momentum_component": _avg(component_values["momentum_component"]),
         "avg_volume_component": _avg(component_values["volume_component"]),
         "avg_microstructure_component": _avg(component_values["microstructure_component"]),
+        "avg_macd_normalizer": _avg(component_values["macd_normalizer"]),
+        "avg_momentum_normalizer": _avg(component_values["momentum_normalizer"]),
+        "avg_volume_ratio_normalizer": _avg(component_values["volume_ratio_normalizer"]),
         "avg_effective_min_score": _avg(component_values["effective_min_score"]),
         "avg_final_score": _avg(component_values["final_score"]),
     }
@@ -481,15 +511,103 @@ def _summarize_binance_technical_score_gap(rows) -> dict[str, float | int]:
         gaps.append(gap)
         if "score_below_threshold" in _reason_parts(reason) or gap > 0:
             below_threshold_count += 1
-        if 0 < gap <= 0.06:
+        if 0 < gap <= TECHNICAL_NEAR_THRESHOLD_GAP:
             near_threshold_count += 1
-        elif gap > 0.06:
+        elif gap > TECHNICAL_NEAR_THRESHOLD_GAP:
             deep_below_threshold_count += 1
     return {
         "avg_score_gap_to_threshold": _avg(gaps),
         "below_threshold_count": below_threshold_count,
         "near_threshold_count": near_threshold_count,
         "deep_below_threshold_count": deep_below_threshold_count,
+    }
+
+
+def _summarize_binance_technical_position_pressure(cursor: sqlite3.Cursor, rows) -> dict[str, float | int]:
+    futures_max_position_usd = _env_float("BINANCE_FUTURES_MAX_POSITION_USD", 250.0)
+    spot_max_position_usd = _env_float("BINANCE_SPOT_MAX_POSITION_USD", 200.0)
+    futures_open_positions = cursor.execute(
+        """
+        SELECT COUNT(*) AS open_count, COALESCE(SUM(notional_usd), 0) AS open_notional
+        FROM venue_positions
+        WHERE status = 'OPEN' AND venue = 'binance_futures'
+        """
+    ).fetchone()
+    spot_open_positions = cursor.execute(
+        """
+        SELECT COUNT(*) AS open_count, COALESCE(SUM(notional_usd), 0) AS open_notional
+        FROM venue_positions
+        WHERE status = 'OPEN' AND venue = 'binance_spot'
+        """
+    ).fetchone()
+    futures_open_count = int((futures_open_positions["open_count"] if futures_open_positions else 0) or 0)
+    futures_open_notional = float((futures_open_positions["open_notional"] if futures_open_positions else 0.0) or 0.0)
+    spot_open_count = int((spot_open_positions["open_count"] if spot_open_positions else 0) or 0)
+    spot_open_notional = float((spot_open_positions["open_notional"] if spot_open_positions else 0.0) or 0.0)
+    open_positions = futures_open_count + spot_open_count
+    open_notional_usd = futures_open_notional + spot_open_notional
+    remaining_capacity_usd = max(0.0, futures_max_position_usd - futures_open_notional) + max(0.0, spot_max_position_usd - spot_open_notional)
+
+    anchor_row = cursor.execute(
+        """
+        SELECT MAX(occurred_at) AS max_occurred_at
+        FROM decision_audit
+        WHERE strategy_profile = 'binance_technical_sampling'
+          AND venue IN ('binance_futures', 'binance_spot')
+        """
+    ).fetchone()
+    anchor = anchor_row["max_occurred_at"] if anchor_row else None
+    recent_exits_60m = 0
+    stop_loss_exits_60m = 0
+    take_profit_exits_60m = 0
+    if anchor:
+        exit_row = cursor.execute(
+            """
+            SELECT
+                COUNT(*) AS recent_exits,
+                COALESCE(SUM(CASE WHEN reason = 'STOP_LOSS' THEN 1 ELSE 0 END), 0) AS stop_loss_exits,
+                COALESCE(SUM(CASE WHEN reason = 'TAKE_PROFIT' THEN 1 ELSE 0 END), 0) AS take_profit_exits
+            FROM decision_audit
+            WHERE strategy_profile = 'binance_technical_sampling'
+              AND venue IN ('binance_futures', 'binance_spot')
+              AND action = 'exit'
+              AND occurred_at >= datetime(?, '-60 minutes')
+            """,
+            (anchor,),
+        ).fetchone()
+        if exit_row:
+            recent_exits_60m = int(exit_row["recent_exits"] or 0)
+            stop_loss_exits_60m = int(exit_row["stop_loss_exits"] or 0)
+            take_profit_exits_60m = int(exit_row["take_profit_exits"] or 0)
+
+    max_open_positions_rejects = 0
+    max_total_position_usd_rejects = 0
+    max_order_usd_rejects = 0
+    sized_down_entries = 0
+    for row in rows or []:
+        action, reason, inputs = _technical_row_parts(row)
+        if action == "reject":
+            for reason_part in _reason_parts(reason):
+                if reason_part == "max_open_positions_exceeded":
+                    max_open_positions_rejects += 1
+                elif reason_part == "max_total_position_usd_exceeded":
+                    max_total_position_usd_rejects += 1
+                elif reason_part == "max_order_usd_exceeded":
+                    max_order_usd_rejects += 1
+        if action in {"decision", "execute"} and inputs.get("position_capacity_sized_down"):
+            sized_down_entries += 1
+
+    return {
+        "open_positions": open_positions,
+        "open_notional_usd": round(open_notional_usd, 4),
+        "remaining_capacity_usd": round(remaining_capacity_usd, 4),
+        "recent_exits_60m": recent_exits_60m,
+        "stop_loss_exits_60m": stop_loss_exits_60m,
+        "take_profit_exits_60m": take_profit_exits_60m,
+        "max_open_positions_rejects": max_open_positions_rejects,
+        "max_total_position_usd_rejects": max_total_position_usd_rejects,
+        "max_order_usd_rejects": max_order_usd_rejects,
+        "sized_down_entries": sized_down_entries,
     }
 
 
@@ -925,6 +1043,7 @@ def main() -> int:
     technical_score_component_summary = _summarize_binance_technical_score_components(technical_rows)
     technical_score_gap_summary = _summarize_binance_technical_score_gap(technical_rows)
     technical_score_blocker_breakdown = _summarize_binance_technical_score_blockers(technical_rows)
+    technical_position_pressure_summary = _summarize_binance_technical_position_pressure(cursor, technical_rows)
     connection.close()
 
     print(f"DB_PATH={db_path}")
@@ -1055,6 +1174,9 @@ def main() -> int:
     print("BINANCE_TECHNICAL_SCORE_BLOCKER_BREAKDOWN")
     for reason, count in technical_score_blocker_breakdown:
         print((reason, count))
+    print("BINANCE_TECHNICAL_POSITION_PRESSURE_SUMMARY")
+    for label, value in technical_position_pressure_summary.items():
+        print((label, value))
     print("BINANCE_TECHNICAL_REJECT_BREAKDOWN")
     for reason, count in technical_reject_breakdown:
         print((reason, count))

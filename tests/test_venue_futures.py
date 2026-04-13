@@ -188,3 +188,111 @@ async def test_binance_futures_signal_exit_closes_position():
 
     await db.close()
     os.remove(db_path)
+
+
+@pytest.mark.asyncio
+async def test_binance_futures_rejects_min_trade_size_with_split_reason():
+    db_path = "tests/test_binance_futures_min_trade_size.db"
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+    db = Database(db_path)
+    await db.connect()
+    config = VenueConfig(
+        venue_id="binance_futures",
+        enabled=True,
+        mode="paper",
+        instrument_type="futures",
+        max_order_usd=100.0,
+        max_position_usd=250.0,
+        max_daily_loss_usd=150.0,
+        max_open_positions=3,
+        fee_bps=4.0,
+        slippage_limit_bps=35.0,
+        signal_threshold=0.70,
+        leverage=2,
+        margin_mode="isolated",
+        stop_loss_pct=0.02,
+        take_profit_pct=0.03,
+    )
+    scanner = DummyScanner({"BTC/USDT:USDT": {"price": 100000.0}})
+    venue = BinanceFuturesPaperVenue(config, db, scanner)
+
+    success, reason = await venue.place_entry_order(
+        symbol="BTC/USDT:USDT",
+        side="LONG",
+        entry_price=100000.0,
+        trade_size=20.0,
+        signal_score=0.9,
+        source="binance_futures_price_structure",
+        source_signal="binance_futures_price_structure",
+        spread_pct=0.0002,
+        market_context={"market_id": "pm-btc-100k"},
+        min_trade_size=25.0,
+    )
+
+    assert success is False
+    assert reason == "max_total_position_usd_exceeded"
+
+    await db.close()
+    os.remove(db_path)
+
+
+@pytest.mark.asyncio
+async def test_binance_futures_rejects_max_open_positions_with_split_reason():
+    db_path = "tests/test_binance_futures_max_open_positions.db"
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+    db = Database(db_path)
+    await db.connect()
+    config = VenueConfig(
+        venue_id="binance_futures",
+        enabled=True,
+        mode="paper",
+        instrument_type="futures",
+        max_order_usd=100.0,
+        max_position_usd=250.0,
+        max_daily_loss_usd=150.0,
+        max_open_positions=1,
+        fee_bps=4.0,
+        slippage_limit_bps=35.0,
+        signal_threshold=0.70,
+        leverage=2,
+        margin_mode="isolated",
+        stop_loss_pct=0.02,
+        take_profit_pct=0.03,
+    )
+    scanner = DummyScanner({"BTC/USDT:USDT": {"price": 100000.0}, "ETH/USDT:USDT": {"price": 3000.0}})
+    venue = BinanceFuturesPaperVenue(config, db, scanner)
+
+    first_success, _ = await venue.place_entry_order(
+        symbol="BTC/USDT:USDT",
+        side="LONG",
+        entry_price=100000.0,
+        trade_size=100.0,
+        signal_score=0.9,
+        source="binance_futures_price_structure",
+        source_signal="binance_futures_price_structure",
+        spread_pct=0.0002,
+        market_context={"market_id": "pm-btc-100k"},
+    )
+    assert first_success is True
+
+    second_success, second_reason = await venue.place_entry_order(
+        symbol="ETH/USDT:USDT",
+        side="LONG",
+        entry_price=3000.0,
+        trade_size=100.0,
+        signal_score=0.9,
+        source="binance_futures_price_structure",
+        source_signal="binance_futures_price_structure",
+        spread_pct=0.0002,
+        market_context={"market_id": "pm-eth-3k"},
+    )
+
+    assert second_success is False
+    assert second_reason == "max_open_positions_exceeded"
+
+    await db.close()
+    os.remove(db_path)

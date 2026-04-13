@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 require_once dirname(__DIR__) . '/lib/data.php';
 
+const DASHBOARD_TECHNICAL_NEAR_THRESHOLD_GAP = 0.10;
+
 function dashboard_table_has_column(PDO $pdo, string $table, string $column): bool
 {
     static $cache = [];
@@ -98,6 +100,24 @@ function dashboard_float_input(array $inputs, string $key): ?float
 function dashboard_average(array $values): float
 {
     return $values === [] ? 0.0 : round(array_sum($values) / count($values), 4);
+}
+
+function dashboard_env_float(string $name, float $default): float
+{
+    $raw = getenv($name);
+    if ($raw === false || trim((string) $raw) === '') {
+        return $default;
+    }
+    return is_numeric($raw) ? (float) $raw : $default;
+}
+
+function dashboard_env_int(string $name, int $default): int
+{
+    $raw = getenv($name);
+    if ($raw === false || trim((string) $raw) === '') {
+        return $default;
+    }
+    return is_numeric($raw) ? (int) $raw : $default;
 }
 
 function dashboard_technical_final_score(array $inputs): ?float
@@ -605,6 +625,9 @@ function dashboard_build_binance_technical_score_component_summary(PDO $pdo): ar
         'momentum_component' => [],
         'volume_component' => [],
         'microstructure_component' => [],
+        'macd_normalizer' => [],
+        'momentum_normalizer' => [],
+        'volume_ratio_normalizer' => [],
         'effective_min_score' => [],
         'final_score' => [],
     ];
@@ -613,7 +636,7 @@ function dashboard_build_binance_technical_score_component_summary(PDO $pdo): ar
     foreach (dashboard_fetch_recent_binance_technical_rows($pdo) as $row) {
         $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
         $hasComponent = false;
-        foreach (['rsi_component', 'macd_component', 'momentum_component', 'volume_component', 'microstructure_component', 'effective_min_score'] as $key) {
+        foreach (['rsi_component', 'macd_component', 'momentum_component', 'volume_component', 'microstructure_component', 'macd_normalizer', 'momentum_normalizer', 'volume_ratio_normalizer', 'effective_min_score'] as $key) {
             $value = dashboard_float_input($inputs, $key);
             if ($value !== null) {
                 $values[$key][] = $value;
@@ -637,6 +660,9 @@ function dashboard_build_binance_technical_score_component_summary(PDO $pdo): ar
         'avg_momentum_component' => dashboard_average($values['momentum_component']),
         'avg_volume_component' => dashboard_average($values['volume_component']),
         'avg_microstructure_component' => dashboard_average($values['microstructure_component']),
+        'avg_macd_normalizer' => dashboard_average($values['macd_normalizer']),
+        'avg_momentum_normalizer' => dashboard_average($values['momentum_normalizer']),
+        'avg_volume_ratio_normalizer' => dashboard_average($values['volume_ratio_normalizer']),
         'avg_effective_min_score' => dashboard_average($values['effective_min_score']),
         'avg_final_score' => dashboard_average($values['final_score']),
     ];
@@ -664,9 +690,9 @@ function dashboard_build_binance_technical_score_gap_summary(PDO $pdo): array
         if ($gap > 0.0 || in_array('score_below_threshold', dashboard_reason_parts($row['reason'] ?? null), true)) {
             $belowThresholdCount++;
         }
-        if ($gap > 0.0 && $gap <= 0.06) {
+        if ($gap > 0.0 && $gap <= DASHBOARD_TECHNICAL_NEAR_THRESHOLD_GAP) {
             $nearThresholdCount++;
-        } elseif ($gap > 0.06) {
+        } elseif ($gap > DASHBOARD_TECHNICAL_NEAR_THRESHOLD_GAP) {
             $deepBelowThresholdCount++;
         }
     }
@@ -676,6 +702,90 @@ function dashboard_build_binance_technical_score_gap_summary(PDO $pdo): array
         'below_threshold_count' => $belowThresholdCount,
         'near_threshold_count' => $nearThresholdCount,
         'deep_below_threshold_count' => $deepBelowThresholdCount,
+    ];
+}
+
+function dashboard_build_binance_technical_position_pressure_summary(PDO $pdo): array
+{
+    $futuresOpen = dashboard_fetch_one(
+        $pdo,
+        "SELECT COUNT(*) AS open_count, COALESCE(SUM(notional_usd), 0) AS open_notional FROM venue_positions WHERE status = 'OPEN' AND venue = 'binance_futures'"
+    ) ?? ['open_count' => 0, 'open_notional' => 0.0];
+    $spotOpen = dashboard_fetch_one(
+        $pdo,
+        "SELECT COUNT(*) AS open_count, COALESCE(SUM(notional_usd), 0) AS open_notional FROM venue_positions WHERE status = 'OPEN' AND venue = 'binance_spot'"
+    ) ?? ['open_count' => 0, 'open_notional' => 0.0];
+
+    $futuresOpenCount = (int) ($futuresOpen['open_count'] ?? 0);
+    $spotOpenCount = (int) ($spotOpen['open_count'] ?? 0);
+    $futuresOpenNotional = (float) ($futuresOpen['open_notional'] ?? 0.0);
+    $spotOpenNotional = (float) ($spotOpen['open_notional'] ?? 0.0);
+    $openPositions = $futuresOpenCount + $spotOpenCount;
+    $openNotionalUsd = $futuresOpenNotional + $spotOpenNotional;
+    $remainingCapacityUsd = max(0.0, dashboard_env_float('BINANCE_FUTURES_MAX_POSITION_USD', 250.0) - $futuresOpenNotional)
+        + max(0.0, dashboard_env_float('BINANCE_SPOT_MAX_POSITION_USD', 200.0) - $spotOpenNotional);
+
+    $anchorRow = dashboard_fetch_one(
+        $pdo,
+        "SELECT MAX(occurred_at) AS max_occurred_at FROM decision_audit WHERE strategy_profile = 'binance_technical_sampling' AND venue IN ('binance_futures', 'binance_spot')"
+    );
+    $recentExits = 0;
+    $stopLossExits = 0;
+    $takeProfitExits = 0;
+    if (!empty($anchorRow['max_occurred_at'])) {
+        $exitWindow = dashboard_fetch_one(
+            $pdo,
+            "
+            SELECT
+                COUNT(*) AS recent_exits,
+                COALESCE(SUM(CASE WHEN reason = 'STOP_LOSS' THEN 1 ELSE 0 END), 0) AS stop_loss_exits,
+                COALESCE(SUM(CASE WHEN reason = 'TAKE_PROFIT' THEN 1 ELSE 0 END), 0) AS take_profit_exits
+            FROM decision_audit
+            WHERE strategy_profile = 'binance_technical_sampling'
+              AND venue IN ('binance_futures', 'binance_spot')
+              AND action = 'exit'
+              AND occurred_at >= datetime(?, '-60 minutes')
+            ",
+            [$anchorRow['max_occurred_at']]
+        ) ?? ['recent_exits' => 0, 'stop_loss_exits' => 0, 'take_profit_exits' => 0];
+        $recentExits = (int) ($exitWindow['recent_exits'] ?? 0);
+        $stopLossExits = (int) ($exitWindow['stop_loss_exits'] ?? 0);
+        $takeProfitExits = (int) ($exitWindow['take_profit_exits'] ?? 0);
+    }
+
+    $maxOpenPositionsRejects = 0;
+    $maxTotalPositionUsdRejects = 0;
+    $maxOrderUsdRejects = 0;
+    $sizedDownEntries = 0;
+    foreach (dashboard_fetch_recent_binance_technical_rows($pdo) as $row) {
+        $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
+        if (($row['action'] ?? '') === 'reject') {
+            foreach (dashboard_reason_parts($row['reason'] ?? null) as $reason) {
+                if ($reason === 'max_open_positions_exceeded') {
+                    $maxOpenPositionsRejects++;
+                } elseif ($reason === 'max_total_position_usd_exceeded') {
+                    $maxTotalPositionUsdRejects++;
+                } elseif ($reason === 'max_order_usd_exceeded') {
+                    $maxOrderUsdRejects++;
+                }
+            }
+        }
+        if (in_array(strtolower((string) ($row['action'] ?? '')), ['decision', 'execute'], true) && !empty($inputs['position_capacity_sized_down'])) {
+            $sizedDownEntries++;
+        }
+    }
+
+    return [
+        'open_positions' => $openPositions,
+        'open_notional_usd' => round($openNotionalUsd, 4),
+        'remaining_capacity_usd' => round($remainingCapacityUsd, 4),
+        'recent_exits_60m' => $recentExits,
+        'stop_loss_exits_60m' => $stopLossExits,
+        'take_profit_exits_60m' => $takeProfitExits,
+        'max_open_positions_rejects' => $maxOpenPositionsRejects,
+        'max_total_position_usd_rejects' => $maxTotalPositionUsdRejects,
+        'max_order_usd_rejects' => $maxOrderUsdRejects,
+        'sized_down_entries' => $sizedDownEntries,
     ];
 }
 
@@ -1364,6 +1474,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['binance_technical_score_component_summary'] = dashboard_build_binance_technical_score_component_summary($pdo);
         $payload['binance_technical_score_gap_summary'] = dashboard_build_binance_technical_score_gap_summary($pdo);
         $payload['binance_technical_score_blocker_breakdown'] = dashboard_build_binance_technical_score_blocker_breakdown($pdo);
+        $payload['binance_technical_position_pressure_summary'] = dashboard_build_binance_technical_position_pressure_summary($pdo);
         $payload['binance_technical_reject_breakdown'] = dashboard_build_binance_technical_reject_breakdown($pdo);
         $payload['alias_persistence_summary'] = dashboard_build_alias_persistence_summary($pdo, $payload['runtime_summary'] ?? []);
         $payload['source_quality_summary'] = dashboard_build_source_quality_summary($pdo);
@@ -1394,6 +1505,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['binance_technical_score_component_summary'] = [];
         $payload['binance_technical_score_gap_summary'] = [];
         $payload['binance_technical_score_blocker_breakdown'] = [];
+        $payload['binance_technical_position_pressure_summary'] = [];
         $payload['binance_technical_reject_breakdown'] = [];
         $payload['alias_persistence_summary'] = [];
         $payload['source_quality_summary'] = [];

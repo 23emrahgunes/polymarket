@@ -247,6 +247,49 @@ async def test_runtime_verify_once_waits_for_dual_crypto_venues(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_runtime_builds_sized_down_position_plan_for_binance_technical(tmp_path):
+    db_path = str(tmp_path / "test_runtime_position_plan.db")
+    venue_configs = build_default_venue_configs()
+    venue_configs["binance_futures"] = venue_configs["binance_futures"].__class__(
+        **{**venue_configs["binance_futures"].__dict__, "enabled": True}
+    )
+    runtime = GhostBotRuntime(
+        RuntimeSettings(
+            exchange_id="coinbase",
+            db_path=db_path,
+            debug_signal_mode=False,
+            runtime_verify_once=False,
+            venue_configs=venue_configs,
+        )
+    )
+    await runtime.initialize()
+
+    await runtime.db.create_venue_position(
+        venue="binance_futures",
+        execution_mode="paper",
+        instrument_type="futures",
+        symbol_or_market_id="BTC/USDT:USDT",
+        side="LONG",
+        qty_or_shares=0.001,
+        entry_price=100000.0,
+        notional_usd=200.0,
+        leverage=2,
+        status="OPEN",
+    )
+
+    plan = await runtime._build_binance_technical_position_plan("binance_futures", minimum_trade_size=25.0)
+
+    assert plan["base_trade_size"] == 100.0
+    assert plan["effective_trade_size"] == 50.0
+    assert plan["remaining_position_capacity_usd"] == 50.0
+    assert plan["position_capacity_sized_down"] is True
+    assert plan["open_position_count_at_decision"] == 1
+    assert plan["open_position_notional_usd_at_decision"] == 200.0
+
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_verify_once_waits_for_triple_crypto_venues(tmp_path):
     db_path = str(tmp_path / "test_crypto_triple_verify.db")
     venue_configs = build_default_venue_configs()

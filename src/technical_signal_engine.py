@@ -27,8 +27,14 @@ def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) ->
 
 DEFAULT_MAX_SPREAD_PCT = 0.012
 DEFAULT_SPREAD_NORMALIZER = 0.006
+DEFAULT_MACD_NORMALIZER = 0.003
+DEFAULT_MOMENTUM_NORMALIZER = 0.01
+DEFAULT_VOLUME_RATIO_NORMALIZER = 1.5
 PAPER_RECOVERY_MAX_SPREAD_PCT = 0.018
 PAPER_RECOVERY_SPREAD_NORMALIZER = 0.010
+PAPER_RECOVERY_MACD_NORMALIZER = 0.0022
+PAPER_RECOVERY_MOMENTUM_NORMALIZER = 0.0080
+PAPER_RECOVERY_VOLUME_RATIO_NORMALIZER = 1.20
 PAPER_RECOVERY_MIN_SCORE_FLOOR = 0.54
 PAPER_RECOVERY_MIN_SCORE_DISCOUNT = 0.08
 PAPER_RECOVERY_MOMENTUM_TOLERANCE = 0.0015
@@ -38,10 +44,12 @@ PAPER_MICROSTRUCTURE_RECOVERY_V2_MAX_SPREAD_PCT = 0.032
 PAPER_MICROSTRUCTURE_RECOVERY_V2_SPREAD_NORMALIZER = 0.018
 PAPER_MICROSTRUCTURE_RECOVERY_MIN_VOLUME_24H = 1_000_000.0
 PAPER_MICROSTRUCTURE_RECOVERY_CANDIDATE_FLOOR = 0.42
-PAPER_FINAL_SCORE_RECOVERY_MAX_GAP = 0.08
-PAPER_NEAR_THRESHOLD_GAP = 0.06
+PAPER_FINAL_SCORE_RECOVERY_MAX_GAP = 0.12
+PAPER_NEAR_THRESHOLD_GAP = 0.10
+PAPER_FINAL_SCORE_RECOVERY_MIN_MACD_COMPONENT = 0.18
+PAPER_FINAL_SCORE_RECOVERY_MIN_MOMENTUM_COMPONENT = 0.18
 PAPER_FINAL_SCORE_RECOVERY_MIN_MICRO_COMPONENT = 0.25
-PAPER_FINAL_SCORE_RECOVERY_MIN_VOLUME_COMPONENT = 0.30
+PAPER_FINAL_SCORE_RECOVERY_MIN_VOLUME_COMPONENT = 0.22
 PAPER_FINAL_SCORE_RECOVERY_BASE_BONUS = 0.04
 PAPER_FINAL_SCORE_RECOVERY_ALIGNMENT_BONUS = 0.01
 PAPER_FINAL_SCORE_RECOVERY_MICROSTRUCTURE_BONUS = 0.01
@@ -120,6 +128,12 @@ class TechnicalSignalEngine:
         effective_min_score = max(PAPER_RECOVERY_MIN_SCORE_FLOOR, min_score - PAPER_RECOVERY_MIN_SCORE_DISCOUNT) if paper_recovery else min_score
         effective_max_spread_pct = PAPER_RECOVERY_MAX_SPREAD_PCT if paper_recovery else DEFAULT_MAX_SPREAD_PCT
         spread_normalizer = PAPER_RECOVERY_SPREAD_NORMALIZER if paper_recovery else DEFAULT_SPREAD_NORMALIZER
+        macd_normalizer = PAPER_RECOVERY_MACD_NORMALIZER if paper_recovery else DEFAULT_MACD_NORMALIZER
+        momentum_normalizer = PAPER_RECOVERY_MOMENTUM_NORMALIZER if paper_recovery else DEFAULT_MOMENTUM_NORMALIZER
+        volume_ratio_normalizer = (
+            PAPER_RECOVERY_VOLUME_RATIO_NORMALIZER if paper_recovery else DEFAULT_VOLUME_RATIO_NORMALIZER
+        )
+        score_normalization_stage = "paper_technical_v7" if paper_recovery else "default"
         microstructure_recovery_applied = False
         spread_recovery_applied = False
         microstructure_recovery_v2_applied = False
@@ -166,6 +180,14 @@ class TechnicalSignalEngine:
                     "effective_min_score": round(effective_min_score, 4),
                     "effective_max_spread_pct": round(effective_max_spread_pct, 6),
                     "effective_spread_normalizer": round(spread_normalizer, 6),
+                    "macd_normalizer": round(macd_normalizer, 6),
+                    "momentum_normalizer": round(momentum_normalizer, 6),
+                    "volume_ratio_normalizer": round(volume_ratio_normalizer, 6),
+                    "score_normalization_stage": score_normalization_stage,
+                    "score_recovery_quality_gate_passed": False,
+                    "score_recovery_macd_floor": round(PAPER_FINAL_SCORE_RECOVERY_MIN_MACD_COMPONENT, 4),
+                    "score_recovery_momentum_floor": round(PAPER_FINAL_SCORE_RECOVERY_MIN_MOMENTUM_COMPONENT, 4),
+                    "score_recovery_volume_floor": round(PAPER_FINAL_SCORE_RECOVERY_MIN_VOLUME_COMPONENT, 4),
                 },
             )
 
@@ -242,9 +264,9 @@ class TechnicalSignalEngine:
         else:
             rsi_component = _clamp((55.0 - (rsi_value or 50.0)) / 25.0)
 
-        macd_component = _clamp(abs(macd_hist_pct) / 0.003)
-        momentum_component = _clamp(abs(momentum) / 0.01)
-        volume_component = _clamp(volume_ratio / 1.5)
+        macd_component = _clamp(abs(macd_hist_pct) / macd_normalizer)
+        momentum_component = _clamp(abs(momentum) / momentum_normalizer)
+        volume_component = _clamp(volume_ratio / volume_ratio_normalizer)
         micro_component = 1.0 - _clamp(spread_pct / spread_normalizer)
 
         score = _technical_score(
@@ -320,6 +342,12 @@ class TechnicalSignalEngine:
         score_gap_to_threshold = max(effective_min_score - score, 0.0)
         near_threshold_candidate = 0.0 < score_gap_to_threshold <= PAPER_NEAR_THRESHOLD_GAP
         spread_rejected = spread_pct <= 0 or spread_pct > effective_max_spread_pct
+        score_recovery_quality_gate_passed = (
+            macd_component >= PAPER_FINAL_SCORE_RECOVERY_MIN_MACD_COMPONENT
+            and momentum_component >= PAPER_FINAL_SCORE_RECOVERY_MIN_MOMENTUM_COMPONENT
+            and micro_component >= PAPER_FINAL_SCORE_RECOVERY_MIN_MICRO_COMPONENT
+            and volume_component >= PAPER_FINAL_SCORE_RECOVERY_MIN_VOLUME_COMPONENT
+        )
         score_recovery_candidate = (
             bool(paper_recovery)
             and bool(force_sample_enabled)
@@ -327,8 +355,7 @@ class TechnicalSignalEngine:
             and direction in {"LONG", "SHORT"}
             and not spread_rejected
             and 0.0 < score_gap_to_threshold <= PAPER_FINAL_SCORE_RECOVERY_MAX_GAP
-            and micro_component >= PAPER_FINAL_SCORE_RECOVERY_MIN_MICRO_COMPONENT
-            and volume_component >= PAPER_FINAL_SCORE_RECOVERY_MIN_VOLUME_COMPONENT
+            and score_recovery_quality_gate_passed
         )
         final_score_recovery_applied = False
         score_recovery_passed = False
@@ -398,11 +425,19 @@ class TechnicalSignalEngine:
             "effective_min_score": round(effective_min_score, 4),
             "effective_max_spread_pct": round(effective_max_spread_pct, 6),
             "effective_spread_normalizer": round(spread_normalizer, 6),
+            "macd_normalizer": round(macd_normalizer, 6),
+            "momentum_normalizer": round(momentum_normalizer, 6),
+            "volume_ratio_normalizer": round(volume_ratio_normalizer, 6),
+            "score_normalization_stage": score_normalization_stage,
             "rsi_component": round(rsi_component, 4),
             "macd_component": round(macd_component, 4),
             "momentum_component": round(momentum_component, 4),
             "volume_component": round(volume_component, 4),
             "microstructure_component": round(micro_component, 4),
+            "score_recovery_quality_gate_passed": score_recovery_quality_gate_passed,
+            "score_recovery_macd_floor": round(PAPER_FINAL_SCORE_RECOVERY_MIN_MACD_COMPONENT, 4),
+            "score_recovery_momentum_floor": round(PAPER_FINAL_SCORE_RECOVERY_MIN_MOMENTUM_COMPONENT, 4),
+            "score_recovery_volume_floor": round(PAPER_FINAL_SCORE_RECOVERY_MIN_VOLUME_COMPONENT, 4),
         }
 
         cleaned_inputs = {key: value for key, value in inputs.items() if value is not None}

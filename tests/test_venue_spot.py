@@ -187,3 +187,51 @@ async def test_binance_spot_rejects_short_entries(caplog):
 
     await db.close()
     os.remove(db_path)
+
+
+@pytest.mark.asyncio
+async def test_binance_spot_rejects_min_trade_size_with_split_reason():
+    db_path = "tests/test_binance_spot_min_trade_size.db"
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+    db = Database(db_path)
+    await db.connect()
+    config = VenueConfig(
+        venue_id="binance_spot",
+        enabled=True,
+        mode="paper",
+        instrument_type="spot",
+        max_order_usd=100.0,
+        max_position_usd=200.0,
+        max_daily_loss_usd=100.0,
+        max_open_positions=3,
+        fee_bps=10.0,
+        slippage_limit_bps=20.0,
+        signal_threshold=0.72,
+        leverage=1,
+        margin_mode="isolated",
+        stop_loss_pct=0.02,
+        take_profit_pct=0.03,
+    )
+    scanner = DummySpotScanner({"BTC/USDT": {"price": 100000.0}})
+    venue = BinanceSpotVenue(config, db, scanner)
+
+    success, reason = await venue.place_entry_order(
+        symbol="BTC/USDT",
+        side="LONG",
+        entry_price=100000.0,
+        trade_size=20.0,
+        signal_score=0.9,
+        source="binance_spot_price_structure",
+        source_signal="binance_spot_price_structure",
+        spread_pct=0.0002,
+        market_context={"market_id": "pm-btc-95k"},
+        min_trade_size=25.0,
+    )
+
+    assert success is False
+    assert reason == "max_total_position_usd_exceeded"
+
+    await db.close()
+    os.remove(db_path)

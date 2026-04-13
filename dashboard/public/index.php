@@ -240,6 +240,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #binance-technical-recovery-summary,
         #binance-technical-score-component-summary,
         #binance-technical-score-gap-summary,
+        #binance-technical-position-pressure-summary,
         #graph-discovery-summary,
         #whale-candidate-aggregation-summary,
         #recent-gate-ready-candidates,
@@ -281,6 +282,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .subcard #binance-technical-recovery-summary,
         .subcard #binance-technical-score-component-summary,
         .subcard #binance-technical-score-gap-summary,
+        .subcard #binance-technical-position-pressure-summary,
         .subcard #graph-discovery-summary,
         .subcard #whale-candidate-aggregation-summary,
         .subcard #recent-gate-ready-candidates,
@@ -330,7 +332,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #market-alias-counts, #whale-wallet-counts, #unsupported-side-summary { max-height: 180px; overflow: auto; }
         #top-market-aliases, #top-whales, #trusted-whale-summary { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
-        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #binance-technical-summary, #binance-technical-gate-funnel, #binance-technical-recovery-summary, #binance-technical-score-component-summary, #binance-technical-score-gap-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
+        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #binance-technical-summary, #binance-technical-gate-funnel, #binance-technical-recovery-summary, #binance-technical-score-component-summary, #binance-technical-score-gap-summary, #binance-technical-position-pressure-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
         #recent-gate-ready-candidates { max-height: 260px; overflow: auto; }
         #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown, #binance-technical-reject-breakdown, #binance-technical-score-blocker-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
@@ -477,6 +479,8 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                     <div class="metric-list" id="binance-technical-score-component-summary"></div>
                     <div class="subsection-title">Skor gap ozeti</div>
                     <div class="metric-list" id="binance-technical-score-gap-summary"></div>
+                    <div class="subsection-title">Pozisyon Baskisi ve Exit Akisi</div>
+                    <div class="metric-list" id="binance-technical-position-pressure-summary"></div>
                     <div class="metric-list" id="performance-snapshot"></div>
                 </div>
                 <div class="subcard">
@@ -646,6 +650,9 @@ function translateReason(value) {
         futures_bid_ask_missing: 'futures bid ask eksik',
         futures_snapshot_untrusted: 'futures snapshot guvensiz',
         technical_alignment_weak: 'teknik hizalanma zayif',
+        max_order_usd_exceeded: 'tek islem limiti asildi',
+        max_open_positions_exceeded: 'acik pozisyon limiti doldu',
+        max_total_position_usd_exceeded: 'toplam pozisyon limiti doldu',
         microstructure_drag: 'mikro yapi skoru dusuk',
         momentum_drag: 'momentum skoru dusuk',
         macd_drag: 'MACD skoru dusuk',
@@ -1100,6 +1107,9 @@ function updatePanels(payload) {
         { label: 'Ortalama momentum', value: formatNumber(technicalScoreComponents.avg_momentum_component, 3) },
         { label: 'Ortalama hacim', value: formatNumber(technicalScoreComponents.avg_volume_component, 3) },
         { label: 'Ortalama mikro yapi', value: formatNumber(technicalScoreComponents.avg_microstructure_component, 3) },
+        { label: 'Ortalama MACD normalizer', value: formatNumber(technicalScoreComponents.avg_macd_normalizer, 4) },
+        { label: 'Ortalama momentum normalizer', value: formatNumber(technicalScoreComponents.avg_momentum_normalizer, 4) },
+        { label: 'Ortalama hacim normalizer', value: formatNumber(technicalScoreComponents.avg_volume_ratio_normalizer, 4) },
         { label: 'Ortalama esik', value: formatNumber(technicalScoreComponents.avg_effective_min_score, 3) },
         { label: 'Ortalama final skor', value: formatNumber(technicalScoreComponents.avg_final_score, 3) }
     ]);
@@ -1110,6 +1120,20 @@ function updatePanels(payload) {
         { label: 'Esik alti adet', value: formatNumber(technicalScoreGap.below_threshold_count, 0) },
         { label: 'Yakin esik adayi', value: formatNumber(technicalScoreGap.near_threshold_count, 0) },
         { label: 'Derin esik alti', value: formatNumber(technicalScoreGap.deep_below_threshold_count, 0) }
+    ]);
+
+    const technicalPositionPressure = payload.binance_technical_position_pressure_summary || {};
+    renderMetrics('binance-technical-position-pressure-summary', [
+        { label: 'Acik pozisyon', value: formatNumber(technicalPositionPressure.open_positions, 0) },
+        { label: 'Acik notional', value: formatNumber(technicalPositionPressure.open_notional_usd, 2) },
+        { label: 'Kalan kapasite', value: formatNumber(technicalPositionPressure.remaining_capacity_usd, 2) },
+        { label: 'Son 60 dk cikis', value: formatNumber(technicalPositionPressure.recent_exits_60m, 0) },
+        { label: 'Stop-loss cikis', value: formatNumber(technicalPositionPressure.stop_loss_exits_60m, 0) },
+        { label: 'Take-profit cikis', value: formatNumber(technicalPositionPressure.take_profit_exits_60m, 0) },
+        { label: 'Max open positions red', value: formatNumber(technicalPositionPressure.max_open_positions_rejects, 0) },
+        { label: 'Max total position red', value: formatNumber(technicalPositionPressure.max_total_position_usd_rejects, 0) },
+        { label: 'Max order red', value: formatNumber(technicalPositionPressure.max_order_usd_rejects, 0) },
+        { label: 'Boyutu kucultulen giris', value: formatNumber(technicalPositionPressure.sized_down_entries, 0) }
     ]);
 
     const whaleSide = payload.whale_side_summary || {};

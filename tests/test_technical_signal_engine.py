@@ -155,7 +155,7 @@ def test_technical_signal_engine_microstructure_recovery_requires_force_context(
 
 def test_technical_signal_engine_microstructure_candidate_floor_is_below_force_threshold():
     engine = TechnicalSignalEngine()
-    closes = pd.Series([100 + (index * 0.2) for index in range(80)], dtype=float)
+    closes = pd.Series([100 + (index * 0.12) for index in range(80)], dtype=float)
     volumes = pd.Series([1_000 for _ in range(79)] + [1_500], dtype=float)
 
     signal = engine.score(
@@ -183,8 +183,8 @@ def test_technical_signal_engine_microstructure_candidate_floor_is_below_force_t
 
 def test_technical_signal_engine_final_score_recovery_passes_near_threshold_paper_candidate():
     engine = TechnicalSignalEngine()
-    closes = pd.Series([100 + (index * 0.15) for index in range(80)], dtype=float)
-    volumes = pd.Series([1_000 for _ in range(80)], dtype=float)
+    closes = pd.Series(([100.0] * 40 + [100.0 + (index * 0.16) for index in range(40)])[:80], dtype=float)
+    volumes = pd.Series([1_000 for _ in range(79)] + [300], dtype=float)
 
     signal = engine.score(
         symbol="BTC/USDT:USDT",
@@ -206,14 +206,22 @@ def test_technical_signal_engine_final_score_recovery_passes_near_threshold_pape
     assert signal.inputs["final_score_recovery_applied"] is True
     assert signal.inputs["score_recovery_passed"] is True
     assert signal.inputs["final_score_recovery_reason"] == "near_threshold_components_ok"
+    assert signal.inputs["macd_normalizer"] == 0.0022
+    assert signal.inputs["momentum_normalizer"] == 0.008
+    assert signal.inputs["volume_ratio_normalizer"] == 1.2
+    assert signal.inputs["score_normalization_stage"] == "paper_technical_v7"
+    assert signal.inputs["score_recovery_quality_gate_passed"] is True
+    assert signal.inputs["score_recovery_macd_floor"] == 0.18
+    assert signal.inputs["score_recovery_momentum_floor"] == 0.18
+    assert signal.inputs["score_recovery_volume_floor"] == 0.22
     assert "score_below_threshold" not in signal.reasons
     assert signal.should_trade is True
 
 
 def test_technical_signal_engine_final_score_recovery_requires_force_context():
     engine = TechnicalSignalEngine()
-    closes = pd.Series([100 + (index * 0.15) for index in range(80)], dtype=float)
-    volumes = pd.Series([1_000 for _ in range(80)], dtype=float)
+    closes = pd.Series(([100.0] * 40 + [100.0 + (index * 0.16) for index in range(40)])[:80], dtype=float)
+    volumes = pd.Series([1_000 for _ in range(79)] + [300], dtype=float)
 
     signal = engine.score(
         symbol="BTC/USDT:USDT",
@@ -254,12 +262,64 @@ def test_technical_signal_engine_final_score_recovery_requires_component_quality
         force_min_score=0.50,
     )
 
-    assert signal.inputs["volume_component"] < 0.30
+    assert signal.inputs["volume_component"] < 0.22
+    assert signal.inputs["score_recovery_quality_gate_passed"] is False
     assert signal.inputs["score_recovery_candidate"] is False
     assert signal.inputs["final_score_recovery_applied"] is False
     assert "volume_drag" in signal.inputs["score_blocker_labels"]
     assert "score_below_threshold" in signal.reasons
     assert signal.should_trade is False
+
+
+def test_technical_signal_engine_final_score_recovery_requires_macd_and_momentum_floors():
+    engine = TechnicalSignalEngine()
+    closes = pd.Series([100 + (index * 0.05) for index in range(80)], dtype=float)
+    volumes = pd.Series([1_000 for _ in range(80)], dtype=float)
+
+    signal = engine.score(
+        symbol="BTC/USDT:USDT",
+        closes=closes,
+        volumes=volumes,
+        spread_pct=0.001,
+        volume_24h=2_500_000.0,
+        min_score=0.62,
+        timeframe="5m",
+        paper_recovery=True,
+        force_sample_enabled=True,
+        force_min_score=0.50,
+    )
+
+    assert signal.inputs["near_threshold_candidate"] is True
+    assert signal.inputs["macd_component"] < 0.18 or signal.inputs["momentum_component"] < 0.18
+    assert signal.inputs["score_recovery_quality_gate_passed"] is False
+    assert signal.inputs["score_recovery_candidate"] is False
+    assert signal.inputs["final_score_recovery_applied"] is False
+    assert "score_below_threshold" in signal.reasons
+    assert signal.should_trade is False
+
+
+def test_technical_signal_engine_final_score_recovery_accepts_wider_gap_with_quality_floors():
+    engine = TechnicalSignalEngine()
+    closes = pd.Series(([100.0] * 50 + [100.0 + (index * 0.08) for index in range(30)])[:80], dtype=float)
+    volumes = pd.Series([1_000 for _ in range(79)] + [500], dtype=float)
+
+    signal = engine.score(
+        symbol="BTC/USDT:USDT",
+        closes=closes,
+        volumes=volumes,
+        spread_pct=0.001,
+        volume_24h=2_500_000.0,
+        min_score=0.62,
+        timeframe="5m",
+        paper_recovery=True,
+        force_sample_enabled=True,
+        force_min_score=0.50,
+    )
+
+    assert 0 < signal.inputs["score_gap_to_threshold"] <= 0.12
+    assert signal.inputs["near_threshold_candidate"] is True
+    assert signal.inputs["score_recovery_quality_gate_passed"] is True
+    assert signal.inputs["score_recovery_candidate"] is True
 
 
 def test_technical_signal_engine_final_score_recovery_is_paper_only():
