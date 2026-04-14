@@ -732,6 +732,10 @@ function dashboard_build_binance_technical_position_pressure_summary(PDO $pdo): 
     $recentExits = 0;
     $stopLossExits = 0;
     $takeProfitExits = 0;
+    $oldestOpenPositionMinutes = 0;
+    $positionsOver30m = 0;
+    $positionsOver60m = 0;
+    $positionsOver120m = 0;
     if (!empty($anchorRow['max_occurred_at'])) {
         $exitWindow = dashboard_fetch_one(
             $pdo,
@@ -751,11 +755,44 @@ function dashboard_build_binance_technical_position_pressure_summary(PDO $pdo): 
         $recentExits = (int) ($exitWindow['recent_exits'] ?? 0);
         $stopLossExits = (int) ($exitWindow['stop_loss_exits'] ?? 0);
         $takeProfitExits = (int) ($exitWindow['take_profit_exits'] ?? 0);
+
+        if (dashboard_table_has_column($pdo, 'venue_positions', 'opened_at')) {
+            $ageWindow = dashboard_fetch_one(
+                $pdo,
+                "
+                SELECT
+                    COALESCE(MAX(MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0)), 0) AS oldest_open_position_minutes,
+                    COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 30 THEN 1 ELSE 0 END), 0) AS positions_over_30m,
+                    COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 60 THEN 1 ELSE 0 END), 0) AS positions_over_60m,
+                    COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 120 THEN 1 ELSE 0 END), 0) AS positions_over_120m
+                FROM venue_positions
+                WHERE status = 'OPEN'
+                  AND venue IN ('binance_futures', 'binance_spot')
+                  AND opened_at IS NOT NULL
+                ",
+                [
+                    $anchorRow['max_occurred_at'],
+                    $anchorRow['max_occurred_at'],
+                    $anchorRow['max_occurred_at'],
+                    $anchorRow['max_occurred_at'],
+                ]
+            ) ?? [
+                'oldest_open_position_minutes' => 0,
+                'positions_over_30m' => 0,
+                'positions_over_60m' => 0,
+                'positions_over_120m' => 0,
+            ];
+            $oldestOpenPositionMinutes = max(0, (int) round((float) ($ageWindow['oldest_open_position_minutes'] ?? 0.0)));
+            $positionsOver30m = max(0, (int) ($ageWindow['positions_over_30m'] ?? 0));
+            $positionsOver60m = max(0, (int) ($ageWindow['positions_over_60m'] ?? 0));
+            $positionsOver120m = max(0, (int) ($ageWindow['positions_over_120m'] ?? 0));
+        }
     }
 
     $maxOpenPositionsRejects = 0;
     $maxTotalPositionUsdRejects = 0;
     $maxOrderUsdRejects = 0;
+    $legacyMaxPositionExceededRejects = 0;
     $sizedDownEntries = 0;
     foreach (dashboard_fetch_recent_binance_technical_rows($pdo) as $row) {
         $inputs = dashboard_decode_inputs_json($row['inputs_json'] ?? null);
@@ -767,6 +804,8 @@ function dashboard_build_binance_technical_position_pressure_summary(PDO $pdo): 
                     $maxTotalPositionUsdRejects++;
                 } elseif ($reason === 'max_order_usd_exceeded') {
                     $maxOrderUsdRejects++;
+                } elseif ($reason === 'max_position_exceeded') {
+                    $legacyMaxPositionExceededRejects++;
                 }
             }
         }
@@ -782,9 +821,14 @@ function dashboard_build_binance_technical_position_pressure_summary(PDO $pdo): 
         'recent_exits_60m' => $recentExits,
         'stop_loss_exits_60m' => $stopLossExits,
         'take_profit_exits_60m' => $takeProfitExits,
+        'oldest_open_position_minutes' => $oldestOpenPositionMinutes,
+        'positions_over_30m' => $positionsOver30m,
+        'positions_over_60m' => $positionsOver60m,
+        'positions_over_120m' => $positionsOver120m,
         'max_open_positions_rejects' => $maxOpenPositionsRejects,
         'max_total_position_usd_rejects' => $maxTotalPositionUsdRejects,
         'max_order_usd_rejects' => $maxOrderUsdRejects,
+        'legacy_max_position_exceeded_rejects' => $legacyMaxPositionExceededRejects,
         'sized_down_entries' => $sizedDownEntries,
     ];
 }

@@ -560,6 +560,10 @@ def _summarize_binance_technical_position_pressure(cursor: sqlite3.Cursor, rows)
     recent_exits_60m = 0
     stop_loss_exits_60m = 0
     take_profit_exits_60m = 0
+    oldest_open_position_minutes = 0
+    positions_over_30m = 0
+    positions_over_60m = 0
+    positions_over_120m = 0
     if anchor:
         exit_row = cursor.execute(
             """
@@ -579,10 +583,30 @@ def _summarize_binance_technical_position_pressure(cursor: sqlite3.Cursor, rows)
             recent_exits_60m = int(exit_row["recent_exits"] or 0)
             stop_loss_exits_60m = int(exit_row["stop_loss_exits"] or 0)
             take_profit_exits_60m = int(exit_row["take_profit_exits"] or 0)
+        age_row = cursor.execute(
+            """
+            SELECT
+                COALESCE(MAX(MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0)), 0) AS oldest_open_position_minutes,
+                COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 30 THEN 1 ELSE 0 END), 0) AS positions_over_30m,
+                COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 60 THEN 1 ELSE 0 END), 0) AS positions_over_60m,
+                COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 120 THEN 1 ELSE 0 END), 0) AS positions_over_120m
+            FROM venue_positions
+            WHERE status = 'OPEN'
+              AND venue IN ('binance_futures', 'binance_spot')
+              AND opened_at IS NOT NULL
+            """,
+            (anchor, anchor, anchor, anchor),
+        ).fetchone()
+        if age_row:
+            oldest_open_position_minutes = max(0, int(round(float(age_row["oldest_open_position_minutes"] or 0.0))))
+            positions_over_30m = max(0, int(age_row["positions_over_30m"] or 0))
+            positions_over_60m = max(0, int(age_row["positions_over_60m"] or 0))
+            positions_over_120m = max(0, int(age_row["positions_over_120m"] or 0))
 
     max_open_positions_rejects = 0
     max_total_position_usd_rejects = 0
     max_order_usd_rejects = 0
+    legacy_max_position_exceeded_rejects = 0
     sized_down_entries = 0
     for row in rows or []:
         action, reason, inputs = _technical_row_parts(row)
@@ -594,6 +618,8 @@ def _summarize_binance_technical_position_pressure(cursor: sqlite3.Cursor, rows)
                     max_total_position_usd_rejects += 1
                 elif reason_part == "max_order_usd_exceeded":
                     max_order_usd_rejects += 1
+                elif reason_part == "max_position_exceeded":
+                    legacy_max_position_exceeded_rejects += 1
         if action in {"decision", "execute"} and inputs.get("position_capacity_sized_down"):
             sized_down_entries += 1
 
@@ -604,9 +630,14 @@ def _summarize_binance_technical_position_pressure(cursor: sqlite3.Cursor, rows)
         "recent_exits_60m": recent_exits_60m,
         "stop_loss_exits_60m": stop_loss_exits_60m,
         "take_profit_exits_60m": take_profit_exits_60m,
+        "oldest_open_position_minutes": oldest_open_position_minutes,
+        "positions_over_30m": positions_over_30m,
+        "positions_over_60m": positions_over_60m,
+        "positions_over_120m": positions_over_120m,
         "max_open_positions_rejects": max_open_positions_rejects,
         "max_total_position_usd_rejects": max_total_position_usd_rejects,
         "max_order_usd_rejects": max_order_usd_rejects,
+        "legacy_max_position_exceeded_rejects": legacy_max_position_exceeded_rejects,
         "sized_down_entries": sized_down_entries,
     }
 

@@ -1130,9 +1130,14 @@ function updatePanels(payload) {
         { label: 'Son 60 dk cikis', value: formatNumber(technicalPositionPressure.recent_exits_60m, 0) },
         { label: 'Stop-loss cikis', value: formatNumber(technicalPositionPressure.stop_loss_exits_60m, 0) },
         { label: 'Take-profit cikis', value: formatNumber(technicalPositionPressure.take_profit_exits_60m, 0) },
+        { label: 'En eski acik pozisyon (dk)', value: formatNumber(technicalPositionPressure.oldest_open_position_minutes, 0) },
+        { label: '30 dk ustu pozisyon', value: formatNumber(technicalPositionPressure.positions_over_30m, 0) },
+        { label: '60 dk ustu pozisyon', value: formatNumber(technicalPositionPressure.positions_over_60m, 0) },
+        { label: '120 dk ustu pozisyon', value: formatNumber(technicalPositionPressure.positions_over_120m, 0) },
         { label: 'Max open positions red', value: formatNumber(technicalPositionPressure.max_open_positions_rejects, 0) },
         { label: 'Max total position red', value: formatNumber(technicalPositionPressure.max_total_position_usd_rejects, 0) },
         { label: 'Max order red', value: formatNumber(technicalPositionPressure.max_order_usd_rejects, 0) },
+        { label: 'Legacy max position red', value: formatNumber(technicalPositionPressure.legacy_max_position_exceeded_rejects, 0) },
         { label: 'Boyutu kucultulen giris', value: formatNumber(technicalPositionPressure.sized_down_entries, 0) }
     ]);
 

@@ -412,7 +412,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 0,
                 '[]',
                 0,
-                '{"symbol":"BTC/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true,"microstructure_recovery_applied":true,"spread_recovery_applied":true,"microstructure_recovery_v2_applied":true,"spread_recovery_v2_applied":true,"force_recovery_candidate":true,"effective_spread_cap_stage":"microstructure_recovery_v2","effective_spread_normalizer":0.018,"pre_microstructure_score":0.48,"post_microstructure_score":0.56,"pre_spread_recovery_score":0.48,"post_spread_recovery_score":0.56,"pre_final_score_recovery_score":0.52,"post_final_score_recovery_score":0.52,"score_gap_to_threshold":0.10,"near_threshold_candidate":true,"score_recovery_candidate":false,"score_recovery_passed":false,"final_score_recovery_applied":false,"score_recovery_quality_gate_passed":false,"score_recovery_macd_floor":0.18,"score_recovery_momentum_floor":0.18,"score_recovery_volume_floor":0.22,"final_score_recovery_bonus":0.0,"final_score_recovery_reason":"not_applicable","score_blocker_labels":["macd_drag","momentum_drag","multi_factor_drag"],"rsi_component":0.6,"macd_component":0.2,"momentum_component":0.1,"volume_component":0.5,"microstructure_component":0.3,"effective_min_score":0.62,"microstructure_candidate_floor":0.42,"force_min_score":0.5,"macd_normalizer":0.0022,"momentum_normalizer":0.008,"volume_ratio_normalizer":1.2,"score_normalization_stage":"paper_technical_v7","base_trade_size":100.0,"effective_trade_size":100.0,"remaining_position_capacity_usd":400.0,"position_capacity_sized_down":false,"open_position_count_at_decision":1,"snapshot_quality":"trusted_orderbook_book","spread_source":"orderbook","bid_source":"orderbook.bid","ask_source":"orderbook.ask","orderbook_fallback_used":true,"orderbook_repriced":true}',
+                '{"symbol":"BTC/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true,"microstructure_recovery_applied":true,"spread_recovery_applied":true,"microstructure_recovery_v2_applied":true,"spread_recovery_v2_applied":true,"force_recovery_candidate":true,"effective_spread_cap_stage":"microstructure_recovery_v2","effective_spread_normalizer":0.018,"pre_microstructure_score":0.48,"post_microstructure_score":0.56,"pre_spread_recovery_score":0.48,"post_spread_recovery_score":0.56,"pre_final_score_recovery_score":0.52,"post_final_score_recovery_score":0.52,"score_gap_to_threshold":0.10,"near_threshold_candidate":true,"score_recovery_candidate":false,"score_recovery_passed":false,"final_score_recovery_applied":false,"score_recovery_quality_gate_passed":false,"score_recovery_macd_floor":0.18,"score_recovery_momentum_floor":0.15,"score_recovery_volume_floor":0.18,"final_score_recovery_bonus":0.0,"final_score_recovery_reason":"not_applicable","score_blocker_labels":["macd_drag","momentum_drag","multi_factor_drag"],"rsi_component":0.6,"macd_component":0.2,"momentum_component":0.1,"volume_component":0.5,"microstructure_component":0.3,"effective_min_score":0.62,"microstructure_candidate_floor":0.42,"force_min_score":0.5,"macd_normalizer":0.002,"momentum_normalizer":0.0065,"volume_ratio_normalizer":1.05,"score_normalization_stage":"paper_technical_v8","base_trade_size":100.0,"effective_trade_size":100.0,"remaining_position_capacity_usd":400.0,"position_capacity_sized_down":false,"open_position_count_at_decision":1,"snapshot_quality":"trusted_orderbook_book","spread_source":"orderbook","bid_source":"orderbook.bid","ask_source":"orderbook.ask","orderbook_fallback_used":true,"orderbook_repriced":true}',
             ),
             (
                 102,
@@ -434,7 +434,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 0,
                 '[]',
                 0,
-                '{"symbol":"ETH/USDT:USDT","signal_direction":"SHORT","force_sample":true,"technical_recovery_applied":true,"alignment_recovery_applied":true,"technical_alignment_recovered":true,"force_recovery_candidate":true,"pre_microstructure_score":0.50,"post_microstructure_score":0.50,"pre_spread_recovery_score":0.50,"post_spread_recovery_score":0.50,"pre_final_score_recovery_score":0.50,"post_final_score_recovery_score":0.56,"score_gap_to_threshold":0.0,"near_threshold_candidate":true,"score_recovery_candidate":true,"score_recovery_passed":true,"final_score_recovery_applied":true,"score_recovery_quality_gate_passed":true,"score_recovery_macd_floor":0.18,"score_recovery_momentum_floor":0.18,"score_recovery_volume_floor":0.22,"final_score_recovery_bonus":0.06,"final_score_recovery_reason":"near_threshold_components_ok","score_blocker_labels":[],"rsi_component":0.8,"macd_component":0.7,"momentum_component":0.6,"volume_component":0.5,"microstructure_component":0.9,"effective_min_score":0.54,"microstructure_candidate_floor":0.42,"macd_normalizer":0.0022,"momentum_normalizer":0.008,"volume_ratio_normalizer":1.2,"score_normalization_stage":"paper_technical_v7","base_trade_size":100.0,"effective_trade_size":50.0,"remaining_position_capacity_usd":50.0,"position_capacity_sized_down":true,"open_position_count_at_decision":1,"snapshot_quality":"trusted_info_book","spread_source":"info_book","bid_source":"info.bidPrice","ask_source":"info.askPrice","orderbook_fallback_used":false,"orderbook_repriced":false}',
+                '{"symbol":"ETH/USDT:USDT","signal_direction":"SHORT","force_sample":true,"technical_recovery_applied":true,"alignment_recovery_applied":true,"technical_alignment_recovered":true,"force_recovery_candidate":true,"pre_microstructure_score":0.50,"post_microstructure_score":0.50,"pre_spread_recovery_score":0.50,"post_spread_recovery_score":0.50,"pre_final_score_recovery_score":0.50,"post_final_score_recovery_score":0.56,"score_gap_to_threshold":0.0,"near_threshold_candidate":true,"score_recovery_candidate":true,"score_recovery_passed":true,"final_score_recovery_applied":true,"score_recovery_quality_gate_passed":true,"score_recovery_macd_floor":0.18,"score_recovery_momentum_floor":0.15,"score_recovery_volume_floor":0.18,"final_score_recovery_bonus":0.06,"final_score_recovery_reason":"near_threshold_components_ok","score_blocker_labels":[],"rsi_component":0.8,"macd_component":0.7,"momentum_component":0.6,"volume_component":0.5,"microstructure_component":0.9,"effective_min_score":0.54,"microstructure_candidate_floor":0.42,"macd_normalizer":0.002,"momentum_normalizer":0.0065,"volume_ratio_normalizer":1.05,"score_normalization_stage":"paper_technical_v8","base_trade_size":100.0,"effective_trade_size":50.0,"remaining_position_capacity_usd":50.0,"position_capacity_sized_down":true,"open_position_count_at_decision":1,"snapshot_quality":"trusted_info_book","spread_source":"info_book","bid_source":"info.bidPrice","ask_source":"info.askPrice","orderbook_fallback_used":false,"orderbook_repriced":false}',
             ),
             (
                 103,
@@ -456,7 +456,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 0,
                 '[]',
                 0,
-                '{"symbol":"SOL/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true,"pre_final_score_recovery_score":0.71,"post_final_score_recovery_score":0.71,"score_gap_to_threshold":0.0,"near_threshold_candidate":false,"score_recovery_candidate":false,"score_recovery_passed":false,"final_score_recovery_applied":false,"score_recovery_quality_gate_passed":true,"score_recovery_macd_floor":0.18,"score_recovery_momentum_floor":0.18,"score_recovery_volume_floor":0.22,"score_blocker_labels":[],"rsi_component":0.9,"macd_component":0.8,"momentum_component":0.7,"volume_component":0.6,"microstructure_component":0.8,"effective_min_score":0.54,"macd_normalizer":0.0022,"momentum_normalizer":0.008,"volume_ratio_normalizer":1.2,"score_normalization_stage":"paper_technical_v7","base_trade_size":100.0,"effective_trade_size":40.0,"remaining_position_capacity_usd":40.0,"position_capacity_sized_down":true,"open_position_count_at_decision":1,"snapshot_quality":"trusted_ticker_book","spread_source":"ticker_book","bid_source":"ticker.bid","ask_source":"ticker.ask","orderbook_fallback_used":false,"orderbook_repriced":false}',
+                '{"symbol":"SOL/USDT:USDT","signal_direction":"LONG","force_sample":false,"technical_recovery_applied":true,"pre_final_score_recovery_score":0.71,"post_final_score_recovery_score":0.71,"score_gap_to_threshold":0.0,"near_threshold_candidate":false,"score_recovery_candidate":false,"score_recovery_passed":false,"final_score_recovery_applied":false,"score_recovery_quality_gate_passed":true,"score_recovery_macd_floor":0.18,"score_recovery_momentum_floor":0.15,"score_recovery_volume_floor":0.18,"score_blocker_labels":[],"rsi_component":0.9,"macd_component":0.8,"momentum_component":0.7,"volume_component":0.6,"microstructure_component":0.8,"effective_min_score":0.54,"macd_normalizer":0.002,"momentum_normalizer":0.0065,"volume_ratio_normalizer":1.05,"score_normalization_stage":"paper_technical_v8","base_trade_size":100.0,"effective_trade_size":40.0,"remaining_position_capacity_usd":40.0,"position_capacity_sized_down":true,"open_position_count_at_decision":1,"snapshot_quality":"trusted_ticker_book","spread_source":"ticker_book","bid_source":"ticker.bid","ask_source":"ticker.ask","orderbook_fallback_used":false,"orderbook_repriced":false}',
             ),
             (
                 104,
@@ -479,6 +479,28 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 '[]',
                 0,
                 '{"symbol":"BTC/USDT:USDT","snapshot_quality":"invalid_missing_bid_ask","orderbook_fallback_used":true,"orderbook_repriced":false}',
+            ),
+            (
+                106,
+                '2026-04-09 12:13:30',
+                'binance_futures',
+                'ETH/USDT:USDT',
+                'CRYPTO',
+                'binance_technical_momentum',
+                'binance_technical_sampling',
+                'binance_technical_momentum',
+                'reject',
+                'max_position_exceeded',
+                0.0,
+                0.62,
+                50.0,
+                0.0,
+                'technical',
+                0,
+                0,
+                '[]',
+                0,
+                '{"symbol":"ETH/USDT:USDT"}',
             ),
             (
                 105,
@@ -545,7 +567,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
 
     assert payload['summary'] == {
         'decisions': 1,
-        'rejects': 2,
+        'rejects': 3,
         'executes': 1,
         'long_signals': 2,
         'short_signals': 1,
@@ -556,6 +578,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
     assert technical_breakdown['futures_spread_wide'] == 1
     assert technical_breakdown['technical_alignment_weak'] == 1
     assert technical_breakdown['futures_bid_ask_missing'] == 1
+    assert technical_breakdown['max_position_exceeded'] == 1
     assert payload['gate_funnel'] == {
         'scanned_symbols': 3,
         'directional_signals': 3,
@@ -597,9 +620,9 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'avg_momentum_component': pytest.approx(0.4667),
         'avg_volume_component': pytest.approx(0.5333),
         'avg_microstructure_component': pytest.approx(0.6667),
-        'avg_macd_normalizer': pytest.approx(0.0022),
-        'avg_momentum_normalizer': pytest.approx(0.0080),
-        'avg_volume_ratio_normalizer': pytest.approx(1.2),
+        'avg_macd_normalizer': pytest.approx(0.0020),
+        'avg_momentum_normalizer': pytest.approx(0.0065),
+        'avg_volume_ratio_normalizer': pytest.approx(1.05),
         'avg_effective_min_score': pytest.approx(0.5667),
         'avg_final_score': pytest.approx(0.5967),
     }
@@ -616,9 +639,14 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'recent_exits_60m': 1,
         'stop_loss_exits_60m': 0,
         'take_profit_exits_60m': 1,
+        'oldest_open_position_minutes': pytest.approx(140.0, abs=1.0),
+        'positions_over_30m': 1,
+        'positions_over_60m': 1,
+        'positions_over_120m': 1,
         'max_open_positions_rejects': 0,
         'max_total_position_usd_rejects': 0,
         'max_order_usd_rejects': 0,
+        'legacy_max_position_exceeded_rejects': 1,
         'sized_down_entries': 2,
     }
     score_blockers = {row['reason']: row['count'] for row in payload['score_blocker_breakdown']}
@@ -751,6 +779,8 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Skor gap ozeti' in html
     assert 'Pozisyon Baskisi ve Exit Akisi' in html
     assert 'Ortalama MACD normalizer' in html
+    assert 'En eski acik pozisyon (dk)' in html
+    assert 'Legacy max position red' in html
     assert 'Ortalama momentum normalizer' in html
     assert 'Ortalama hacim normalizer' in html
     assert 'Teknik Skor Blocker Dagilimi' in html
