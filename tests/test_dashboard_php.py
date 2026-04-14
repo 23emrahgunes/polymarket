@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from datetime import datetime, timedelta, timezone
 import shutil
 import signal
 import socket
@@ -259,6 +260,13 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     response = _request(dashboard_server.base_url + '/api.php', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD))
     payload = json.loads(response.read().decode('utf-8'))
 
+    assert 'dashboard_tab_help' in payload
+    assert 'dashboard_glossary' in payload
+    assert 'binance_technical_fresh_summary' in payload
+    assert 'binance_technical_fresh_gate_funnel' in payload
+    assert 'binance_technical_fresh_recovery_summary' in payload
+    assert 'binance_technical_fresh_score_gap_summary' in payload
+    assert 'binance_technical_fresh_reject_breakdown' in payload
     assert payload['service']['name'] == 'ghost-trader'
     assert payload['runtime_summary']['tracked_whales'] == 3
     assert payload['runtime_summary']['total_trades'] == 2
@@ -389,12 +397,21 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
 def test_dashboard_api_returns_binance_technical_sections(dashboard_server: DashboardServer, tmp_path: Path):
     conn = sqlite3.connect(dashboard_server.db_path)
     cur = conn.cursor()
+    now_utc = datetime.now(timezone.utc).replace(microsecond=0)
+    t101 = (now_utc - timedelta(minutes=25)).strftime('%Y-%m-%d %H:%M:%S')
+    t102 = (now_utc - timedelta(minutes=24)).strftime('%Y-%m-%d %H:%M:%S')
+    t103 = (now_utc - timedelta(minutes=23)).strftime('%Y-%m-%d %H:%M:%S')
+    t104 = (now_utc - timedelta(minutes=22)).strftime('%Y-%m-%d %H:%M:%S')
+    t106 = (now_utc - timedelta(minutes=21)).strftime('%Y-%m-%d %H:%M:%S')
+    t105 = (now_utc - timedelta(minutes=10)).strftime('%Y-%m-%d %H:%M:%S')
+    opened_at = (now_utc - timedelta(minutes=140)).strftime('%Y-%m-%d %H:%M:%S')
+    cur.execute('UPDATE venue_positions SET opened_at = ? WHERE id = 1', (opened_at,))
     cur.executemany(
         'INSERT INTO decision_audit VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
             (
                 101,
-                '2026-04-09 12:10:00',
+                t101,
                 'binance_futures',
                 'BTC/USDT:USDT',
                 'CRYPTO',
@@ -416,7 +433,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
             ),
             (
                 102,
-                '2026-04-09 12:11:00',
+                t102,
                 'binance_futures',
                 'ETH/USDT:USDT',
                 'CRYPTO',
@@ -438,7 +455,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
             ),
             (
                 103,
-                '2026-04-09 12:12:00',
+                t103,
                 'binance_futures',
                 'SOL/USDT:USDT',
                 'CRYPTO',
@@ -460,7 +477,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
             ),
             (
                 104,
-                '2026-04-09 12:13:00',
+                t104,
                 'binance_futures',
                 'BTC/USDT:USDT',
                 'CRYPTO',
@@ -482,7 +499,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
             ),
             (
                 106,
-                '2026-04-09 12:13:30',
+                t106,
                 'binance_futures',
                 'ETH/USDT:USDT',
                 'CRYPTO',
@@ -504,7 +521,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
             ),
             (
                 105,
-                '2026-04-09 12:20:00',
+                t105,
                 'binance_futures',
                 'SOL/USDT:USDT',
                 'CRYPTO',
@@ -540,16 +557,23 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 "require 'dashboard/public/presenter.php';",
                 "$warnings = [];",
                 "$pdo = dashboard_open_db($warnings);",
+                "$rows = dashboard_fetch_recent_binance_technical_rows($pdo);",
+                "$freshRows = dashboard_filter_rows_within_minutes($rows, 60);",
                 "echo json_encode([",
-                "    'summary' => dashboard_build_binance_technical_summary($pdo),",
-                "    'gate_funnel' => dashboard_build_binance_technical_gate_funnel($pdo),",
-                "    'recovery_summary' => dashboard_build_binance_technical_recovery_summary($pdo),",
-                "    'snapshot_summary' => dashboard_build_binance_futures_snapshot_summary($pdo),",
-                "    'component_summary' => dashboard_build_binance_technical_score_component_summary($pdo),",
-                "    'gap_summary' => dashboard_build_binance_technical_score_gap_summary($pdo),",
-                "    'position_pressure_summary' => dashboard_build_binance_technical_position_pressure_summary($pdo),",
-                "    'score_blocker_breakdown' => dashboard_build_binance_technical_score_blocker_breakdown($pdo),",
-                "    'reject_breakdown' => dashboard_build_binance_technical_reject_breakdown($pdo),",
+                "    'summary' => dashboard_build_binance_technical_summary_from_rows($rows),",
+                "    'fresh_summary' => dashboard_build_binance_technical_summary_from_rows($freshRows),",
+                "    'gate_funnel' => dashboard_build_binance_technical_gate_funnel_from_rows($rows),",
+                "    'fresh_gate_funnel' => dashboard_build_binance_technical_gate_funnel_from_rows($freshRows),",
+                "    'recovery_summary' => dashboard_build_binance_technical_recovery_summary_from_rows($rows),",
+                "    'fresh_recovery_summary' => dashboard_build_binance_technical_recovery_summary_from_rows($freshRows),",
+                "    'snapshot_summary' => dashboard_build_binance_futures_snapshot_summary_from_rows($rows),",
+                "    'component_summary' => dashboard_build_binance_technical_score_component_summary_from_rows($rows),",
+                "    'gap_summary' => dashboard_build_binance_technical_score_gap_summary_from_rows($rows),",
+                "    'fresh_gap_summary' => dashboard_build_binance_technical_score_gap_summary_from_rows($freshRows),",
+                "    'position_pressure_summary' => dashboard_build_binance_technical_position_pressure_summary($pdo, [], $rows),",
+                "    'score_blocker_breakdown' => dashboard_build_binance_technical_score_blocker_breakdown_from_rows($rows),",
+                "    'reject_breakdown' => dashboard_build_binance_technical_reject_breakdown_from_rows($rows),",
+                "    'fresh_reject_breakdown' => dashboard_build_binance_technical_reject_breakdown_from_rows($freshRows),",
                 "], JSON_THROW_ON_ERROR);",
             ]
         ),
@@ -573,6 +597,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'short_signals': 1,
         'forced_samples': 1,
     }
+    assert payload['fresh_summary'] == payload['summary']
     technical_breakdown = {row['reason']: row['count'] for row in payload['reject_breakdown']}
     assert technical_breakdown['score_below_threshold'] == 1
     assert technical_breakdown['futures_spread_wide'] == 1
@@ -588,6 +613,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'decisions': 1,
         'executes': 1,
     }
+    assert payload['fresh_gate_funnel'] == payload['gate_funnel']
     assert payload['recovery_summary'] == {
         'recovery_applied_count': 3,
         'alignment_recovery_hits': 1,
@@ -604,6 +630,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'score_recovery_passes': 1,
         'active_symbol_count': 3,
     }
+    assert payload['fresh_recovery_summary'] == payload['recovery_summary']
     assert payload['snapshot_summary'] == {
         'trusted_ticker_book_hits': 1,
         'trusted_info_book_hits': 1,
@@ -632,6 +659,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'near_threshold_count': 1,
         'deep_below_threshold_count': 0,
     }
+    assert payload['fresh_gap_summary'] == payload['gap_summary']
     assert payload['position_pressure_summary'] == {
         'open_positions': 1,
         'open_notional_usd': pytest.approx(100.0),
@@ -639,7 +667,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'recent_exits_60m': 1,
         'stop_loss_exits_60m': 0,
         'take_profit_exits_60m': 1,
-        'oldest_open_position_minutes': pytest.approx(140.0, abs=1.0),
+        'oldest_open_position_minutes': pytest.approx(130.0, abs=1.0),
         'positions_over_30m': 1,
         'positions_over_60m': 1,
         'positions_over_120m': 1,
@@ -648,11 +676,17 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'max_order_usd_rejects': 0,
         'legacy_max_position_exceeded_rejects': 1,
         'sized_down_entries': 2,
+        'stale_review_candidates_90m': 0,
+        'stale_exit_candidates_120m': 0,
+        'stale_exit_executed': 0,
+        'stale_exit_skipped_alignment_support': 0,
+        'stale_exit_skipped_profit_protection': 0,
     }
     score_blockers = {row['reason']: row['count'] for row in payload['score_blocker_breakdown']}
     assert score_blockers['macd_drag'] == 1
     assert score_blockers['momentum_drag'] == 1
     assert score_blockers['multi_factor_drag'] == 1
+    assert payload['fresh_reject_breakdown'] == payload['reject_breakdown']
 
 
 def test_dashboard_prefers_runtime_status_snapshot_when_present(dashboard_server: DashboardServer):
@@ -767,9 +801,18 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Gated Whale-Copy Red Nedenleri' in html
     assert 'Relaxed Gate Sonrasi Kalan Red Nedenleri' in html
     assert 'Henüz kapanmış whale geçmişi yok; nötr güven.' in html
+    assert 'Genel Bakis' in html
+    assert 'Polymarket' in html
+    assert 'Binance Teknik' in html
+    assert 'Pozisyonlar ve Risk' in html
+    assert 'Teshis ve Log' in html
+    assert 'Bu sekme neyi gosteriyor?' in html
     assert 'Binance teknik sampling' in html
+    assert 'Taze teknik ozet (son 60 dk)' in html
     assert 'Binance teknik gate funnel' in html
+    assert 'Taze teknik gate funnel' in html
     assert 'Binance teknik recovery ozeti' in html
+    assert 'Taze teknik recovery ozeti' in html
     assert 'Futures snapshot ozeti' in html
     assert 'Mikro yapi recovery hit' in html
     assert 'Mikro yapi v2 hit' in html
@@ -777,10 +820,15 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Final skor recovery hit' in html
     assert 'Skor bilesen ozeti' in html
     assert 'Skor gap ozeti' in html
+    assert 'Taze teknik skor gap' in html
+    assert 'Taze Teknik Red Nedenleri' in html
     assert 'Pozisyon Baskisi ve Exit Akisi' in html
     assert 'Ortalama MACD normalizer' in html
     assert 'En eski acik pozisyon (dk)' in html
     assert 'Legacy max position red' in html
+    assert 'Stale review 90 dk' in html
+    assert 'Stale exit 120 dk' in html
+    assert 'Sure baskisiyla cikis' in html
     assert 'Ortalama momentum normalizer' in html
     assert 'Ortalama hacim normalizer' in html
     assert 'Teknik Skor Blocker Dagilimi' in html

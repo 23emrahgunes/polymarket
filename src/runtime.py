@@ -164,6 +164,12 @@ class GhostBotRuntime:
         self.technical_enabled = bool(settings.binance_technical_paper_enabled and self.sample_kind == "live_paper")
         self.technical_force_last_ts = 0.0
         self.binance_technical_symbol_scope: Tuple[str, ...] = DEFAULT_BINANCE_TECHNICAL_SYMBOLS
+        self.technical_stale_review_candidates_90m = 0
+        self.technical_stale_exit_candidates_120m = 0
+        self.technical_stale_exit_executed = 0
+        self.technical_stale_exit_skipped_alignment_support = 0
+        self.technical_stale_exit_skipped_profit_protection = 0
+        self.technical_stale_outcomes: Dict[str, str] = {}
 
         self.scanner: Optional[MarketScanner] = None
         self.db: Optional[Database] = None
@@ -468,6 +474,214 @@ class GhostBotRuntime:
             await self.binance_futures_venue.sync_account_state(self.scanner)
         if self.binance_spot_venue is not None and self.settings.venue_configs["binance_spot"].enabled:
             await self.binance_spot_venue.sync_account_state(self.scanner)
+        await self._review_stale_binance_technical_positions()
+
+    @staticmethod
+    def _parse_sqlite_utc(raw_value: object) -> Optional[datetime]:
+        if raw_value in (None, ""):
+            return None
+        text = str(raw_value).strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _position_age_minutes(self, position: Dict) -> Optional[int]:
+        opened_at = self._parse_sqlite_utc(position.get("opened_at"))
+        if opened_at is None:
+            return None
+        now_utc = datetime.now(timezone.utc)
+        return max(0, int((now_utc - opened_at).total_seconds() // 60))
+
+    @staticmethod
+    def _position_unrealized_pnl_pct(position: Dict) -> float:
+        try:
+            notional = float(position.get("notional_usd") or 0.0)
+            if notional <= 0:
+                return 0.0
+            unrealized = float(position.get("unrealized_pnl") or 0.0)
+            return (unrealized / notional) * 100.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _expected_position_direction(self, position: Dict) -> str:
+        side = str(position.get("side") or "").upper()
+        if side in {"LONG", "SHORT"}:
+            return side
+        if side in {"BUY", "YES"}:
+            return "LONG"
+        if side in {"SELL", "NO"}:
+            return "SHORT"
+        return side
+
+    def _resolve_futures_symbol_for_technical_position(self, position: Dict) -> str:
+        symbol = str(position.get("symbol_or_market_id") or "").strip()
+        if not symbol:
+            return ""
+        venue = str(position.get("venue") or "").strip().lower()
+        if venue == "binance_futures":
+            return symbol
+        base_symbol = symbol.split("/")[0].upper()
+        return BINANCE_FUTURES_MAPPINGS.get(base_symbol, base_symbol)
+
+    async def _score_binance_technical_symbol_for_stale_review(self, futures_symbol: str):
+        if self.scanner is None:
+            return None, None
+
+        futures_snapshot = await self.scanner.get_futures_market_snapshot(futures_symbol)
+        if not futures_snapshot.get("is_valid"):
+            return None, futures_snapshot
+
+        futures_history = await self.scanner.get_futures_historical_data(
+            futures_symbol,
+            timeframe=self.settings.binance_technical_timeframe,
+            limit=200,
+        )
+        closes = futures_history["close"] if not futures_history.empty and "close" in futures_history else pd.Series(dtype=float)
+        volumes = futures_history["volume"] if not futures_history.empty and "volume" in futures_history else pd.Series(dtype=float)
+        signal = self.technical_signal_engine.score(
+            symbol=futures_symbol,
+            closes=closes,
+            volumes=volumes,
+            spread_pct=float(futures_snapshot.get("spread_pct") or 0.0),
+            volume_24h=float(futures_snapshot.get("volume_24h") or 0.0),
+            min_score=self.settings.binance_technical_min_score,
+            timeframe=self.settings.binance_technical_timeframe,
+            paper_recovery=True,
+            force_sample_enabled=False,
+            force_min_score=self.settings.binance_technical_force_min_score,
+        )
+        return signal, futures_snapshot
+
+    def _record_stale_outcome(self, position_key: str, outcome: str) -> None:
+        previous = self.technical_stale_outcomes.get(position_key)
+        if previous == outcome:
+            return
+        self.technical_stale_outcomes[position_key] = outcome
+        if outcome == "executed":
+            self.technical_stale_exit_executed += 1
+        elif outcome == "skip_alignment":
+            self.technical_stale_exit_skipped_alignment_support += 1
+        elif outcome == "skip_profit":
+            self.technical_stale_exit_skipped_profit_protection += 1
+
+    async def _review_stale_binance_technical_positions(self) -> None:
+        if (
+            not self.technical_enabled
+            or self.db is None
+            or self.scanner is None
+            or self.sample_kind != "live_paper"
+        ):
+            self.technical_stale_review_candidates_90m = 0
+            self.technical_stale_exit_candidates_120m = 0
+            self.technical_stale_outcomes = {}
+            return
+
+        open_positions = []
+        for venue_id in ("binance_futures", "binance_spot"):
+            open_positions.extend(await self.db.get_open_positions(venue=venue_id))
+
+        current_keys: set[str] = set()
+        review_candidates_90m = 0
+        exit_candidates_120m = 0
+
+        for raw_position in open_positions:
+            position = dict(raw_position)
+            if (
+                str(position.get("strategy_profile") or "") != STRATEGY_PROFILE_BINANCE_TECHNICAL
+                or str(position.get("sample_kind") or "") != "live_paper"
+            ):
+                continue
+
+            position_id = position.get("id")
+            venue = str(position.get("venue") or "").strip().lower()
+            position_key = f"{venue}:{position_id}"
+            current_keys.add(position_key)
+
+            age_minutes = self._position_age_minutes(position)
+            if age_minutes is None or age_minutes < 90:
+                continue
+            review_candidates_90m += 1
+            if age_minutes < 120:
+                self.technical_stale_outcomes[position_key] = "candidate_90m"
+                continue
+
+            exit_candidates_120m += 1
+            unrealized_pnl_pct = self._position_unrealized_pnl_pct(position)
+            if unrealized_pnl_pct > 0.75:
+                self._record_stale_outcome(position_key, "skip_profit")
+                continue
+
+            futures_symbol = self._resolve_futures_symbol_for_technical_position(position)
+            if not futures_symbol:
+                continue
+
+            signal, futures_snapshot = await self._score_binance_technical_symbol_for_stale_review(futures_symbol)
+            if signal is None or futures_snapshot is None:
+                continue
+
+            expected_direction = self._expected_position_direction(position)
+            support_reasons = set(signal.reasons or [])
+            same_direction_supported = signal.should_trade and signal.direction == expected_direction
+            if same_direction_supported:
+                self._record_stale_outcome(position_key, "skip_alignment")
+                continue
+
+            if "technical_alignment_weak" not in support_reasons and "score_below_threshold" not in support_reasons:
+                continue
+
+            exit_price = float(futures_snapshot.get("mark_price") or futures_snapshot.get("last_price") or 0.0)
+            audit_inputs = {
+                "position_age_minutes": age_minutes,
+                "stale_review_candidate": True,
+                "stale_exit_candidate": True,
+                "stale_exit_triggered": True,
+                "stale_exit_reason": "stale_time_exit",
+                "stale_exit_alignment_support": False,
+                "stale_exit_profit_protected": False,
+                "stale_exit_signal_direction": signal.direction,
+                "stale_exit_signal_score": signal.score,
+                "stale_exit_signal_threshold": signal.threshold,
+                "stale_exit_signal_reasons": list(signal.reasons or []),
+                "stale_exit_symbol": futures_symbol,
+                "unrealized_pnl_pct": unrealized_pnl_pct,
+            }
+
+            if venue == "binance_futures" and self.binance_futures_venue is not None:
+                success, _ = await self.binance_futures_venue.place_exit_order(
+                    position["symbol_or_market_id"],
+                    exit_price=exit_price,
+                    reason="stale_time_exit",
+                    source="stale_exit_review",
+                    audit_inputs=audit_inputs,
+                )
+            elif venue == "binance_spot" and self.binance_spot_venue is not None:
+                spot_snapshot = await self.scanner.get_spot_market_snapshot(str(position.get("symbol_or_market_id") or ""))
+                if not spot_snapshot.get("is_valid"):
+                    continue
+                success, _ = await self.binance_spot_venue.place_exit_order(
+                    position["symbol_or_market_id"],
+                    exit_price=float(spot_snapshot.get("last_price") or 0.0),
+                    reason="stale_time_exit",
+                    source="stale_exit_review",
+                    audit_inputs=audit_inputs,
+                )
+            else:
+                success = False
+
+            if success:
+                self._record_stale_outcome(position_key, "executed")
+
+        self.technical_stale_review_candidates_90m = review_candidates_90m
+        self.technical_stale_exit_candidates_120m = exit_candidates_120m
+        self.technical_stale_outcomes = {
+            key: value for key, value in self.technical_stale_outcomes.items() if key in current_keys
+        }
 
     async def log_runtime_status(self, active_markets_count: int, cycle_duration: float) -> None:
         if self.db is None:
@@ -562,6 +776,11 @@ class GhostBotRuntime:
             "recent_gate_ready_candidates": whale_candidate_aggregation.get("recent_gate_ready_candidates", []),
             "binance_technical_active_symbol_count": len(self.binance_technical_symbol_scope),
             "binance_technical_symbol_scope": list(self.binance_technical_symbol_scope),
+            "technical_stale_review_candidates_90m": self.technical_stale_review_candidates_90m,
+            "technical_stale_exit_candidates_120m": self.technical_stale_exit_candidates_120m,
+            "technical_stale_exit_executed": self.technical_stale_exit_executed,
+            "technical_stale_exit_skipped_alignment_support": self.technical_stale_exit_skipped_alignment_support,
+            "technical_stale_exit_skipped_profit_protection": self.technical_stale_exit_skipped_profit_protection,
             "sampling_mode": sampling_mode,
             "sampling_closed_trades": self.sampling_closed_trades,
             "sampling_target_closed_trades": self.settings.paper_sampling_target_closed_trades,

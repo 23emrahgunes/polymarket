@@ -41,10 +41,79 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
             color: var(--text);
         }
         .shell { max-width: 1680px; margin: 0 auto; padding: 28px 18px 36px; }
-        .hero-card, .stat-card, .panel {
+        .hero-card, .stat-card, .panel, .tabs-shell {
             border: 1px solid var(--line);
             box-shadow: var(--shadow);
             backdrop-filter: blur(10px);
+        }
+        .tabs-shell {
+            background: rgba(7, 18, 28, 0.98);
+            border-radius: 18px;
+            padding: 14px;
+            margin-bottom: 18px;
+        }
+        .tabs-bar {
+            display: flex;
+            gap: 10px;
+            flex-wrap: nowrap;
+            overflow-x: auto;
+            padding-bottom: 6px;
+        }
+        .tab-button {
+            appearance: none;
+            border: 1px solid var(--line);
+            background: rgba(255, 255, 255, 0.02);
+            color: var(--muted);
+            border-radius: 999px;
+            padding: 10px 14px;
+            font: inherit;
+            font-size: 0.88rem;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+        }
+        .tab-button.active {
+            color: var(--text);
+            background: rgba(77, 199, 176, 0.16);
+            border-color: rgba(77, 199, 176, 0.32);
+        }
+        .tab-help-card {
+            margin-top: 12px;
+            border: 1px solid rgba(132, 181, 205, 0.12);
+            background: rgba(13, 29, 41, 0.9);
+            border-radius: 14px;
+            padding: 14px;
+        }
+        .tab-help-copy {
+            margin: 0 0 10px;
+            color: var(--muted);
+            line-height: 1.55;
+            font-size: 0.92rem;
+        }
+        .glossary-list {
+            display: grid;
+            gap: 8px;
+        }
+        .glossary-item {
+            border-top: 1px solid var(--line);
+            padding-top: 8px;
+        }
+        .glossary-item:first-child {
+            border-top: 0;
+            padding-top: 0;
+        }
+        .glossary-term {
+            display: block;
+            font-weight: 700;
+            margin-bottom: 3px;
+        }
+        .glossary-meaning {
+            color: var(--muted);
+            line-height: 1.5;
+            font-size: 0.9rem;
+        }
+        .is-hidden {
+            display: none !important;
         }
         .hero-card {
             background: linear-gradient(180deg, rgba(13, 27, 40, 0.95), rgba(9, 20, 30, 0.9));
@@ -236,10 +305,14 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #whale-copy-summary,
         #whale-copy-recovery-summary,
         #binance-technical-summary,
+        #binance-technical-fresh-summary,
         #binance-technical-gate-funnel,
+        #binance-technical-fresh-gate-funnel,
         #binance-technical-recovery-summary,
+        #binance-technical-fresh-recovery-summary,
         #binance-technical-score-component-summary,
         #binance-technical-score-gap-summary,
+        #binance-technical-fresh-score-gap-summary,
         #binance-technical-position-pressure-summary,
         #graph-discovery-summary,
         #whale-candidate-aggregation-summary,
@@ -247,6 +320,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #gated-reject-breakdown,
         #relaxed-gate-reject-breakdown,
         #binance-technical-reject-breakdown,
+        #binance-technical-fresh-reject-breakdown,
         #performance-snapshot,
         #sampling-reject-breakdown {
             border: 1px solid rgba(132, 181, 205, 0.12);
@@ -278,10 +352,14 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .subcard #whale-copy-summary,
         .subcard #whale-copy-recovery-summary,
         .subcard #binance-technical-summary,
+        .subcard #binance-technical-fresh-summary,
         .subcard #binance-technical-gate-funnel,
+        .subcard #binance-technical-fresh-gate-funnel,
         .subcard #binance-technical-recovery-summary,
+        .subcard #binance-technical-fresh-recovery-summary,
         .subcard #binance-technical-score-component-summary,
         .subcard #binance-technical-score-gap-summary,
+        .subcard #binance-technical-fresh-score-gap-summary,
         .subcard #binance-technical-position-pressure-summary,
         .subcard #graph-discovery-summary,
         .subcard #whale-candidate-aggregation-summary,
@@ -289,6 +367,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         .subcard #gated-reject-breakdown,
         .subcard #relaxed-gate-reject-breakdown,
         .subcard #binance-technical-reject-breakdown,
+        .subcard #binance-technical-fresh-reject-breakdown,
         .subcard #performance-snapshot,
         .subcard #sampling-reject-breakdown {
             border: 0;
@@ -332,9 +411,9 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #market-alias-counts, #whale-wallet-counts, #unsupported-side-summary { max-height: 180px; overflow: auto; }
         #top-market-aliases, #top-whales, #trusted-whale-summary { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
-        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #binance-technical-summary, #binance-technical-gate-funnel, #binance-technical-recovery-summary, #binance-technical-score-component-summary, #binance-technical-score-gap-summary, #binance-technical-position-pressure-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
+        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #binance-technical-summary, #binance-technical-fresh-summary, #binance-technical-gate-funnel, #binance-technical-fresh-gate-funnel, #binance-technical-recovery-summary, #binance-technical-fresh-recovery-summary, #binance-technical-score-component-summary, #binance-technical-score-gap-summary, #binance-technical-fresh-score-gap-summary, #binance-technical-position-pressure-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
         #recent-gate-ready-candidates { max-height: 260px; overflow: auto; }
-        #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown, #binance-technical-reject-breakdown, #binance-technical-score-blocker-breakdown { max-height: 220px; overflow: auto; }
+        #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown, #binance-technical-reject-breakdown, #binance-technical-fresh-reject-breakdown, #binance-technical-score-blocker-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
         #recent-decisions table { min-width: 1040px; table-layout: auto; }
         #top-whales table, #trusted-whale-summary table { min-width: 900px; table-layout: auto; }
@@ -365,7 +444,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
     <div class="status-banner" id="status-banner"></div>
     <div class="warnings" id="warnings-panel"><strong>Uyarılar</strong><ul id="warnings-list"></ul></div>
 
-    <div class="section-marker"><span class="section-label">Özet</span></div>
+    <div class="section-marker" data-tab="genel-bakis"><span class="section-label">Özet</span></div>
     <section class="stats">
         <article class="stat-card"><div class="stat-label">Servis</div><div class="stat-value" id="service-status">...</div><div class="stat-note" id="service-name">ghost-trader</div></article>
         <article class="stat-card"><div class="stat-label">Toplam İşlem</div><div class="stat-value" id="total-trades">0</div><div class="stat-note" id="open-state-note">0 açık pozisyon / 0 açık emir</div></article>
@@ -375,15 +454,33 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         <article class="stat-card"><div class="stat-label">Nihai Karar</div><div class="stat-value" id="final-verdict">...</div><div class="stat-note" id="verdict-reason">Rapor bekleniyor</div></article>
     </section>
 
+    <section class="tabs-shell" id="dashboard-tabs">
+        <div class="tabs-bar" role="tablist" aria-label="Dashboard sekmeleri">
+            <button class="tab-button" type="button" data-tab-trigger="genel-bakis">Genel Bakis</button>
+            <button class="tab-button" type="button" data-tab-trigger="polymarket">Polymarket</button>
+            <button class="tab-button" type="button" data-tab-trigger="binance-teknik">Binance Teknik</button>
+            <button class="tab-button" type="button" data-tab-trigger="pozisyonlar-risk">Pozisyonlar ve Risk</button>
+            <button class="tab-button" type="button" data-tab-trigger="teshis-log">Teshis ve Log</button>
+        </div>
+        <div class="tab-help-card">
+            <div class="subcard-header">
+                <h3 class="subcard-title">Bu sekme neyi gosteriyor?</h3>
+                <span class="badge info" id="tab-help-badge">Genel Bakis</span>
+            </div>
+            <p class="tab-help-copy" id="tab-help-copy">Bu sekme botun canli durumunu, son kararlari ve hizli genel resmi gosterir.</p>
+            <div class="glossary-list" id="tab-glossary"></div>
+        </div>
+    </section>
+
     <section class="grid">
-        <div class="section-marker"><span class="section-label">İşlem ve Karar Akışı</span></div>
-        <article class="panel panel-wide"><div class="panel-header"><h2>Son Kararlar</h2><span class="badge warn">Denetim Akışı</span></div><p class="panel-copy">Kaynak, neden, skor, mapping aşaması ve işlem boyutuyla birlikte son red, karar, işlem ve çıkış olayları.</p><div id="recent-decisions"></div></article>
-        <article class="panel panel-half"><div class="panel-header"><h2>Açık Pozisyonlar</h2><span class="badge info">Venue Maruziyeti</span></div><div id="open-positions"></div></article>
-        <article class="panel panel-half"><div class="panel-header"><h2>Açık Emirler</h2><span class="badge info">Koruma Katmanı</span></div><div id="open-orders"></div></article>
-        <article class="panel panel-half"><div class="panel-header"><h2>Son İşlemler</h2><span class="badge info">SQLite Çalışma Geçmişi</span></div><div id="recent-trades"></div></article>
-        <article class="panel panel-half"><div class="panel-header"><h2>Venue Hesapları</h2><span class="badge info">Paper Bakiyeleri</span></div><div id="venue-accounts"></div></article>
-        <div class="section-marker"><span class="section-label">Teşhis ve Kanıt</span></div>
-        <article class="panel panel-wide">
+        <div class="section-marker" data-tabs="genel-bakis,pozisyonlar-risk"><span class="section-label">İşlem ve Karar Akışı</span></div>
+        <article class="panel panel-wide" data-tab="genel-bakis"><div class="panel-header"><h2>Son Kararlar</h2><span class="badge warn">Denetim Akışı</span></div><p class="panel-copy">Kaynak, neden, skor, mapping aşaması ve işlem boyutuyla birlikte son red, karar, işlem ve çıkış olayları.</p><div id="recent-decisions"></div></article>
+        <article class="panel panel-half" data-tab="pozisyonlar-risk"><div class="panel-header"><h2>Açık Pozisyonlar</h2><span class="badge info">Venue Maruziyeti</span></div><div id="open-positions"></div></article>
+        <article class="panel panel-half" data-tab="pozisyonlar-risk"><div class="panel-header"><h2>Açık Emirler</h2><span class="badge info">Koruma Katmanı</span></div><div id="open-orders"></div></article>
+        <article class="panel panel-half" data-tab="pozisyonlar-risk"><div class="panel-header"><h2>Son İşlemler</h2><span class="badge info">SQLite Çalışma Geçmişi</span></div><div id="recent-trades"></div></article>
+        <article class="panel panel-half" data-tab="pozisyonlar-risk"><div class="panel-header"><h2>Venue Hesapları</h2><span class="badge info">Paper Bakiyeleri</span></div><div id="venue-accounts"></div></article>
+        <div class="section-marker" data-tabs="polymarket,binance-teknik,pozisyonlar-risk,teshis-log"><span class="section-label">Teşhis ve Kanıt</span></div>
+        <article class="panel panel-wide" data-tab="polymarket">
             <div class="panel-header"><h2>Mapping Sağlığı</h2><span class="badge info">Kapsam</span></div>
             <div class="panel-subgrid">
                 <div class="subcard">
@@ -438,7 +535,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                 </div>
             </div>
         </article>
-        <article class="panel panel-wide">
+        <article class="panel panel-wide" data-tab="polymarket">
             <div class="panel-header"><h2>Balina Kaynağı</h2><span class="badge info">Hibrit Cache</span></div>
             <p class="panel-copy">Keşif skoru, whale adresini sıralamak için kullanılır; başarı oranı değildir. Güven skoru ve kazanma oranı yalnızca kapanmış canlı işlemlerden öğrenilir.</p>
             <div class="panel-subgrid">
@@ -458,10 +555,10 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                 </div>
             </div>
         </article>
-        <article class="panel panel-wide">
+        <article class="panel panel-wide" data-tabs="genel-bakis,polymarket,binance-teknik,pozisyonlar-risk,teshis-log">
             <div class="panel-header"><h2>Performans Özeti</h2><span class="badge warn">Kanıt</span></div>
             <div class="panel-subgrid">
-                <div class="subcard">
+                <div class="subcard" data-tabs="genel-bakis,binance-teknik,pozisyonlar-risk">
                     <div class="subcard-header"><h3 class="subcard-title">Strateji ve Sampling</h3><span class="badge warn">Özet</span></div>
                     <p class="subcard-copy">Bu alan yalnizca copy_policy=gated_whale_copy ile isaretlenmis eventleri sayar; generic whale/activity redlerini icermez.</p>
                     <div class="metric-list" id="whale-copy-summary"></div>
@@ -469,68 +566,159 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                     <div class="metric-list" id="whale-copy-recovery-summary"></div>
                     <div class="subsection-title">Binance teknik sampling</div>
                     <div class="metric-list" id="binance-technical-summary"></div>
+                    <div class="subsection-title">Taze teknik ozet (son 60 dk)</div>
+                    <div class="metric-list" id="binance-technical-fresh-summary"></div>
                     <div class="subsection-title">Binance teknik gate funnel</div>
                     <div class="metric-list" id="binance-technical-gate-funnel"></div>
+                    <div class="subsection-title">Taze teknik gate funnel</div>
+                    <div class="metric-list" id="binance-technical-fresh-gate-funnel"></div>
                     <div class="subsection-title">Binance teknik recovery ozeti</div>
                     <div class="metric-list" id="binance-technical-recovery-summary"></div>
+                    <div class="subsection-title">Taze teknik recovery ozeti</div>
+                    <div class="metric-list" id="binance-technical-fresh-recovery-summary"></div>
                     <div class="subsection-title">Futures snapshot ozeti</div>
                     <div class="metric-list" id="binance-futures-snapshot-summary"></div>
                     <div class="subsection-title">Skor bilesen ozeti</div>
                     <div class="metric-list" id="binance-technical-score-component-summary"></div>
                     <div class="subsection-title">Skor gap ozeti</div>
                     <div class="metric-list" id="binance-technical-score-gap-summary"></div>
+                    <div class="subsection-title">Taze teknik skor gap</div>
+                    <div class="metric-list" id="binance-technical-fresh-score-gap-summary"></div>
                     <div class="subsection-title">Pozisyon Baskisi ve Exit Akisi</div>
                     <div class="metric-list" id="binance-technical-position-pressure-summary"></div>
                     <div class="metric-list" id="performance-snapshot"></div>
                 </div>
-                <div class="subcard">
+                <div class="subcard" data-tab="polymarket">
                     <div class="subcard-header"><h3 class="subcard-title">Graph Discovery Ozeti</h3><span class="badge info">Graph</span></div>
                     <div class="metric-list" id="graph-discovery-summary"></div>
                 </div>
-                <div class="subcard">
+                <div class="subcard" data-tab="polymarket">
                     <div class="subcard-header"><h3 class="subcard-title">Whale Side Ozeti</h3><span class="badge info">Side</span></div>
                     <p class="subcard-copy">SELL yonlu eventler mapping ve alias cache icin islenir; trade adayina cevrilmez.</p>
                     <div class="metric-list" id="whale-side-summary"></div>
                 </div>
-                <div class="subcard">
+                <div class="subcard" data-tab="polymarket">
                     <div class="subcard-header"><h3 class="subcard-title">Whale-Copy Gate Funnel</h3><span class="badge info">Funnel</span></div>
                     <div class="metric-list" id="whale-copy-gate-funnel"></div>
                 </div>
-                <div class="subcard">
+                <div class="subcard" data-tab="polymarket">
                     <div class="subcard-header"><h3 class="subcard-title">Whale Candidate Birikimi</h3><span class="badge info">Agg</span></div>
                     <div class="metric-list" id="whale-candidate-aggregation-summary"></div>
                 </div>
-                <div class="subcard">
+                <div class="subcard" data-tab="polymarket">
                     <div class="subcard-header"><h3 class="subcard-title">Gate-ready Whale Adaylari</h3><span class="badge info">Ready</span></div>
                     <div id="recent-gate-ready-candidates"></div>
                 </div>
-                <div class="subcard">
+                <div class="subcard" data-tabs="polymarket,teshis-log">
                     <div class="subcard-header"><h3 class="subcard-title">Gated Whale-Copy Red Nedenleri</h3><span class="badge warn">Gate</span></div>
                     <div id="gated-reject-breakdown"></div>
                 </div>
-                <div class="subcard">
+                <div class="subcard" data-tabs="polymarket,teshis-log">
                     <div class="subcard-header"><h3 class="subcard-title">Relaxed Gate Sonrasi Kalan Red Nedenleri</h3><span class="badge warn">Recovery</span></div>
                     <div id="relaxed-gate-reject-breakdown"></div>
                 </div>
-                <div class="subcard">
+                <div class="subcard" data-tabs="polymarket,teshis-log">
                     <div class="subcard-header"><h3 class="subcard-title">Sampling Red Nedenleri</h3><span class="badge warn">Blocker</span></div>
                     <div id="sampling-reject-breakdown"></div>
                 </div>
-                <div class="subcard">
+                <div class="subcard" data-tabs="binance-teknik,teshis-log">
+                    <div class="subcard-header"><h3 class="subcard-title">Taze Teknik Red Nedenleri</h3><span class="badge warn">Fresh</span></div>
+                    <div id="binance-technical-fresh-reject-breakdown"></div>
+                </div>
+                <div class="subcard" data-tabs="binance-teknik,teshis-log">
                     <div class="subcard-header"><h3 class="subcard-title">Binance Teknik Red Nedenleri</h3><span class="badge warn">Momentum</span></div>
                     <div id="binance-technical-reject-breakdown"></div>
                 </div>
-                <div class="subcard">
+                <div class="subcard" data-tabs="binance-teknik,teshis-log">
                     <div class="subcard-header"><h3 class="subcard-title">Teknik Skor Blocker Dagilimi</h3><span class="badge warn">Skor</span></div>
                     <div id="binance-technical-score-blocker-breakdown"></div>
                 </div>
             </div>
         </article>
-        <article class="panel panel-wide"><div class="panel-header"><h2>Servis Log Özeti</h2><span class="badge info">Best Effort</span></div><pre id="service-log">Yükleniyor...</pre></article>
+        <article class="panel panel-wide" data-tab="teshis-log"><div class="panel-header"><h2>Servis Log Özeti</h2><span class="badge info">Best Effort</span></div><pre id="service-log">Yükleniyor...</pre></article>
     </section>
 </div>
 <script>
 const refreshSeconds = <?= json_encode($refreshSeconds, JSON_UNESCAPED_SLASHES) ?>;
+const DASHBOARD_TABS = ['genel-bakis', 'polymarket', 'binance-teknik', 'pozisyonlar-risk', 'teshis-log'];
+let activeTab = 'genel-bakis';
+let latestPayload = null;
+
+function parseTabList(value) {
+    return String(value ?? '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+}
+
+function renderTabHelp(payload) {
+    const help = payload?.dashboard_tab_help || {};
+    const glossary = payload?.dashboard_glossary || {};
+    const badge = document.getElementById('tab-help-badge');
+    const copy = document.getElementById('tab-help-copy');
+    const list = document.getElementById('tab-glossary');
+    if (!badge || !copy || !list) { return; }
+
+    const labels = {
+        'genel-bakis': 'Genel Bakis',
+        'polymarket': 'Polymarket',
+        'binance-teknik': 'Binance Teknik',
+        'pozisyonlar-risk': 'Pozisyonlar ve Risk',
+        'teshis-log': 'Teshis ve Log'
+    };
+
+    badge.textContent = labels[activeTab] || 'Genel Bakis';
+    copy.textContent = help[activeTab] || 'Bu sekme secili alanin ne ise yaradigini hizli ozetler.';
+
+    const rows = Array.isArray(glossary[activeTab]) ? glossary[activeTab] : [];
+    list.innerHTML = rows.map((item) => `
+        <div class="glossary-item">
+            <div class="glossary-term">${escapeHtml(item.term || 'Terim')}</div>
+            <div class="glossary-meaning">${escapeHtml(item.meaning || '')}</div>
+        </div>
+    `).join('');
+}
+
+function applyActiveTab() {
+    document.querySelectorAll('[data-tab], [data-tabs]').forEach((element) => {
+        const single = element.getAttribute('data-tab');
+        const multi = parseTabList(element.getAttribute('data-tabs'));
+        const visible = single ? single === activeTab : multi.includes(activeTab);
+        element.classList.toggle('is-hidden', !visible);
+    });
+
+    document.querySelectorAll('[data-tab-trigger]').forEach((button) => {
+        const isActive = button.getAttribute('data-tab-trigger') === activeTab;
+        button.classList.toggle('active', isActive);
+        button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    });
+
+    if (latestPayload) {
+        renderTabHelp(latestPayload);
+    }
+}
+
+function setActiveTab(tabId, syncHash = true) {
+    activeTab = DASHBOARD_TABS.includes(tabId) ? tabId : 'genel-bakis';
+    if (syncHash && window.history?.replaceState) {
+        window.history.replaceState(null, '', `#${activeTab}`);
+    }
+    applyActiveTab();
+}
+
+function setupTabs() {
+    document.querySelectorAll('[data-tab-trigger]').forEach((button) => {
+        button.addEventListener('click', () => setActiveTab(button.getAttribute('data-tab-trigger') || 'genel-bakis'));
+    });
+
+    window.addEventListener('hashchange', () => {
+        const hashTab = window.location.hash.replace(/^#/, '');
+        setActiveTab(hashTab || 'genel-bakis', false);
+    });
+
+    const initialTab = window.location.hash.replace(/^#/, '');
+    setActiveTab(initialTab || 'genel-bakis', !initialTab);
+}
 
 function escapeHtml(value) {
     return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
@@ -653,6 +841,8 @@ function translateReason(value) {
         max_order_usd_exceeded: 'tek islem limiti asildi',
         max_open_positions_exceeded: 'acik pozisyon limiti doldu',
         max_total_position_usd_exceeded: 'toplam pozisyon limiti doldu',
+        max_position_exceeded: 'legacy pozisyon limiti',
+        stale_time_exit: 'sure baskisiyla cikis',
         microstructure_drag: 'mikro yapi skoru dusuk',
         momentum_drag: 'momentum skoru dusuk',
         macd_drag: 'MACD skoru dusuk',
@@ -797,6 +987,8 @@ function setupDiagnosticFolds() {
     collapseSectionById('gated-reject-breakdown', 'Gated Whale-Copy Red Nedenleri', 'warn');
     collapseSectionById('relaxed-gate-reject-breakdown', 'Relaxed Gate Sonrasi Kalan Red Nedenleri', 'warn');
     collapseSectionById('sampling-reject-breakdown', 'Sampling Red Nedenleri', 'warn');
+    collapseSectionById('binance-technical-fresh-reject-breakdown', 'Taze Teknik Red Nedenleri', 'warn');
+    collapseSectionById('binance-technical-score-blocker-breakdown', 'Teknik Skor Blocker Dagilimi', 'warn');
 }
 
 function renderStatusBanner(service) {
@@ -1059,6 +1251,16 @@ function updatePanels(payload) {
         { label: 'Force sample', value: formatNumber(technicalSummary.forced_samples, 0) }
     ]);
 
+    const technicalFreshSummary = payload.binance_technical_fresh_summary || {};
+    renderMetrics('binance-technical-fresh-summary', [
+        { label: 'Karar', value: formatNumber(technicalFreshSummary.decisions, 0) },
+        { label: 'Red', value: formatNumber(technicalFreshSummary.rejects, 0) },
+        { label: 'Execute', value: formatNumber(technicalFreshSummary.executes, 0) },
+        { label: 'LONG sinyal', value: formatNumber(technicalFreshSummary.long_signals, 0) },
+        { label: 'SHORT sinyal', value: formatNumber(technicalFreshSummary.short_signals, 0) },
+        { label: 'Force sample', value: formatNumber(technicalFreshSummary.forced_samples, 0) }
+    ]);
+
     const technicalGateFunnel = payload.binance_technical_gate_funnel || {};
     renderMetrics('binance-technical-gate-funnel', [
         { label: 'Taranan sembol', value: formatNumber(technicalGateFunnel.scanned_symbols, 0) },
@@ -1068,6 +1270,17 @@ function updatePanels(payload) {
         { label: 'Skor red', value: formatNumber(technicalGateFunnel.score_rejects, 0) },
         { label: 'Karar', value: formatNumber(technicalGateFunnel.decisions, 0) },
         { label: 'Execute', value: formatNumber(technicalGateFunnel.executes, 0) }
+    ]);
+
+    const technicalFreshGateFunnel = payload.binance_technical_fresh_gate_funnel || {};
+    renderMetrics('binance-technical-fresh-gate-funnel', [
+        { label: 'Taranan sembol', value: formatNumber(technicalFreshGateFunnel.scanned_symbols, 0) },
+        { label: 'Yonlu sinyal', value: formatNumber(technicalFreshGateFunnel.directional_signals, 0) },
+        { label: 'Recovery hizalanma', value: formatNumber(technicalFreshGateFunnel.recovered_alignment_signals, 0) },
+        { label: 'Spread red', value: formatNumber(technicalFreshGateFunnel.spread_rejects, 0) },
+        { label: 'Skor red', value: formatNumber(technicalFreshGateFunnel.score_rejects, 0) },
+        { label: 'Karar', value: formatNumber(technicalFreshGateFunnel.decisions, 0) },
+        { label: 'Execute', value: formatNumber(technicalFreshGateFunnel.executes, 0) }
     ]);
 
     const technicalRecovery = payload.binance_technical_recovery_summary || {};
@@ -1086,6 +1299,24 @@ function updatePanels(payload) {
         { label: 'Candidate floor hit', value: formatNumber(technicalRecovery.microstructure_candidate_floor_hits, 0) },
         { label: 'Force sample hit', value: formatNumber(technicalRecovery.force_sample_hits, 0) },
         { label: 'Aktif sembol', value: formatNumber(technicalRecovery.active_symbol_count, 0) }
+    ]);
+
+    const technicalFreshRecovery = payload.binance_technical_fresh_recovery_summary || {};
+    renderMetrics('binance-technical-fresh-recovery-summary', [
+        { label: 'Recovery uygulandi', value: formatNumber(technicalFreshRecovery.recovery_applied_count, 0) },
+        { label: 'Alignment recovery hit', value: formatNumber(technicalFreshRecovery.alignment_recovery_hits, 0) },
+        { label: 'Mikro yapi recovery hit', value: formatNumber(technicalFreshRecovery.microstructure_recovery_hits, 0) },
+        { label: 'Spread recovery hit', value: formatNumber(technicalFreshRecovery.spread_recovery_hits, 0) },
+        { label: 'Mikro yapi v2 hit', value: formatNumber(technicalFreshRecovery.microstructure_recovery_v2_hits, 0) },
+        { label: 'Spread v2 hit', value: formatNumber(technicalFreshRecovery.spread_recovery_v2_hits, 0) },
+        { label: 'Final skor recovery hit', value: formatNumber(technicalFreshRecovery.final_score_recovery_hits, 0) },
+        { label: 'Yakin esik adayi', value: formatNumber(technicalFreshRecovery.near_threshold_candidates, 0) },
+        { label: 'Skor recovery adayi', value: formatNumber(technicalFreshRecovery.score_recovery_candidates, 0) },
+        { label: 'Skor recovery gecis', value: formatNumber(technicalFreshRecovery.score_recovery_passes, 0) },
+        { label: 'Force recovery adayi', value: formatNumber(technicalFreshRecovery.force_recovery_candidates, 0) },
+        { label: 'Candidate floor hit', value: formatNumber(technicalFreshRecovery.microstructure_candidate_floor_hits, 0) },
+        { label: 'Force sample hit', value: formatNumber(technicalFreshRecovery.force_sample_hits, 0) },
+        { label: 'Aktif sembol', value: formatNumber(technicalFreshRecovery.active_symbol_count, 0) }
     ]);
 
     const technicalSnapshot = payload.binance_futures_snapshot_summary || {};
@@ -1122,6 +1353,14 @@ function updatePanels(payload) {
         { label: 'Derin esik alti', value: formatNumber(technicalScoreGap.deep_below_threshold_count, 0) }
     ]);
 
+    const technicalFreshScoreGap = payload.binance_technical_fresh_score_gap_summary || {};
+    renderMetrics('binance-technical-fresh-score-gap-summary', [
+        { label: 'Ortalama skor farki', value: formatNumber(technicalFreshScoreGap.avg_score_gap_to_threshold, 3) },
+        { label: 'Esik alti adet', value: formatNumber(technicalFreshScoreGap.below_threshold_count, 0) },
+        { label: 'Yakin esik adayi', value: formatNumber(technicalFreshScoreGap.near_threshold_count, 0) },
+        { label: 'Derin esik alti', value: formatNumber(technicalFreshScoreGap.deep_below_threshold_count, 0) }
+    ]);
+
     const technicalPositionPressure = payload.binance_technical_position_pressure_summary || {};
     renderMetrics('binance-technical-position-pressure-summary', [
         { label: 'Acik pozisyon', value: formatNumber(technicalPositionPressure.open_positions, 0) },
@@ -1138,7 +1377,12 @@ function updatePanels(payload) {
         { label: 'Max total position red', value: formatNumber(technicalPositionPressure.max_total_position_usd_rejects, 0) },
         { label: 'Max order red', value: formatNumber(technicalPositionPressure.max_order_usd_rejects, 0) },
         { label: 'Legacy max position red', value: formatNumber(technicalPositionPressure.legacy_max_position_exceeded_rejects, 0) },
-        { label: 'Boyutu kucultulen giris', value: formatNumber(technicalPositionPressure.sized_down_entries, 0) }
+        { label: 'Boyutu kucultulen giris', value: formatNumber(technicalPositionPressure.sized_down_entries, 0) },
+        { label: 'Stale review 90 dk', value: formatNumber(technicalPositionPressure.stale_review_candidates_90m, 0) },
+        { label: 'Stale exit 120 dk', value: formatNumber(technicalPositionPressure.stale_exit_candidates_120m, 0) },
+        { label: 'Sure baskisiyla cikis', value: formatNumber(technicalPositionPressure.stale_exit_executed, 0) },
+        { label: 'Stale skip teknik destek', value: formatNumber(technicalPositionPressure.stale_exit_skipped_alignment_support, 0) },
+        { label: 'Stale skip kar korumasi', value: formatNumber(technicalPositionPressure.stale_exit_skipped_profit_protection, 0) }
     ]);
 
     const whaleSide = payload.whale_side_summary || {};
@@ -1227,6 +1471,11 @@ function updatePanels(payload) {
         { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
     ], payload.binance_technical_reject_breakdown, 'Henuz binance teknik red nedeni birikmedi.');
 
+    renderTable('binance-technical-fresh-reject-breakdown', [
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.binance_technical_fresh_reject_breakdown, 'Henuz taze binance teknik red nedeni birikmedi.');
+
     renderTable('binance-technical-score-blocker-breakdown', [
         { key: 'reason', label: 'Blocker', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
         { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
@@ -1247,16 +1496,20 @@ async function refreshDashboard() {
             throw new Error(`API ${response.status} döndü`);
         }
         const payload = await response.json();
+        latestPayload = payload;
         renderWarnings(payload.warnings || []);
         renderStatusBanner(payload.service || {});
         updateHeader(payload);
         updatePanels(payload);
+        renderTabHelp(payload);
+        applyActiveTab();
     } catch (error) {
         renderWarnings([`dashboard yenilemesi başarısız oldu: ${error.message}`]);
     }
 }
 
 setupDiagnosticFolds();
+setupTabs();
 refreshDashboard();
 setInterval(refreshDashboard, refreshSeconds * 1000);
 </script>

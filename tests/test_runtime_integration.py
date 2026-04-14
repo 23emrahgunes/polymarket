@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 import pandas as pd
@@ -264,7 +266,7 @@ async def test_runtime_builds_sized_down_position_plan_for_binance_technical(tmp
     )
     await runtime.initialize()
 
-    await runtime.db.create_venue_position(
+    position_id = await runtime.db.create_venue_position(
         venue="binance_futures",
         execution_mode="paper",
         instrument_type="futures",
@@ -285,6 +287,76 @@ async def test_runtime_builds_sized_down_position_plan_for_binance_technical(tmp
     assert plan["position_capacity_sized_down"] is True
     assert plan["open_position_count_at_decision"] == 1
     assert plan["open_position_notional_usd_at_decision"] == 200.0
+
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_reviews_stale_binance_technical_positions_and_executes_time_exit(tmp_path):
+    db_path = str(tmp_path / "test_runtime_stale_exit.db")
+    venue_configs = build_default_venue_configs()
+    venue_configs["binance_futures"] = venue_configs["binance_futures"].__class__(
+        **{**venue_configs["binance_futures"].__dict__, "enabled": True}
+    )
+    runtime = GhostBotRuntime(
+        RuntimeSettings(
+            exchange_id="coinbase",
+            db_path=db_path,
+            debug_signal_mode=False,
+            runtime_verify_once=False,
+            binance_technical_paper_enabled=True,
+            venue_configs=venue_configs,
+        )
+    )
+    await runtime.initialize()
+
+    opened_at = (datetime.now(timezone.utc) - timedelta(minutes=150)).strftime("%Y-%m-%d %H:%M:%S")
+    position_id = await runtime.db.create_venue_position(
+        venue="binance_futures",
+        execution_mode="paper",
+        instrument_type="futures",
+        symbol_or_market_id="BTC/USDT:USDT",
+        side="LONG",
+        qty_or_shares=0.001,
+        entry_price=100000.0,
+        notional_usd=100.0,
+        leverage=2,
+        status="OPEN",
+        strategy_profile="binance_technical_sampling",
+        sample_kind="live_paper",
+    )
+    await runtime.db.conn.execute(
+        "UPDATE venue_positions SET opened_at = ? WHERE id = ?",
+        (opened_at, position_id),
+    )
+    await runtime.db.conn.commit()
+
+    async def fake_score(symbol):
+        signal = SimpleNamespace(
+            should_trade=False,
+            direction="LONG",
+            reasons=["score_below_threshold"],
+            score=0.41,
+            threshold=0.54,
+        )
+        return signal, {"mark_price": 100100.0, "last_price": 100100.0}
+
+    exit_calls = []
+
+    async def fake_exit_order(*args, **kwargs):
+        exit_calls.append({"args": args, "kwargs": kwargs})
+        return True, {"reason": kwargs.get("reason")}
+
+    runtime._score_binance_technical_symbol_for_stale_review = fake_score
+    runtime.binance_futures_venue.place_exit_order = fake_exit_order
+
+    await runtime._review_stale_binance_technical_positions()
+
+    assert runtime.technical_stale_review_candidates_90m == 1
+    assert runtime.technical_stale_exit_candidates_120m == 1
+    assert runtime.technical_stale_exit_executed == 1
+    assert exit_calls
+    assert exit_calls[0]["kwargs"]["reason"] == "stale_time_exit"
 
     await runtime.close()
 

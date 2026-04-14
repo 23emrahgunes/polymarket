@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -306,10 +307,38 @@ def _summarize_binance_technical_reject_breakdown(rows) -> list[tuple[str, int]]
 
 
 def _technical_row_parts(row) -> tuple[str, str, dict]:
-    action = str(row["action"] if isinstance(row, sqlite3.Row) else row[0] or "").lower()
-    reason = str((row["reason"] if isinstance(row, sqlite3.Row) else row[1]) or "").strip()
-    raw_inputs = (row["inputs_json"] if isinstance(row, sqlite3.Row) else row[2]) or "{}"
+    action = str(row["action"] if isinstance(row, sqlite3.Row) else row[-3] or "").lower()
+    reason = str((row["reason"] if isinstance(row, sqlite3.Row) else row[-2]) or "").strip()
+    raw_inputs = (row["inputs_json"] if isinstance(row, sqlite3.Row) else row[-1]) or "{}"
     return action, reason, _parse_inputs_json(raw_inputs)
+
+
+def _row_occurred_at(row) -> datetime | None:
+    raw_value = row["occurred_at"] if isinstance(row, sqlite3.Row) else (row[0] if row else None)
+    if raw_value in (None, ""):
+        return None
+    text = str(raw_value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _filter_rows_within_minutes(rows, minutes: int):
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc - timedelta(minutes=minutes)
+    filtered = []
+    for row in rows or []:
+        occurred_at = _row_occurred_at(row)
+        if occurred_at is None or occurred_at < cutoff:
+            continue
+        filtered.append(row)
+    return filtered
 
 
 def _technical_active_symbol_count(rows, status_metrics: dict) -> int:
@@ -523,7 +552,7 @@ def _summarize_binance_technical_score_gap(rows) -> dict[str, float | int]:
     }
 
 
-def _summarize_binance_technical_position_pressure(cursor: sqlite3.Cursor, rows) -> dict[str, float | int]:
+def _summarize_binance_technical_position_pressure(cursor: sqlite3.Cursor, rows, status_metrics: dict | None = None) -> dict[str, float | int]:
     futures_max_position_usd = _env_float("BINANCE_FUTURES_MAX_POSITION_USD", 250.0)
     spot_max_position_usd = _env_float("BINANCE_SPOT_MAX_POSITION_USD", 200.0)
     futures_open_positions = cursor.execute(
@@ -639,6 +668,11 @@ def _summarize_binance_technical_position_pressure(cursor: sqlite3.Cursor, rows)
         "max_order_usd_rejects": max_order_usd_rejects,
         "legacy_max_position_exceeded_rejects": legacy_max_position_exceeded_rejects,
         "sized_down_entries": sized_down_entries,
+        "stale_review_candidates_90m": int((status_metrics or {}).get("technical_stale_review_candidates_90m", 0) or 0),
+        "stale_exit_candidates_120m": int((status_metrics or {}).get("technical_stale_exit_candidates_120m", 0) or 0),
+        "stale_exit_executed": int((status_metrics or {}).get("technical_stale_exit_executed", 0) or 0),
+        "stale_exit_skipped_alignment_support": int((status_metrics or {}).get("technical_stale_exit_skipped_alignment_support", 0) or 0),
+        "stale_exit_skipped_profit_protection": int((status_metrics or {}).get("technical_stale_exit_skipped_profit_protection", 0) or 0),
     }
 
 
@@ -1023,7 +1057,7 @@ def main() -> int:
         ).fetchall()
         technical_rows = cursor.execute(
             """
-            SELECT action, reason, inputs_json
+            SELECT occurred_at, venue, market_id, action, reason, inputs_json
             FROM decision_audit
             WHERE strategy_profile = 'binance_technical_sampling'
               AND action IN ('reject', 'decision', 'execute')
@@ -1067,6 +1101,12 @@ def main() -> int:
     gated_reject_breakdown = _summarize_reason_breakdown(whale_copy_rows, relaxed_only=False)
     relaxed_gate_reject_breakdown = _summarize_reason_breakdown(whale_copy_rows, relaxed_only=True)
     technical_summary = _summarize_binance_technical(technical_rows)
+    fresh_technical_rows = _filter_rows_within_minutes(technical_rows, 60)
+    fresh_technical_summary = _summarize_binance_technical(fresh_technical_rows)
+    fresh_technical_gate_funnel = _summarize_binance_technical_gate_funnel(fresh_technical_rows)
+    fresh_technical_recovery_summary = _summarize_binance_technical_recovery(fresh_technical_rows, status_metrics)
+    fresh_technical_reject_breakdown = _summarize_binance_technical_reject_breakdown(fresh_technical_rows)
+    fresh_technical_score_gap_summary = _summarize_binance_technical_score_gap(fresh_technical_rows)
     technical_reject_breakdown = _summarize_binance_technical_reject_breakdown(technical_rows)
     technical_gate_funnel = _summarize_binance_technical_gate_funnel(technical_rows)
     technical_recovery_summary = _summarize_binance_technical_recovery(technical_rows, status_metrics)
@@ -1074,7 +1114,7 @@ def main() -> int:
     technical_score_component_summary = _summarize_binance_technical_score_components(technical_rows)
     technical_score_gap_summary = _summarize_binance_technical_score_gap(technical_rows)
     technical_score_blocker_breakdown = _summarize_binance_technical_score_blockers(technical_rows)
-    technical_position_pressure_summary = _summarize_binance_technical_position_pressure(cursor, technical_rows)
+    technical_position_pressure_summary = _summarize_binance_technical_position_pressure(cursor, technical_rows, status_metrics)
     connection.close()
 
     print(f"DB_PATH={db_path}")
@@ -1187,11 +1227,20 @@ def main() -> int:
     print("BINANCE_TECHNICAL_SUMMARY")
     for label, value in technical_summary.items():
         print((label, value))
+    print("BINANCE_TECHNICAL_FRESH_SUMMARY")
+    for label, value in fresh_technical_summary.items():
+        print((label, value))
     print("BINANCE_TECHNICAL_GATE_FUNNEL")
     for label, value in technical_gate_funnel.items():
         print((label, value))
+    print("BINANCE_TECHNICAL_FRESH_GATE_FUNNEL")
+    for label, value in fresh_technical_gate_funnel.items():
+        print((label, value))
     print("BINANCE_TECHNICAL_RECOVERY_SUMMARY")
     for label, value in technical_recovery_summary.items():
+        print((label, value))
+    print("BINANCE_TECHNICAL_FRESH_RECOVERY_SUMMARY")
+    for label, value in fresh_technical_recovery_summary.items():
         print((label, value))
     print("BINANCE_FUTURES_SNAPSHOT_SUMMARY")
     for label, value in technical_snapshot_summary.items():
@@ -1202,6 +1251,9 @@ def main() -> int:
     print("BINANCE_TECHNICAL_SCORE_GAP_SUMMARY")
     for label, value in technical_score_gap_summary.items():
         print((label, value))
+    print("BINANCE_TECHNICAL_FRESH_SCORE_GAP_SUMMARY")
+    for label, value in fresh_technical_score_gap_summary.items():
+        print((label, value))
     print("BINANCE_TECHNICAL_SCORE_BLOCKER_BREAKDOWN")
     for reason, count in technical_score_blocker_breakdown:
         print((reason, count))
@@ -1210,6 +1262,9 @@ def main() -> int:
         print((label, value))
     print("BINANCE_TECHNICAL_REJECT_BREAKDOWN")
     for reason, count in technical_reject_breakdown:
+        print((reason, count))
+    print("BINANCE_TECHNICAL_FRESH_REJECT_BREAKDOWN")
+    for reason, count in fresh_technical_reject_breakdown:
         print((reason, count))
     print("UNSUPPORTED_SIDE_SUMMARY")
     for row in unsupported_side_summary:
