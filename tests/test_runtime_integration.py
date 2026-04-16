@@ -520,6 +520,86 @@ async def test_runtime_executes_hard_timeout_stale_exit_for_old_technical_positi
 
 
 @pytest.mark.asyncio
+async def test_runtime_rescues_unclassified_old_binance_paper_position_for_stale_review(tmp_path):
+    db_path = str(tmp_path / "test_runtime_stale_unclassified_rescue.db")
+    venue_configs = build_default_venue_configs()
+    venue_configs["binance_futures"] = venue_configs["binance_futures"].__class__(
+        **{**venue_configs["binance_futures"].__dict__, "enabled": True}
+    )
+    runtime = GhostBotRuntime(
+        RuntimeSettings(
+            exchange_id="coinbase",
+            db_path=db_path,
+            debug_signal_mode=False,
+            runtime_verify_once=False,
+            binance_technical_paper_enabled=True,
+            venue_configs=venue_configs,
+        )
+    )
+    await runtime.initialize()
+
+    opened_at = (datetime.now(timezone.utc) - timedelta(minutes=300)).strftime("%Y-%m-%d %H:%M:%S")
+    position_id = await runtime.db.create_venue_position(
+        venue="binance_futures",
+        execution_mode="paper",
+        instrument_type="futures",
+        symbol_or_market_id="SOL/USDT:USDT",
+        side="LONG",
+        qty_or_shares=1.0,
+        entry_price=140.0,
+        notional_usd=80.0,
+        leverage=2,
+        source_signal="manual_recovered_position",
+        signal_family="unknown",
+        strategy_profile="baseline",
+        sample_kind="",
+        status="OPEN",
+    )
+    await runtime.db.conn.execute(
+        "UPDATE venue_positions SET opened_at = ?, sample_kind = '', signal_family = 'unknown', strategy_profile = 'baseline' WHERE id = ?",
+        (opened_at, position_id),
+    )
+    await runtime.db.conn.commit()
+
+    async def fake_score(symbol):
+        signal = SimpleNamespace(
+            should_trade=False,
+            direction="LONG",
+            reasons=["score_below_threshold"],
+            score=0.37,
+            threshold=0.54,
+        )
+        return signal, {"mark_price": 141.0, "last_price": 141.0}
+
+    async def no_recent_support(*args, **kwargs):
+        return False
+
+    exit_calls = []
+
+    async def fake_exit_order(*args, **kwargs):
+        exit_calls.append({"args": args, "kwargs": kwargs})
+        return True, {"reason": kwargs.get("reason")}
+
+    runtime._score_binance_technical_symbol_for_stale_review = fake_score
+    runtime._has_recent_same_direction_technical_support = no_recent_support
+    runtime.binance_futures_venue.place_exit_order = fake_exit_order
+
+    await runtime._review_stale_binance_technical_positions()
+
+    assert runtime.technical_open_positions_total == 1
+    assert runtime.technical_open_positions_legacy == 1
+    assert runtime.technical_open_positions_rescue == 1
+    assert runtime.technical_open_positions_backfilled == 1
+    assert runtime.technical_legacy_open_positions[0]["classification"] == "legacy_technical_unclassified"
+    assert runtime.technical_stale_hard_timeout_candidates_240m == 1
+    assert runtime.technical_stale_hard_timeout_executed == 1
+    assert exit_calls
+    assert exit_calls[0]["kwargs"]["reason"] == "stale_hard_timeout_exit"
+
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_skips_hard_timeout_when_recent_same_direction_support_exists(tmp_path):
     db_path = str(tmp_path / "test_runtime_stale_recent_support.db")
     venue_configs = build_default_venue_configs()

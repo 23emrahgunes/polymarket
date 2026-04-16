@@ -566,6 +566,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 "    'technical_open_positions_legacy' => 1,",
                 "    'technical_open_positions_backfilled' => 1,",
                 "    'technical_open_positions_ineligible' => 0,",
+                "    'technical_open_positions_rescue' => 1,",
                 "    'technical_stale_review_candidates_90m' => 1,",
                 "    'technical_stale_exit_candidates_120m' => 1,",
                 "    'technical_stale_hard_timeout_candidates_240m' => 1,",
@@ -685,6 +686,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'technical_open_positions_legacy': 1,
         'technical_open_positions_backfilled': 1,
         'technical_open_positions_ineligible': 0,
+        'technical_open_positions_rescue': 1,
         'stale_review_skipped': 'none',
     }
     assert payload['position_pressure_summary'] == {

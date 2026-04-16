@@ -180,6 +180,7 @@ class GhostBotRuntime:
         self.technical_open_positions_price_structure = 0
         self.technical_open_positions_momentum_source = 0
         self.technical_open_positions_protection_linked = 0
+        self.technical_open_positions_rescue = 0
         self.technical_stale_review_runs = 0
         self.technical_open_positions_seen_by_stale_review = 0
         self.technical_stale_review_skipped_reason = "not_run"
@@ -395,6 +396,7 @@ class GhostBotRuntime:
 
     async def run(self) -> None:
         await self.initialize()
+        await self.log_runtime_status(0, 0.0)
         await self.bootstrap_market_context()
 
         tasks = [
@@ -583,6 +585,8 @@ class GhostBotRuntime:
         strategy_profile_match = strategy_profile == STRATEGY_PROFILE_BINANCE_TECHNICAL
         sample_kind_match = sample_kind == "live_paper"
         is_strict = strategy_profile_match and sample_kind_match
+        paper_like_execution = execution_mode in {"", "paper"}
+        age_rescue_match = bool(age_minutes is not None and age_minutes >= 240)
         marker_labels = []
         if price_structure_source:
             marker_labels.append("price_structure_source")
@@ -598,15 +602,19 @@ class GhostBotRuntime:
             marker_labels.append("stop_loss_order")
         if has_take_profit_order:
             marker_labels.append("take_profit_order")
+        if age_rescue_match:
+            marker_labels.append("age_rescue_240m")
 
         if venue not in {"binance_futures", "binance_spot"}:
             classification = "ineligible"
-        elif execution_mode != "paper" or status != "OPEN":
+        elif not paper_like_execution or status != "OPEN":
             classification = "ineligible"
         elif is_strict:
             classification = "strict_technical"
         elif source_signal_match or signal_family_match or strategy_profile_match or protection_order_match:
             classification = "legacy_technical"
+        elif age_rescue_match:
+            classification = "legacy_technical_unclassified"
         else:
             classification = "ineligible"
 
@@ -632,6 +640,7 @@ class GhostBotRuntime:
             "signal_family_match": signal_family_match,
             "strategy_profile_match": strategy_profile_match,
             "sample_kind_match": sample_kind_match,
+            "age_rescue_match": age_rescue_match,
             "marker_labels": marker_labels,
         }
 
@@ -776,6 +785,7 @@ class GhostBotRuntime:
             self.technical_open_positions_price_structure = 0
             self.technical_open_positions_momentum_source = 0
             self.technical_open_positions_protection_linked = 0
+            self.technical_open_positions_rescue = 0
             self.technical_open_positions_seen_by_stale_review = 0
             self.technical_stale_review_skipped_reason = "db_missing"
             self.technical_legacy_position_shape_summary = {}
@@ -801,6 +811,7 @@ class GhostBotRuntime:
             self.technical_open_positions_price_structure = 0
             self.technical_open_positions_momentum_source = 0
             self.technical_open_positions_protection_linked = 0
+            self.technical_open_positions_rescue = 0
             self.technical_legacy_position_shape_summary = {
                 "open_binance_paper_positions": len(open_positions),
                 "strict_technical_positions": 0,
@@ -809,6 +820,7 @@ class GhostBotRuntime:
                 "price_structure_source_positions": 0,
                 "technical_momentum_source_positions": 0,
                 "protection_linked_positions": 0,
+                "rescue_age_positions": 0,
                 "backfilled_positions": 0,
             }
             self.technical_legacy_open_positions = []
@@ -826,6 +838,7 @@ class GhostBotRuntime:
         price_structure_positions = 0
         momentum_source_positions = 0
         protection_linked_positions = 0
+        rescue_positions = 0
         legacy_open_positions: list[Dict[str, object]] = []
 
         for raw_position in open_positions:
@@ -839,13 +852,15 @@ class GhostBotRuntime:
                 momentum_source_positions += 1
             if position_shape.get("protection_order_match"):
                 protection_linked_positions += 1
+            if position_shape.get("age_rescue_match"):
+                rescue_positions += 1
             legacy_open_positions.append(position_shape)
             if classification == "ineligible":
                 ineligible_positions += 1
                 continue
             if classification == "strict_technical":
                 strict_positions += 1
-            elif classification == "legacy_technical":
+            elif classification in {"legacy_technical", "legacy_technical_unclassified"}:
                 legacy_positions += 1
                 if await self._backfill_legacy_binance_technical_position(position):
                     backfilled_positions += 1
@@ -963,6 +978,7 @@ class GhostBotRuntime:
         self.technical_open_positions_price_structure = price_structure_positions
         self.technical_open_positions_momentum_source = momentum_source_positions
         self.technical_open_positions_protection_linked = protection_linked_positions
+        self.technical_open_positions_rescue = rescue_positions
         self.technical_legacy_position_shape_summary = {
             "open_binance_paper_positions": total_positions,
             "strict_technical_positions": strict_positions,
@@ -971,6 +987,7 @@ class GhostBotRuntime:
             "price_structure_source_positions": price_structure_positions,
             "technical_momentum_source_positions": momentum_source_positions,
             "protection_linked_positions": protection_linked_positions,
+            "rescue_age_positions": rescue_positions,
             "backfilled_positions": backfilled_positions,
         }
         self.technical_legacy_open_positions = legacy_open_positions[:10]
@@ -1080,6 +1097,7 @@ class GhostBotRuntime:
             "technical_open_positions_price_structure": self.technical_open_positions_price_structure,
             "technical_open_positions_momentum_source": self.technical_open_positions_momentum_source,
             "technical_open_positions_protection_linked": self.technical_open_positions_protection_linked,
+            "technical_open_positions_rescue": self.technical_open_positions_rescue,
             "technical_stale_review_runs": self.technical_stale_review_runs,
             "technical_open_positions_seen_by_stale_review": self.technical_open_positions_seen_by_stale_review,
             "technical_stale_review_skipped_reason": self.technical_stale_review_skipped_reason,

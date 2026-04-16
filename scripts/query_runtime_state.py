@@ -697,6 +697,7 @@ def _summarize_binance_technical_stale_eligibility(status_metrics: dict | None =
         "technical_open_positions_legacy": int(metrics.get("technical_open_positions_legacy", 0) or 0),
         "technical_open_positions_backfilled": int(metrics.get("technical_open_positions_backfilled", 0) or 0),
         "technical_open_positions_ineligible": int(metrics.get("technical_open_positions_ineligible", 0) or 0),
+        "technical_open_positions_rescue": int(metrics.get("technical_open_positions_rescue", 0) or 0),
         "stale_review_skipped": str(metrics.get("technical_stale_review_skipped_reason") or "none"),
     }
 
@@ -714,6 +715,7 @@ def _summarize_binance_technical_legacy_position_shape(status_metrics: dict | No
         "price_structure_source_positions": int(raw_summary.get("price_structure_source_positions", metrics.get("technical_open_positions_price_structure", 0)) or 0),
         "technical_momentum_source_positions": int(raw_summary.get("technical_momentum_source_positions", metrics.get("technical_open_positions_momentum_source", 0)) or 0),
         "protection_linked_positions": int(raw_summary.get("protection_linked_positions", metrics.get("technical_open_positions_protection_linked", 0)) or 0),
+        "rescue_age_positions": int(raw_summary.get("rescue_age_positions", metrics.get("technical_open_positions_rescue", 0)) or 0),
         "backfilled_positions": int(raw_summary.get("backfilled_positions", metrics.get("technical_open_positions_backfilled", 0)) or 0),
     }
 

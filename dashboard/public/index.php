@@ -1379,6 +1379,7 @@ function updatePanels(payload) {
         { label: 'Teknik acik pozisyon', value: formatNumber(technicalStaleEligibility.technical_open_positions_total, 0) },
         { label: 'Strict teknik pozisyon', value: formatNumber(technicalStaleEligibility.technical_open_positions_strict, 0) },
         { label: 'Eski teknik pozisyon', value: formatNumber(technicalStaleEligibility.technical_open_positions_legacy, 0) },
+        { label: 'Yas rescue pozisyonu', value: formatNumber(technicalStaleEligibility.technical_open_positions_rescue, 0) },
         { label: 'Backfill edilen pozisyon', value: formatNumber(technicalStaleEligibility.technical_open_positions_backfilled, 0) },
         { label: 'Kapsam disi pozisyon', value: formatNumber(technicalStaleEligibility.technical_open_positions_ineligible, 0) },
         { label: 'Atlama nedeni', value: escapeHtml(technicalStaleEligibility.stale_review_skipped || 'none') }
@@ -1392,6 +1393,7 @@ function updatePanels(payload) {
         { label: 'Price-structure kaynakli', value: formatNumber(technicalLegacyShape.price_structure_source_positions, 0) },
         { label: 'Momentum kaynakli', value: formatNumber(technicalLegacyShape.technical_momentum_source_positions, 0) },
         { label: 'Koruma emri bagli', value: formatNumber(technicalLegacyShape.protection_linked_positions, 0) },
+        { label: '240 dk yas rescue', value: formatNumber(technicalLegacyShape.rescue_age_positions, 0) },
         { label: 'Backfill edilen', value: formatNumber(technicalLegacyShape.backfilled_positions, 0) },
         { label: 'Kapsam disi', value: formatNumber(technicalLegacyShape.ineligible_positions, 0) }
     ]);

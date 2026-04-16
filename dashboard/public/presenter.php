@@ -925,6 +925,7 @@ function dashboard_build_binance_technical_stale_eligibility_summary(array $runt
         'technical_open_positions_legacy' => (int) ($runtimeSummary['technical_open_positions_legacy'] ?? 0),
         'technical_open_positions_backfilled' => (int) ($runtimeSummary['technical_open_positions_backfilled'] ?? 0),
         'technical_open_positions_ineligible' => (int) ($runtimeSummary['technical_open_positions_ineligible'] ?? 0),
+        'technical_open_positions_rescue' => (int) ($runtimeSummary['technical_open_positions_rescue'] ?? 0),
         'stale_review_skipped' => trim((string) ($runtimeSummary['technical_stale_review_skipped_reason'] ?? 'none')),
     ];
 }
@@ -944,6 +945,7 @@ function dashboard_build_binance_technical_legacy_position_shape_summary(array $
         'price_structure_source_positions' => (int) ($rawSummary['price_structure_source_positions'] ?? ($runtimeSummary['technical_open_positions_price_structure'] ?? 0)),
         'technical_momentum_source_positions' => (int) ($rawSummary['technical_momentum_source_positions'] ?? ($runtimeSummary['technical_open_positions_momentum_source'] ?? 0)),
         'protection_linked_positions' => (int) ($rawSummary['protection_linked_positions'] ?? ($runtimeSummary['technical_open_positions_protection_linked'] ?? 0)),
+        'rescue_age_positions' => (int) ($rawSummary['rescue_age_positions'] ?? ($runtimeSummary['technical_open_positions_rescue'] ?? 0)),
         'backfilled_positions' => (int) ($rawSummary['backfilled_positions'] ?? ($runtimeSummary['technical_open_positions_backfilled'] ?? 0)),
     ];
 }
