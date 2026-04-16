@@ -796,10 +796,12 @@ function dashboard_build_binance_technical_position_pressure_summary(PDO $pdo, a
     $recentExits = 0;
     $stopLossExits = 0;
     $takeProfitExits = 0;
+    $capacityReleasedUsd60m = 0.0;
     $oldestOpenPositionMinutes = 0;
     $positionsOver30m = 0;
     $positionsOver60m = 0;
     $positionsOver120m = 0;
+    $positionsOver240m = 0;
     if (!empty($anchorRow['max_occurred_at'])) {
         $exitWindow = dashboard_fetch_one(
             $pdo,
@@ -807,7 +809,8 @@ function dashboard_build_binance_technical_position_pressure_summary(PDO $pdo, a
             SELECT
                 COUNT(*) AS recent_exits,
                 COALESCE(SUM(CASE WHEN reason = 'STOP_LOSS' THEN 1 ELSE 0 END), 0) AS stop_loss_exits,
-                COALESCE(SUM(CASE WHEN reason = 'TAKE_PROFIT' THEN 1 ELSE 0 END), 0) AS take_profit_exits
+                COALESCE(SUM(CASE WHEN reason = 'TAKE_PROFIT' THEN 1 ELSE 0 END), 0) AS take_profit_exits,
+                COALESCE(SUM(COALESCE(trade_size, 0)), 0) AS released_usd
             FROM decision_audit
             WHERE strategy_profile = 'binance_technical_sampling'
               AND venue IN ('binance_futures', 'binance_spot')
@@ -819,6 +822,7 @@ function dashboard_build_binance_technical_position_pressure_summary(PDO $pdo, a
         $recentExits = (int) ($exitWindow['recent_exits'] ?? 0);
         $stopLossExits = (int) ($exitWindow['stop_loss_exits'] ?? 0);
         $takeProfitExits = (int) ($exitWindow['take_profit_exits'] ?? 0);
+        $capacityReleasedUsd60m = (float) ($exitWindow['released_usd'] ?? 0.0);
 
         if (dashboard_table_has_column($pdo, 'venue_positions', 'opened_at')) {
             $ageWindow = dashboard_fetch_one(
@@ -828,7 +832,8 @@ function dashboard_build_binance_technical_position_pressure_summary(PDO $pdo, a
                     COALESCE(MAX(MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0)), 0) AS oldest_open_position_minutes,
                     COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 30 THEN 1 ELSE 0 END), 0) AS positions_over_30m,
                     COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 60 THEN 1 ELSE 0 END), 0) AS positions_over_60m,
-                    COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 120 THEN 1 ELSE 0 END), 0) AS positions_over_120m
+                    COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 120 THEN 1 ELSE 0 END), 0) AS positions_over_120m,
+                    COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 240 THEN 1 ELSE 0 END), 0) AS positions_over_240m
                 FROM venue_positions
                 WHERE status = 'OPEN'
                   AND venue IN ('binance_futures', 'binance_spot')
@@ -839,17 +844,20 @@ function dashboard_build_binance_technical_position_pressure_summary(PDO $pdo, a
                     $anchorRow['max_occurred_at'],
                     $anchorRow['max_occurred_at'],
                     $anchorRow['max_occurred_at'],
+                    $anchorRow['max_occurred_at'],
                 ]
             ) ?? [
                 'oldest_open_position_minutes' => 0,
                 'positions_over_30m' => 0,
                 'positions_over_60m' => 0,
                 'positions_over_120m' => 0,
+                'positions_over_240m' => 0,
             ];
             $oldestOpenPositionMinutes = max(0, (int) round((float) ($ageWindow['oldest_open_position_minutes'] ?? 0.0)));
             $positionsOver30m = max(0, (int) ($ageWindow['positions_over_30m'] ?? 0));
             $positionsOver60m = max(0, (int) ($ageWindow['positions_over_60m'] ?? 0));
             $positionsOver120m = max(0, (int) ($ageWindow['positions_over_120m'] ?? 0));
+            $positionsOver240m = max(0, (int) ($ageWindow['positions_over_240m'] ?? 0));
         }
     }
 
@@ -889,6 +897,7 @@ function dashboard_build_binance_technical_position_pressure_summary(PDO $pdo, a
         'positions_over_30m' => $positionsOver30m,
         'positions_over_60m' => $positionsOver60m,
         'positions_over_120m' => $positionsOver120m,
+        'positions_over_240m' => $positionsOver240m,
         'max_open_positions_rejects' => $maxOpenPositionsRejects,
         'max_total_position_usd_rejects' => $maxTotalPositionUsdRejects,
         'max_order_usd_rejects' => $maxOrderUsdRejects,
@@ -896,9 +905,24 @@ function dashboard_build_binance_technical_position_pressure_summary(PDO $pdo, a
         'sized_down_entries' => $sizedDownEntries,
         'stale_review_candidates_90m' => (int) ($runtimeSummary['technical_stale_review_candidates_90m'] ?? 0),
         'stale_exit_candidates_120m' => (int) ($runtimeSummary['technical_stale_exit_candidates_120m'] ?? 0),
+        'stale_hard_timeout_candidates_240m' => (int) ($runtimeSummary['technical_stale_hard_timeout_candidates_240m'] ?? 0),
         'stale_exit_executed' => (int) ($runtimeSummary['technical_stale_exit_executed'] ?? 0),
+        'stale_hard_timeout_executed' => (int) ($runtimeSummary['technical_stale_hard_timeout_executed'] ?? 0),
         'stale_exit_skipped_alignment_support' => (int) ($runtimeSummary['technical_stale_exit_skipped_alignment_support'] ?? 0),
+        'stale_exit_skipped_recent_support' => (int) ($runtimeSummary['technical_stale_exit_skipped_recent_support'] ?? 0),
         'stale_exit_skipped_profit_protection' => (int) ($runtimeSummary['technical_stale_exit_skipped_profit_protection'] ?? 0),
+        'capacity_released_usd_60m' => round($capacityReleasedUsd60m, 4),
+    ];
+}
+
+function dashboard_build_binance_technical_stale_eligibility_summary(array $runtimeSummary = []): array
+{
+    return [
+        'technical_open_positions_total' => (int) ($runtimeSummary['technical_open_positions_total'] ?? 0),
+        'technical_open_positions_strict' => (int) ($runtimeSummary['technical_open_positions_strict'] ?? 0),
+        'technical_open_positions_legacy' => (int) ($runtimeSummary['technical_open_positions_legacy'] ?? 0),
+        'technical_open_positions_backfilled' => (int) ($runtimeSummary['technical_open_positions_backfilled'] ?? 0),
+        'technical_open_positions_ineligible' => (int) ($runtimeSummary['technical_open_positions_ineligible'] ?? 0),
     ];
 }
 
@@ -1577,10 +1601,13 @@ function dashboard_build_dashboard_glossary(): array
             ['term' => 'Skor esik alti', 'meaning' => 'Sinyal var ama islem acacak kadar guclu degil.'],
             ['term' => 'Teknik uyum zayif', 'meaning' => 'EMA, MACD ve momentum ayni yone yeterince destek vermiyor.'],
             ['term' => 'Taze ozet', 'meaning' => 'Yalnizca son 60 dakikadaki teknik davranisi gosterir.'],
+            ['term' => 'Eski teknik pozisyon', 'meaning' => 'Eski surumden kalan, teknik lane metadata bilgisi eksik acik pozisyon.'],
         ],
         'pozisyonlar-risk' => [
             ['term' => 'Kalan kapasite', 'meaning' => 'Yeni pozisyon acmak icin elde kalan risk butcesi.'],
             ['term' => 'Stale pozisyon', 'meaning' => 'Uzun suredir acik kalan ve yeniden gozden gecirilen pozisyon.'],
+            ['term' => 'Sure baskisiyla cikis', 'meaning' => 'Teknik destek zayifladigi icin uzun sure acik kalan pozisyonun kapatilmasi.'],
+            ['term' => 'Uzun sure acik kaldigi icin cikis', 'meaning' => 'Hard-timeout sinirina takilan ve guncel destek bulamayan pozisyonun kapatilmasi.'],
         ],
         'teshis-log' => [
             ['term' => 'Blocker', 'meaning' => 'Kararin execute olmasini engelleyen baskin neden.'],
@@ -1637,6 +1664,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['binance_technical_score_gap_summary'] = dashboard_build_binance_technical_score_gap_summary_from_rows($technicalRows);
         $payload['binance_technical_fresh_score_gap_summary'] = dashboard_build_binance_technical_score_gap_summary_from_rows($freshTechnicalRows);
         $payload['binance_technical_score_blocker_breakdown'] = dashboard_build_binance_technical_score_blocker_breakdown_from_rows($technicalRows);
+        $payload['binance_technical_stale_eligibility_summary'] = dashboard_build_binance_technical_stale_eligibility_summary($payload['runtime_summary'] ?? []);
         $payload['binance_technical_position_pressure_summary'] = dashboard_build_binance_technical_position_pressure_summary($pdo, $payload['runtime_summary'] ?? [], $technicalRows);
         $payload['binance_technical_reject_breakdown'] = dashboard_build_binance_technical_reject_breakdown_from_rows($technicalRows);
         $payload['binance_technical_fresh_reject_breakdown'] = dashboard_build_binance_technical_reject_breakdown_from_rows($freshTechnicalRows);
@@ -1675,6 +1703,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['binance_technical_score_gap_summary'] = [];
         $payload['binance_technical_fresh_score_gap_summary'] = [];
         $payload['binance_technical_score_blocker_breakdown'] = [];
+        $payload['binance_technical_stale_eligibility_summary'] = [];
         $payload['binance_technical_position_pressure_summary'] = [];
         $payload['binance_technical_reject_breakdown'] = [];
         $payload['binance_technical_fresh_reject_breakdown'] = [];

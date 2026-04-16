@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Tuple
 
 import pandas as pd
@@ -166,9 +166,17 @@ class GhostBotRuntime:
         self.binance_technical_symbol_scope: Tuple[str, ...] = DEFAULT_BINANCE_TECHNICAL_SYMBOLS
         self.technical_stale_review_candidates_90m = 0
         self.technical_stale_exit_candidates_120m = 0
+        self.technical_stale_hard_timeout_candidates_240m = 0
         self.technical_stale_exit_executed = 0
+        self.technical_stale_hard_timeout_executed = 0
         self.technical_stale_exit_skipped_alignment_support = 0
+        self.technical_stale_exit_skipped_recent_support = 0
         self.technical_stale_exit_skipped_profit_protection = 0
+        self.technical_open_positions_total = 0
+        self.technical_open_positions_strict = 0
+        self.technical_open_positions_legacy = 0
+        self.technical_open_positions_backfilled = 0
+        self.technical_open_positions_ineligible = 0
         self.technical_stale_outcomes: Dict[str, str] = {}
 
         self.scanner: Optional[MarketScanner] = None
@@ -529,6 +537,108 @@ class GhostBotRuntime:
         base_symbol = symbol.split("/")[0].upper()
         return BINANCE_FUTURES_MAPPINGS.get(base_symbol, base_symbol)
 
+    def _classify_binance_technical_open_position(self, position: Dict) -> str:
+        venue = str(position.get("venue") or "").strip().lower()
+        execution_mode = str(position.get("execution_mode") or "").strip().lower()
+        status = str(position.get("status") or "").strip().upper()
+        if venue not in {"binance_futures", "binance_spot"}:
+            return "ineligible"
+        if execution_mode != "paper" or status != "OPEN":
+            return "ineligible"
+
+        strategy_profile = str(position.get("strategy_profile") or "").strip()
+        sample_kind = str(position.get("sample_kind") or "").strip()
+        if strategy_profile == STRATEGY_PROFILE_BINANCE_TECHNICAL and sample_kind == "live_paper":
+            return "strict_technical"
+
+        source_signal = str(position.get("source_signal") or "").strip()
+        signal_family = str(position.get("signal_family") or "").strip()
+        normalized_signal_family = normalize_signal_family(signal_family or source_signal)
+        if source_signal == "binance_technical_momentum" or normalized_signal_family == "binance_technical_momentum":
+            return "legacy_technical"
+        return "ineligible"
+
+    async def _backfill_legacy_binance_technical_position(self, position: Dict) -> bool:
+        if self.db is None or self.db.conn is None:
+            return False
+
+        updates: list[str] = []
+        params: list[object] = []
+        if str(position.get("strategy_profile") or "").strip() != STRATEGY_PROFILE_BINANCE_TECHNICAL:
+            updates.append("strategy_profile = ?")
+            params.append(STRATEGY_PROFILE_BINANCE_TECHNICAL)
+            position["strategy_profile"] = STRATEGY_PROFILE_BINANCE_TECHNICAL
+
+        sample_kind = str(position.get("sample_kind") or "").strip()
+        if not sample_kind:
+            updates.append("sample_kind = ?")
+            params.append("live_paper")
+            position["sample_kind"] = "live_paper"
+
+        signal_family = str(position.get("signal_family") or "").strip()
+        if signal_family in {"", "unknown"}:
+            updates.append("signal_family = ?")
+            params.append("binance_technical_momentum")
+            position["signal_family"] = "binance_technical_momentum"
+
+        if not updates:
+            return False
+
+        params.append(position["id"])
+        await self.db.conn.execute(
+            f"UPDATE venue_positions SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        await self.db.conn.commit()
+        return True
+
+    async def _has_recent_same_direction_technical_support(
+        self,
+        position: Dict,
+        expected_direction: str,
+        futures_symbol: str,
+        *,
+        minutes: int = 60,
+    ) -> bool:
+        if self.db is None or self.db.conn is None:
+            return False
+
+        symbols = {
+            str(position.get("symbol_or_market_id") or "").strip(),
+            str(futures_symbol or "").strip(),
+        }
+        symbols = {symbol for symbol in symbols if symbol}
+        if not symbols:
+            return False
+
+        since_iso = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+        placeholders = ", ".join("?" for _ in symbols)
+        async with self.db.conn.execute(
+            f"""
+            SELECT action, inputs_json
+            FROM decision_audit
+            WHERE strategy_profile = ?
+              AND sample_kind = 'live_paper'
+              AND venue IN ('binance_futures', 'binance_spot')
+              AND action IN ('decision', 'execute')
+              AND occurred_at >= ?
+              AND market_id IN ({placeholders})
+            ORDER BY id DESC
+            """,
+            [STRATEGY_PROFILE_BINANCE_TECHNICAL, since_iso, *symbols],
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        for row in rows:
+            try:
+                inputs = json.loads(row["inputs_json"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                inputs = {}
+            direction = str(inputs.get("signal_direction") or inputs.get("direction") or "").upper()
+            if direction == expected_direction:
+                return True
+        return False
+
     async def _score_binance_technical_symbol_for_stale_review(self, futures_symbol: str):
         if self.scanner is None:
             return None, None
@@ -565,8 +675,12 @@ class GhostBotRuntime:
         self.technical_stale_outcomes[position_key] = outcome
         if outcome == "executed":
             self.technical_stale_exit_executed += 1
+        elif outcome == "executed_hard_timeout":
+            self.technical_stale_hard_timeout_executed += 1
         elif outcome == "skip_alignment":
             self.technical_stale_exit_skipped_alignment_support += 1
+        elif outcome == "skip_recent_support":
+            self.technical_stale_exit_skipped_recent_support += 1
         elif outcome == "skip_profit":
             self.technical_stale_exit_skipped_profit_protection += 1
 
@@ -579,6 +693,12 @@ class GhostBotRuntime:
         ):
             self.technical_stale_review_candidates_90m = 0
             self.technical_stale_exit_candidates_120m = 0
+            self.technical_stale_hard_timeout_candidates_240m = 0
+            self.technical_open_positions_total = 0
+            self.technical_open_positions_strict = 0
+            self.technical_open_positions_legacy = 0
+            self.technical_open_positions_backfilled = 0
+            self.technical_open_positions_ineligible = 0
             self.technical_stale_outcomes = {}
             return
 
@@ -589,14 +709,26 @@ class GhostBotRuntime:
         current_keys: set[str] = set()
         review_candidates_90m = 0
         exit_candidates_120m = 0
+        hard_timeout_candidates_240m = 0
+        total_positions = 0
+        strict_positions = 0
+        legacy_positions = 0
+        backfilled_positions = 0
+        ineligible_positions = 0
 
         for raw_position in open_positions:
             position = dict(raw_position)
-            if (
-                str(position.get("strategy_profile") or "") != STRATEGY_PROFILE_BINANCE_TECHNICAL
-                or str(position.get("sample_kind") or "") != "live_paper"
-            ):
+            total_positions += 1
+            classification = self._classify_binance_technical_open_position(position)
+            if classification == "ineligible":
+                ineligible_positions += 1
                 continue
+            if classification == "strict_technical":
+                strict_positions += 1
+            elif classification == "legacy_technical":
+                legacy_positions += 1
+                if await self._backfill_legacy_binance_technical_position(position):
+                    backfilled_positions += 1
 
             position_id = position.get("id")
             venue = str(position.get("venue") or "").strip().lower()
@@ -632,17 +764,37 @@ class GhostBotRuntime:
                 self._record_stale_outcome(position_key, "skip_alignment")
                 continue
 
-            if "technical_alignment_weak" not in support_reasons and "score_below_threshold" not in support_reasons:
-                continue
+            recent_support = False
+            if age_minutes >= 240:
+                hard_timeout_candidates_240m += 1
+                recent_support = await self._has_recent_same_direction_technical_support(
+                    position,
+                    expected_direction,
+                    futures_symbol,
+                    minutes=60,
+                )
+                if recent_support:
+                    self._record_stale_outcome(position_key, "skip_recent_support")
+                    continue
+                hard_timeout_triggered = True
+                stale_exit_reason = "stale_hard_timeout_exit"
+            else:
+                hard_timeout_triggered = False
+                if "technical_alignment_weak" not in support_reasons and "score_below_threshold" not in support_reasons:
+                    continue
+                stale_exit_reason = "stale_time_exit"
 
             exit_price = float(futures_snapshot.get("mark_price") or futures_snapshot.get("last_price") or 0.0)
             audit_inputs = {
+                "stale_position_classification": classification,
                 "position_age_minutes": age_minutes,
                 "stale_review_candidate": True,
                 "stale_exit_candidate": True,
                 "stale_exit_triggered": True,
-                "stale_exit_reason": "stale_time_exit",
+                "stale_hard_timeout_candidate": hard_timeout_triggered,
+                "stale_exit_reason": stale_exit_reason,
                 "stale_exit_alignment_support": False,
+                "stale_exit_recent_support": recent_support,
                 "stale_exit_profit_protected": False,
                 "stale_exit_signal_direction": signal.direction,
                 "stale_exit_signal_score": signal.score,
@@ -656,7 +808,7 @@ class GhostBotRuntime:
                 success, _ = await self.binance_futures_venue.place_exit_order(
                     position["symbol_or_market_id"],
                     exit_price=exit_price,
-                    reason="stale_time_exit",
+                    reason=stale_exit_reason,
                     source="stale_exit_review",
                     audit_inputs=audit_inputs,
                 )
@@ -667,7 +819,7 @@ class GhostBotRuntime:
                 success, _ = await self.binance_spot_venue.place_exit_order(
                     position["symbol_or_market_id"],
                     exit_price=float(spot_snapshot.get("last_price") or 0.0),
-                    reason="stale_time_exit",
+                    reason=stale_exit_reason,
                     source="stale_exit_review",
                     audit_inputs=audit_inputs,
                 )
@@ -675,10 +827,19 @@ class GhostBotRuntime:
                 success = False
 
             if success:
-                self._record_stale_outcome(position_key, "executed")
+                self._record_stale_outcome(
+                    position_key,
+                    "executed_hard_timeout" if hard_timeout_triggered else "executed",
+                )
 
         self.technical_stale_review_candidates_90m = review_candidates_90m
         self.technical_stale_exit_candidates_120m = exit_candidates_120m
+        self.technical_stale_hard_timeout_candidates_240m = hard_timeout_candidates_240m
+        self.technical_open_positions_total = total_positions
+        self.technical_open_positions_strict = strict_positions
+        self.technical_open_positions_legacy = legacy_positions
+        self.technical_open_positions_backfilled = backfilled_positions
+        self.technical_open_positions_ineligible = ineligible_positions
         self.technical_stale_outcomes = {
             key: value for key, value in self.technical_stale_outcomes.items() if key in current_keys
         }
@@ -776,10 +937,18 @@ class GhostBotRuntime:
             "recent_gate_ready_candidates": whale_candidate_aggregation.get("recent_gate_ready_candidates", []),
             "binance_technical_active_symbol_count": len(self.binance_technical_symbol_scope),
             "binance_technical_symbol_scope": list(self.binance_technical_symbol_scope),
+            "technical_open_positions_total": self.technical_open_positions_total,
+            "technical_open_positions_strict": self.technical_open_positions_strict,
+            "technical_open_positions_legacy": self.technical_open_positions_legacy,
+            "technical_open_positions_backfilled": self.technical_open_positions_backfilled,
+            "technical_open_positions_ineligible": self.technical_open_positions_ineligible,
             "technical_stale_review_candidates_90m": self.technical_stale_review_candidates_90m,
             "technical_stale_exit_candidates_120m": self.technical_stale_exit_candidates_120m,
+            "technical_stale_hard_timeout_candidates_240m": self.technical_stale_hard_timeout_candidates_240m,
             "technical_stale_exit_executed": self.technical_stale_exit_executed,
+            "technical_stale_hard_timeout_executed": self.technical_stale_hard_timeout_executed,
             "technical_stale_exit_skipped_alignment_support": self.technical_stale_exit_skipped_alignment_support,
+            "technical_stale_exit_skipped_recent_support": self.technical_stale_exit_skipped_recent_support,
             "technical_stale_exit_skipped_profit_protection": self.technical_stale_exit_skipped_profit_protection,
             "sampling_mode": sampling_mode,
             "sampling_closed_trades": self.sampling_closed_trades,

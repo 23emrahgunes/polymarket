@@ -589,17 +589,20 @@ def _summarize_binance_technical_position_pressure(cursor: sqlite3.Cursor, rows,
     recent_exits_60m = 0
     stop_loss_exits_60m = 0
     take_profit_exits_60m = 0
+    capacity_released_usd_60m = 0.0
     oldest_open_position_minutes = 0
     positions_over_30m = 0
     positions_over_60m = 0
     positions_over_120m = 0
+    positions_over_240m = 0
     if anchor:
         exit_row = cursor.execute(
             """
             SELECT
                 COUNT(*) AS recent_exits,
                 COALESCE(SUM(CASE WHEN reason = 'STOP_LOSS' THEN 1 ELSE 0 END), 0) AS stop_loss_exits,
-                COALESCE(SUM(CASE WHEN reason = 'TAKE_PROFIT' THEN 1 ELSE 0 END), 0) AS take_profit_exits
+                COALESCE(SUM(CASE WHEN reason = 'TAKE_PROFIT' THEN 1 ELSE 0 END), 0) AS take_profit_exits,
+                COALESCE(SUM(COALESCE(trade_size, 0)), 0) AS released_usd
             FROM decision_audit
             WHERE strategy_profile = 'binance_technical_sampling'
               AND venue IN ('binance_futures', 'binance_spot')
@@ -612,25 +615,28 @@ def _summarize_binance_technical_position_pressure(cursor: sqlite3.Cursor, rows,
             recent_exits_60m = int(exit_row["recent_exits"] or 0)
             stop_loss_exits_60m = int(exit_row["stop_loss_exits"] or 0)
             take_profit_exits_60m = int(exit_row["take_profit_exits"] or 0)
+            capacity_released_usd_60m = float(exit_row["released_usd"] or 0.0)
         age_row = cursor.execute(
             """
             SELECT
                 COALESCE(MAX(MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0)), 0) AS oldest_open_position_minutes,
                 COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 30 THEN 1 ELSE 0 END), 0) AS positions_over_30m,
                 COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 60 THEN 1 ELSE 0 END), 0) AS positions_over_60m,
-                COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 120 THEN 1 ELSE 0 END), 0) AS positions_over_120m
+                COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 120 THEN 1 ELSE 0 END), 0) AS positions_over_120m,
+                COALESCE(SUM(CASE WHEN MAX((julianday(?) - julianday(opened_at)) * 24.0 * 60.0, 0) >= 240 THEN 1 ELSE 0 END), 0) AS positions_over_240m
             FROM venue_positions
             WHERE status = 'OPEN'
               AND venue IN ('binance_futures', 'binance_spot')
               AND opened_at IS NOT NULL
             """,
-            (anchor, anchor, anchor, anchor),
+            (anchor, anchor, anchor, anchor, anchor),
         ).fetchone()
         if age_row:
             oldest_open_position_minutes = max(0, int(round(float(age_row["oldest_open_position_minutes"] or 0.0))))
             positions_over_30m = max(0, int(age_row["positions_over_30m"] or 0))
             positions_over_60m = max(0, int(age_row["positions_over_60m"] or 0))
             positions_over_120m = max(0, int(age_row["positions_over_120m"] or 0))
+            positions_over_240m = max(0, int(age_row["positions_over_240m"] or 0))
 
     max_open_positions_rejects = 0
     max_total_position_usd_rejects = 0
@@ -663,6 +669,7 @@ def _summarize_binance_technical_position_pressure(cursor: sqlite3.Cursor, rows,
         "positions_over_30m": positions_over_30m,
         "positions_over_60m": positions_over_60m,
         "positions_over_120m": positions_over_120m,
+        "positions_over_240m": positions_over_240m,
         "max_open_positions_rejects": max_open_positions_rejects,
         "max_total_position_usd_rejects": max_total_position_usd_rejects,
         "max_order_usd_rejects": max_order_usd_rejects,
@@ -670,9 +677,24 @@ def _summarize_binance_technical_position_pressure(cursor: sqlite3.Cursor, rows,
         "sized_down_entries": sized_down_entries,
         "stale_review_candidates_90m": int((status_metrics or {}).get("technical_stale_review_candidates_90m", 0) or 0),
         "stale_exit_candidates_120m": int((status_metrics or {}).get("technical_stale_exit_candidates_120m", 0) or 0),
+        "stale_hard_timeout_candidates_240m": int((status_metrics or {}).get("technical_stale_hard_timeout_candidates_240m", 0) or 0),
         "stale_exit_executed": int((status_metrics or {}).get("technical_stale_exit_executed", 0) or 0),
+        "stale_hard_timeout_executed": int((status_metrics or {}).get("technical_stale_hard_timeout_executed", 0) or 0),
         "stale_exit_skipped_alignment_support": int((status_metrics or {}).get("technical_stale_exit_skipped_alignment_support", 0) or 0),
+        "stale_exit_skipped_recent_support": int((status_metrics or {}).get("technical_stale_exit_skipped_recent_support", 0) or 0),
         "stale_exit_skipped_profit_protection": int((status_metrics or {}).get("technical_stale_exit_skipped_profit_protection", 0) or 0),
+        "capacity_released_usd_60m": round(capacity_released_usd_60m, 4),
+    }
+
+
+def _summarize_binance_technical_stale_eligibility(status_metrics: dict | None = None) -> dict[str, int]:
+    metrics = status_metrics or {}
+    return {
+        "technical_open_positions_total": int(metrics.get("technical_open_positions_total", 0) or 0),
+        "technical_open_positions_strict": int(metrics.get("technical_open_positions_strict", 0) or 0),
+        "technical_open_positions_legacy": int(metrics.get("technical_open_positions_legacy", 0) or 0),
+        "technical_open_positions_backfilled": int(metrics.get("technical_open_positions_backfilled", 0) or 0),
+        "technical_open_positions_ineligible": int(metrics.get("technical_open_positions_ineligible", 0) or 0),
     }
 
 
@@ -1114,6 +1136,7 @@ def main() -> int:
     technical_score_component_summary = _summarize_binance_technical_score_components(technical_rows)
     technical_score_gap_summary = _summarize_binance_technical_score_gap(technical_rows)
     technical_score_blocker_breakdown = _summarize_binance_technical_score_blockers(technical_rows)
+    technical_stale_eligibility_summary = _summarize_binance_technical_stale_eligibility(status_metrics)
     technical_position_pressure_summary = _summarize_binance_technical_position_pressure(cursor, technical_rows, status_metrics)
     connection.close()
 
@@ -1257,6 +1280,9 @@ def main() -> int:
     print("BINANCE_TECHNICAL_SCORE_BLOCKER_BREAKDOWN")
     for reason, count in technical_score_blocker_breakdown:
         print((reason, count))
+    print("BINANCE_TECHNICAL_STALE_ELIGIBILITY_SUMMARY")
+    for label, value in technical_stale_eligibility_summary.items():
+        print((label, value))
     print("BINANCE_TECHNICAL_POSITION_PRESSURE_SUMMARY")
     for label, value in technical_position_pressure_summary.items():
         print((label, value))

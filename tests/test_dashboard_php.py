@@ -263,6 +263,7 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert 'dashboard_tab_help' in payload
     assert 'dashboard_glossary' in payload
     assert 'binance_technical_fresh_summary' in payload
+    assert 'binance_technical_stale_eligibility_summary' in payload
     assert 'binance_technical_fresh_gate_funnel' in payload
     assert 'binance_technical_fresh_recovery_summary' in payload
     assert 'binance_technical_fresh_score_gap_summary' in payload
@@ -559,6 +560,21 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 "$pdo = dashboard_open_db($warnings);",
                 "$rows = dashboard_fetch_recent_binance_technical_rows($pdo);",
                 "$freshRows = dashboard_filter_rows_within_minutes($rows, 60);",
+                "$runtimeSummary = [",
+                "    'technical_open_positions_total' => 2,",
+                "    'technical_open_positions_strict' => 1,",
+                "    'technical_open_positions_legacy' => 1,",
+                "    'technical_open_positions_backfilled' => 1,",
+                "    'technical_open_positions_ineligible' => 0,",
+                "    'technical_stale_review_candidates_90m' => 1,",
+                "    'technical_stale_exit_candidates_120m' => 1,",
+                "    'technical_stale_hard_timeout_candidates_240m' => 1,",
+                "    'technical_stale_exit_executed' => 1,",
+                "    'technical_stale_hard_timeout_executed' => 1,",
+                "    'technical_stale_exit_skipped_alignment_support' => 1,",
+                "    'technical_stale_exit_skipped_recent_support' => 1,",
+                "    'technical_stale_exit_skipped_profit_protection' => 1,",
+                "];",
                 "echo json_encode([",
                 "    'summary' => dashboard_build_binance_technical_summary_from_rows($rows),",
                 "    'fresh_summary' => dashboard_build_binance_technical_summary_from_rows($freshRows),",
@@ -570,7 +586,8 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 "    'component_summary' => dashboard_build_binance_technical_score_component_summary_from_rows($rows),",
                 "    'gap_summary' => dashboard_build_binance_technical_score_gap_summary_from_rows($rows),",
                 "    'fresh_gap_summary' => dashboard_build_binance_technical_score_gap_summary_from_rows($freshRows),",
-                "    'position_pressure_summary' => dashboard_build_binance_technical_position_pressure_summary($pdo, [], $rows),",
+                "    'stale_eligibility_summary' => dashboard_build_binance_technical_stale_eligibility_summary($runtimeSummary),",
+                "    'position_pressure_summary' => dashboard_build_binance_technical_position_pressure_summary($pdo, $runtimeSummary, $rows),",
                 "    'score_blocker_breakdown' => dashboard_build_binance_technical_score_blocker_breakdown_from_rows($rows),",
                 "    'reject_breakdown' => dashboard_build_binance_technical_reject_breakdown_from_rows($rows),",
                 "    'fresh_reject_breakdown' => dashboard_build_binance_technical_reject_breakdown_from_rows($freshRows),",
@@ -660,6 +677,13 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'deep_below_threshold_count': 0,
     }
     assert payload['fresh_gap_summary'] == payload['gap_summary']
+    assert payload['stale_eligibility_summary'] == {
+        'technical_open_positions_total': 2,
+        'technical_open_positions_strict': 1,
+        'technical_open_positions_legacy': 1,
+        'technical_open_positions_backfilled': 1,
+        'technical_open_positions_ineligible': 0,
+    }
     assert payload['position_pressure_summary'] == {
         'open_positions': 1,
         'open_notional_usd': pytest.approx(100.0),
@@ -671,16 +695,21 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'positions_over_30m': 1,
         'positions_over_60m': 1,
         'positions_over_120m': 1,
+        'positions_over_240m': 0,
         'max_open_positions_rejects': 0,
         'max_total_position_usd_rejects': 0,
         'max_order_usd_rejects': 0,
         'legacy_max_position_exceeded_rejects': 1,
         'sized_down_entries': 2,
-        'stale_review_candidates_90m': 0,
-        'stale_exit_candidates_120m': 0,
-        'stale_exit_executed': 0,
-        'stale_exit_skipped_alignment_support': 0,
-        'stale_exit_skipped_profit_protection': 0,
+        'stale_review_candidates_90m': 1,
+        'stale_exit_candidates_120m': 1,
+        'stale_hard_timeout_candidates_240m': 1,
+        'stale_exit_executed': 1,
+        'stale_hard_timeout_executed': 1,
+        'stale_exit_skipped_alignment_support': 1,
+        'stale_exit_skipped_recent_support': 1,
+        'stale_exit_skipped_profit_protection': 1,
+        'capacity_released_usd_60m': pytest.approx(40.0),
     }
     score_blockers = {row['reason']: row['count'] for row in payload['score_blocker_breakdown']}
     assert score_blockers['macd_drag'] == 1
@@ -814,6 +843,7 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Binance teknik recovery ozeti' in html
     assert 'Taze teknik recovery ozeti' in html
     assert 'Futures snapshot ozeti' in html
+    assert 'Stale eligibility ozeti' in html
     assert 'Mikro yapi recovery hit' in html
     assert 'Mikro yapi v2 hit' in html
     assert 'Spread v2 hit' in html
@@ -826,9 +856,15 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Ortalama MACD normalizer' in html
     assert 'En eski acik pozisyon (dk)' in html
     assert 'Legacy max position red' in html
+    assert 'Eski teknik pozisyon' in html
+    assert 'Backfill edilen pozisyon' in html
     assert 'Stale review 90 dk' in html
     assert 'Stale exit 120 dk' in html
+    assert '240 dk hard-timeout aday' in html
     assert 'Sure baskisiyla cikis' in html
+    assert 'Hard-timeout cikis' in html
+    assert 'Kapasiteye geri acilan USD' in html
+    assert 'Uzun sure acik kaldigi icin cikis' in html
     assert 'Ortalama momentum normalizer' in html
     assert 'Ortalama hacim normalizer' in html
     assert 'Teknik Skor Blocker Dagilimi' in html
