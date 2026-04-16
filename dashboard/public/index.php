@@ -1374,11 +1374,14 @@ function updatePanels(payload) {
 
     const technicalStaleEligibility = payload.binance_technical_stale_eligibility_summary || {};
     renderMetrics('binance-technical-stale-eligibility-summary', [
+        { label: 'Stale review calisma', value: formatNumber(technicalStaleEligibility.stale_review_runs, 0) },
+        { label: 'Review tarafindan gorulen pozisyon', value: formatNumber(technicalStaleEligibility.open_positions_seen_by_stale_review, 0) },
         { label: 'Teknik acik pozisyon', value: formatNumber(technicalStaleEligibility.technical_open_positions_total, 0) },
         { label: 'Strict teknik pozisyon', value: formatNumber(technicalStaleEligibility.technical_open_positions_strict, 0) },
         { label: 'Eski teknik pozisyon', value: formatNumber(technicalStaleEligibility.technical_open_positions_legacy, 0) },
         { label: 'Backfill edilen pozisyon', value: formatNumber(technicalStaleEligibility.technical_open_positions_backfilled, 0) },
-        { label: 'Kapsam disi pozisyon', value: formatNumber(technicalStaleEligibility.technical_open_positions_ineligible, 0) }
+        { label: 'Kapsam disi pozisyon', value: formatNumber(technicalStaleEligibility.technical_open_positions_ineligible, 0) },
+        { label: 'Atlama nedeni', value: escapeHtml(technicalStaleEligibility.stale_review_skipped || 'none') }
     ]);
 
     const technicalLegacyShape = payload.binance_technical_legacy_position_shape_summary || {};

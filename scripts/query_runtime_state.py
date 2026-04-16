@@ -687,14 +687,17 @@ def _summarize_binance_technical_position_pressure(cursor: sqlite3.Cursor, rows,
     }
 
 
-def _summarize_binance_technical_stale_eligibility(status_metrics: dict | None = None) -> dict[str, int]:
+def _summarize_binance_technical_stale_eligibility(status_metrics: dict | None = None) -> dict[str, object]:
     metrics = status_metrics or {}
     return {
+        "stale_review_runs": int(metrics.get("technical_stale_review_runs", 0) or 0),
+        "open_positions_seen_by_stale_review": int(metrics.get("technical_open_positions_seen_by_stale_review", 0) or 0),
         "technical_open_positions_total": int(metrics.get("technical_open_positions_total", 0) or 0),
         "technical_open_positions_strict": int(metrics.get("technical_open_positions_strict", 0) or 0),
         "technical_open_positions_legacy": int(metrics.get("technical_open_positions_legacy", 0) or 0),
         "technical_open_positions_backfilled": int(metrics.get("technical_open_positions_backfilled", 0) or 0),
         "technical_open_positions_ineligible": int(metrics.get("technical_open_positions_ineligible", 0) or 0),
+        "stale_review_skipped": str(metrics.get("technical_stale_review_skipped_reason") or "none"),
     }
 
 

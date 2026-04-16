@@ -678,11 +678,14 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
     }
     assert payload['fresh_gap_summary'] == payload['gap_summary']
     assert payload['stale_eligibility_summary'] == {
+        'stale_review_runs': 0,
+        'open_positions_seen_by_stale_review': 0,
         'technical_open_positions_total': 2,
         'technical_open_positions_strict': 1,
         'technical_open_positions_legacy': 1,
         'technical_open_positions_backfilled': 1,
         'technical_open_positions_ineligible': 0,
+        'stale_review_skipped': 'none',
     }
     assert payload['position_pressure_summary'] == {
         'open_positions': 1,

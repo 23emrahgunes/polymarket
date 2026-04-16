@@ -180,6 +180,9 @@ class GhostBotRuntime:
         self.technical_open_positions_price_structure = 0
         self.technical_open_positions_momentum_source = 0
         self.technical_open_positions_protection_linked = 0
+        self.technical_stale_review_runs = 0
+        self.technical_open_positions_seen_by_stale_review = 0
+        self.technical_stale_review_skipped_reason = "not_run"
         self.technical_legacy_position_shape_summary: Dict[str, int] = {}
         self.technical_legacy_open_positions: list[Dict[str, object]] = []
         self.technical_stale_outcomes: Dict[str, str] = {}
@@ -759,11 +762,9 @@ class GhostBotRuntime:
             self.technical_stale_exit_skipped_profit_protection += 1
 
     async def _review_stale_binance_technical_positions(self) -> None:
-        if (
-            self.db is None
-            or self.scanner is None
-            or not self.settings.binance_technical_paper_enabled
-        ):
+        self.technical_stale_review_runs += 1
+        self.technical_stale_review_skipped_reason = "none"
+        if self.db is None:
             self.technical_stale_review_candidates_90m = 0
             self.technical_stale_exit_candidates_120m = 0
             self.technical_stale_hard_timeout_candidates_240m = 0
@@ -775,6 +776,8 @@ class GhostBotRuntime:
             self.technical_open_positions_price_structure = 0
             self.technical_open_positions_momentum_source = 0
             self.technical_open_positions_protection_linked = 0
+            self.technical_open_positions_seen_by_stale_review = 0
+            self.technical_stale_review_skipped_reason = "db_missing"
             self.technical_legacy_position_shape_summary = {}
             self.technical_legacy_open_positions = []
             self.technical_stale_outcomes = {}
@@ -783,6 +786,33 @@ class GhostBotRuntime:
         open_positions = []
         for venue_id in ("binance_futures", "binance_spot"):
             open_positions.extend(await self.db.get_open_positions(venue=venue_id))
+        self.technical_open_positions_seen_by_stale_review = len(open_positions)
+
+        if self.scanner is None:
+            self.technical_stale_review_skipped_reason = "scanner_missing"
+            self.technical_stale_review_candidates_90m = 0
+            self.technical_stale_exit_candidates_120m = 0
+            self.technical_stale_hard_timeout_candidates_240m = 0
+            self.technical_open_positions_total = len(open_positions)
+            self.technical_open_positions_strict = 0
+            self.technical_open_positions_legacy = 0
+            self.technical_open_positions_backfilled = 0
+            self.technical_open_positions_ineligible = len(open_positions)
+            self.technical_open_positions_price_structure = 0
+            self.technical_open_positions_momentum_source = 0
+            self.technical_open_positions_protection_linked = 0
+            self.technical_legacy_position_shape_summary = {
+                "open_binance_paper_positions": len(open_positions),
+                "strict_technical_positions": 0,
+                "legacy_technical_positions": 0,
+                "ineligible_positions": len(open_positions),
+                "price_structure_source_positions": 0,
+                "technical_momentum_source_positions": 0,
+                "protection_linked_positions": 0,
+                "backfilled_positions": 0,
+            }
+            self.technical_legacy_open_positions = []
+            return
 
         current_keys: set[str] = set()
         review_candidates_90m = 0
@@ -952,6 +982,7 @@ class GhostBotRuntime:
         if self.db is None:
             return
 
+        await self._review_stale_binance_technical_positions()
         await self.refresh_sampling_state()
         total, wins, win_rate, total_pnl = await self.db.get_bot_performance()
         futures_realized, futures_unrealized = await self.db.get_venue_performance("binance_futures")
@@ -1049,6 +1080,9 @@ class GhostBotRuntime:
             "technical_open_positions_price_structure": self.technical_open_positions_price_structure,
             "technical_open_positions_momentum_source": self.technical_open_positions_momentum_source,
             "technical_open_positions_protection_linked": self.technical_open_positions_protection_linked,
+            "technical_stale_review_runs": self.technical_stale_review_runs,
+            "technical_open_positions_seen_by_stale_review": self.technical_open_positions_seen_by_stale_review,
+            "technical_stale_review_skipped_reason": self.technical_stale_review_skipped_reason,
             "technical_legacy_position_shape_summary": self.technical_legacy_position_shape_summary,
             "technical_legacy_open_positions": self.technical_legacy_open_positions,
             "technical_stale_review_candidates_90m": self.technical_stale_review_candidates_90m,

@@ -918,11 +918,14 @@ function dashboard_build_binance_technical_position_pressure_summary(PDO $pdo, a
 function dashboard_build_binance_technical_stale_eligibility_summary(array $runtimeSummary = []): array
 {
     return [
+        'stale_review_runs' => (int) ($runtimeSummary['technical_stale_review_runs'] ?? 0),
+        'open_positions_seen_by_stale_review' => (int) ($runtimeSummary['technical_open_positions_seen_by_stale_review'] ?? 0),
         'technical_open_positions_total' => (int) ($runtimeSummary['technical_open_positions_total'] ?? 0),
         'technical_open_positions_strict' => (int) ($runtimeSummary['technical_open_positions_strict'] ?? 0),
         'technical_open_positions_legacy' => (int) ($runtimeSummary['technical_open_positions_legacy'] ?? 0),
         'technical_open_positions_backfilled' => (int) ($runtimeSummary['technical_open_positions_backfilled'] ?? 0),
         'technical_open_positions_ineligible' => (int) ($runtimeSummary['technical_open_positions_ineligible'] ?? 0),
+        'stale_review_skipped' => trim((string) ($runtimeSummary['technical_stale_review_skipped_reason'] ?? 'none')),
     ];
 }
 
