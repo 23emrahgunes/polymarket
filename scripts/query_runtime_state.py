@@ -698,6 +698,53 @@ def _summarize_binance_technical_stale_eligibility(status_metrics: dict | None =
     }
 
 
+def _summarize_binance_technical_legacy_position_shape(status_metrics: dict | None = None) -> dict[str, int]:
+    metrics = status_metrics or {}
+    raw_summary = metrics.get("technical_legacy_position_shape_summary") or {}
+    if not isinstance(raw_summary, dict):
+        raw_summary = {}
+    return {
+        "open_binance_paper_positions": int(raw_summary.get("open_binance_paper_positions", metrics.get("technical_open_positions_total", 0)) or 0),
+        "strict_technical_positions": int(raw_summary.get("strict_technical_positions", metrics.get("technical_open_positions_strict", 0)) or 0),
+        "legacy_technical_positions": int(raw_summary.get("legacy_technical_positions", metrics.get("technical_open_positions_legacy", 0)) or 0),
+        "ineligible_positions": int(raw_summary.get("ineligible_positions", metrics.get("technical_open_positions_ineligible", 0)) or 0),
+        "price_structure_source_positions": int(raw_summary.get("price_structure_source_positions", metrics.get("technical_open_positions_price_structure", 0)) or 0),
+        "technical_momentum_source_positions": int(raw_summary.get("technical_momentum_source_positions", metrics.get("technical_open_positions_momentum_source", 0)) or 0),
+        "protection_linked_positions": int(raw_summary.get("protection_linked_positions", metrics.get("technical_open_positions_protection_linked", 0)) or 0),
+        "backfilled_positions": int(raw_summary.get("backfilled_positions", metrics.get("technical_open_positions_backfilled", 0)) or 0),
+    }
+
+
+def _summarize_binance_technical_legacy_open_positions(status_metrics: dict | None = None) -> list[dict[str, object]]:
+    metrics = status_metrics or {}
+    raw_positions = metrics.get("technical_legacy_open_positions") or []
+    if not isinstance(raw_positions, list):
+        return []
+    rows: list[dict[str, object]] = []
+    for raw_position in raw_positions[:10]:
+        if not isinstance(raw_position, dict):
+            continue
+        rows.append(
+            {
+                "position_id": int(raw_position.get("position_id", 0) or 0),
+                "classification": str(raw_position.get("classification") or "ineligible"),
+                "venue": str(raw_position.get("venue") or ""),
+                "symbol_or_market_id": str(raw_position.get("symbol_or_market_id") or ""),
+                "side": str(raw_position.get("side") or ""),
+                "source_signal": str(raw_position.get("source_signal") or ""),
+                "signal_family": str(raw_position.get("signal_family") or ""),
+                "strategy_profile": str(raw_position.get("strategy_profile") or ""),
+                "sample_kind": str(raw_position.get("sample_kind") or ""),
+                "opened_at": str(raw_position.get("opened_at") or ""),
+                "position_age_minutes": round(float(raw_position.get("position_age_minutes", 0.0) or 0.0), 2),
+                "has_stop_loss_order": int(bool(raw_position.get("has_stop_loss_order"))),
+                "has_take_profit_order": int(bool(raw_position.get("has_take_profit_order"))),
+                "marker_labels": ",".join(str(label) for label in (raw_position.get("marker_labels") or []) if str(label).strip()),
+            }
+        )
+    return rows
+
+
 def _summarize_binance_technical_score_blockers(rows) -> list[tuple[str, int]]:
     counts: dict[str, int] = {}
     for row in rows or []:
@@ -1137,6 +1184,8 @@ def main() -> int:
     technical_score_gap_summary = _summarize_binance_technical_score_gap(technical_rows)
     technical_score_blocker_breakdown = _summarize_binance_technical_score_blockers(technical_rows)
     technical_stale_eligibility_summary = _summarize_binance_technical_stale_eligibility(status_metrics)
+    technical_legacy_position_shape_summary = _summarize_binance_technical_legacy_position_shape(status_metrics)
+    technical_legacy_open_positions = _summarize_binance_technical_legacy_open_positions(status_metrics)
     technical_position_pressure_summary = _summarize_binance_technical_position_pressure(cursor, technical_rows, status_metrics)
     connection.close()
 
@@ -1283,6 +1332,29 @@ def main() -> int:
     print("BINANCE_TECHNICAL_STALE_ELIGIBILITY_SUMMARY")
     for label, value in technical_stale_eligibility_summary.items():
         print((label, value))
+    print("BINANCE_TECHNICAL_LEGACY_POSITION_SHAPE_SUMMARY")
+    for label, value in technical_legacy_position_shape_summary.items():
+        print((label, value))
+    print("BINANCE_TECHNICAL_LEGACY_OPEN_POSITIONS")
+    for row in technical_legacy_open_positions:
+        print(
+            (
+                row.get("position_id", 0),
+                row.get("classification", "ineligible"),
+                row.get("venue", ""),
+                row.get("symbol_or_market_id", ""),
+                row.get("side", ""),
+                row.get("source_signal", ""),
+                row.get("signal_family", ""),
+                row.get("strategy_profile", ""),
+                row.get("sample_kind", ""),
+                row.get("opened_at", ""),
+                row.get("position_age_minutes", 0.0),
+                row.get("has_stop_loss_order", 0),
+                row.get("has_take_profit_order", 0),
+                row.get("marker_labels", ""),
+            )
+        )
     print("BINANCE_TECHNICAL_POSITION_PRESSURE_SUMMARY")
     for label, value in technical_position_pressure_summary.items():
         print((label, value))

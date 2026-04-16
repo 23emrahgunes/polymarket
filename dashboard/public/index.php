@@ -412,7 +412,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         #market-alias-counts, #whale-wallet-counts, #unsupported-side-summary { max-height: 180px; overflow: auto; }
         #top-market-aliases, #top-whales, #trusted-whale-summary { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
-        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #binance-technical-summary, #binance-technical-fresh-summary, #binance-technical-gate-funnel, #binance-technical-fresh-gate-funnel, #binance-technical-recovery-summary, #binance-technical-fresh-recovery-summary, #binance-technical-score-component-summary, #binance-technical-score-gap-summary, #binance-technical-fresh-score-gap-summary, #binance-technical-stale-eligibility-summary, #binance-technical-position-pressure-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
+        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #binance-technical-summary, #binance-technical-fresh-summary, #binance-technical-gate-funnel, #binance-technical-fresh-gate-funnel, #binance-technical-recovery-summary, #binance-technical-fresh-recovery-summary, #binance-technical-score-component-summary, #binance-technical-score-gap-summary, #binance-technical-fresh-score-gap-summary, #binance-technical-stale-eligibility-summary, #binance-technical-legacy-position-shape-summary, #binance-technical-position-pressure-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
         #recent-gate-ready-candidates { max-height: 260px; overflow: auto; }
         #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown, #binance-technical-reject-breakdown, #binance-technical-fresh-reject-breakdown, #binance-technical-score-blocker-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
@@ -590,6 +590,10 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                     <div class="metric-list" id="binance-technical-fresh-score-gap-summary"></div>
                     <div class="subsection-title">Stale eligibility ozeti</div>
                     <div class="metric-list" id="binance-technical-stale-eligibility-summary"></div>
+                    <div class="subsection-title">Legacy teknik shape ozeti</div>
+                    <div class="metric-list" id="binance-technical-legacy-position-shape-summary"></div>
+                    <div class="subsection-title">Legacy acik pozisyonlar</div>
+                    <div id="binance-technical-legacy-open-positions"></div>
                     <div class="subsection-title">Pozisyon Baskisi ve Exit Akisi</div>
                     <div class="metric-list" id="binance-technical-position-pressure-summary"></div>
                     <div class="metric-list" id="performance-snapshot"></div>
@@ -1376,6 +1380,30 @@ function updatePanels(payload) {
         { label: 'Backfill edilen pozisyon', value: formatNumber(technicalStaleEligibility.technical_open_positions_backfilled, 0) },
         { label: 'Kapsam disi pozisyon', value: formatNumber(technicalStaleEligibility.technical_open_positions_ineligible, 0) }
     ]);
+
+    const technicalLegacyShape = payload.binance_technical_legacy_position_shape_summary || {};
+    renderMetrics('binance-technical-legacy-position-shape-summary', [
+        { label: 'Acik Binance paper pozisyon', value: formatNumber(technicalLegacyShape.open_binance_paper_positions, 0) },
+        { label: 'Strict teknik', value: formatNumber(technicalLegacyShape.strict_technical_positions, 0) },
+        { label: 'Legacy teknik', value: formatNumber(technicalLegacyShape.legacy_technical_positions, 0) },
+        { label: 'Price-structure kaynakli', value: formatNumber(technicalLegacyShape.price_structure_source_positions, 0) },
+        { label: 'Momentum kaynakli', value: formatNumber(technicalLegacyShape.technical_momentum_source_positions, 0) },
+        { label: 'Koruma emri bagli', value: formatNumber(technicalLegacyShape.protection_linked_positions, 0) },
+        { label: 'Backfill edilen', value: formatNumber(technicalLegacyShape.backfilled_positions, 0) },
+        { label: 'Kapsam disi', value: formatNumber(technicalLegacyShape.ineligible_positions, 0) }
+    ]);
+
+    renderTable('binance-technical-legacy-open-positions', [
+        { key: 'classification', label: 'Sinif', render: (row) => escapeHtml(row.classification || 'ineligible') },
+        { key: 'venue', label: 'Venue', mono: true, render: (row) => escapeHtml(row.venue || '') },
+        { key: 'symbol_or_market_id', label: 'Sembol / Market', mono: true, render: (row) => truncateHtml(row.symbol_or_market_id || '', 20) },
+        { key: 'side', label: 'Yon', render: (row) => escapeHtml(row.side || '') },
+        { key: 'source_signal', label: 'Kaynak', render: (row) => escapeHtml(row.source_signal || 'yok') },
+        { key: 'strategy_profile', label: 'Strateji', render: (row) => escapeHtml(row.strategy_profile || 'yok') },
+        { key: 'sample_kind', label: 'Ornek', render: (row) => escapeHtml(row.sample_kind || 'yok') },
+        { key: 'position_age_minutes', label: 'Yas (dk)', render: (row) => escapeHtml(formatNumber(row.position_age_minutes, 0)) },
+        { key: 'marker_labels', label: 'Shape Isaretleri', render: (row) => escapeHtml(row.marker_labels || 'yok') }
+    ], payload.binance_technical_legacy_open_positions || [], 'Legacy teknik acik pozisyon bulunmuyor.');
 
     const technicalPositionPressure = payload.binance_technical_position_pressure_summary || {};
     renderMetrics('binance-technical-position-pressure-summary', [

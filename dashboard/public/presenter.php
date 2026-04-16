@@ -926,6 +926,62 @@ function dashboard_build_binance_technical_stale_eligibility_summary(array $runt
     ];
 }
 
+function dashboard_build_binance_technical_legacy_position_shape_summary(array $runtimeSummary = []): array
+{
+    $rawSummary = $runtimeSummary['technical_legacy_position_shape_summary'] ?? [];
+    if (!is_array($rawSummary)) {
+        $rawSummary = [];
+    }
+
+    return [
+        'open_binance_paper_positions' => (int) ($rawSummary['open_binance_paper_positions'] ?? ($runtimeSummary['technical_open_positions_total'] ?? 0)),
+        'strict_technical_positions' => (int) ($rawSummary['strict_technical_positions'] ?? ($runtimeSummary['technical_open_positions_strict'] ?? 0)),
+        'legacy_technical_positions' => (int) ($rawSummary['legacy_technical_positions'] ?? ($runtimeSummary['technical_open_positions_legacy'] ?? 0)),
+        'ineligible_positions' => (int) ($rawSummary['ineligible_positions'] ?? ($runtimeSummary['technical_open_positions_ineligible'] ?? 0)),
+        'price_structure_source_positions' => (int) ($rawSummary['price_structure_source_positions'] ?? ($runtimeSummary['technical_open_positions_price_structure'] ?? 0)),
+        'technical_momentum_source_positions' => (int) ($rawSummary['technical_momentum_source_positions'] ?? ($runtimeSummary['technical_open_positions_momentum_source'] ?? 0)),
+        'protection_linked_positions' => (int) ($rawSummary['protection_linked_positions'] ?? ($runtimeSummary['technical_open_positions_protection_linked'] ?? 0)),
+        'backfilled_positions' => (int) ($rawSummary['backfilled_positions'] ?? ($runtimeSummary['technical_open_positions_backfilled'] ?? 0)),
+    ];
+}
+
+function dashboard_build_binance_technical_legacy_open_positions(array $runtimeSummary = []): array
+{
+    $rawPositions = $runtimeSummary['technical_legacy_open_positions'] ?? [];
+    if (!is_array($rawPositions)) {
+        return [];
+    }
+
+    $items = [];
+    foreach (array_slice($rawPositions, 0, 10) as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $markerLabels = $row['marker_labels'] ?? [];
+        if (is_array($markerLabels)) {
+            $markerLabels = implode(', ', array_map(static fn($value): string => trim((string) $value), $markerLabels));
+        }
+        $items[] = [
+            'position_id' => (int) ($row['position_id'] ?? 0),
+            'classification' => trim((string) ($row['classification'] ?? 'ineligible')),
+            'venue' => trim((string) ($row['venue'] ?? '')),
+            'symbol_or_market_id' => trim((string) ($row['symbol_or_market_id'] ?? '')),
+            'side' => trim((string) ($row['side'] ?? '')),
+            'source_signal' => trim((string) ($row['source_signal'] ?? '')),
+            'signal_family' => trim((string) ($row['signal_family'] ?? '')),
+            'strategy_profile' => trim((string) ($row['strategy_profile'] ?? '')),
+            'sample_kind' => trim((string) ($row['sample_kind'] ?? '')),
+            'opened_at' => trim((string) ($row['opened_at'] ?? '')),
+            'position_age_minutes' => round((float) ($row['position_age_minutes'] ?? 0.0), 2),
+            'has_stop_loss_order' => !empty($row['has_stop_loss_order']),
+            'has_take_profit_order' => !empty($row['has_take_profit_order']),
+            'marker_labels' => trim((string) $markerLabels),
+        ];
+    }
+
+    return $items;
+}
+
 function dashboard_build_binance_technical_score_blocker_breakdown_from_rows(array $rows): array
 {
     $counts = [];
@@ -1602,12 +1658,14 @@ function dashboard_build_dashboard_glossary(): array
             ['term' => 'Teknik uyum zayif', 'meaning' => 'EMA, MACD ve momentum ayni yone yeterince destek vermiyor.'],
             ['term' => 'Taze ozet', 'meaning' => 'Yalnizca son 60 dakikadaki teknik davranisi gosterir.'],
             ['term' => 'Eski teknik pozisyon', 'meaning' => 'Eski surumden kalan, teknik lane metadata bilgisi eksik acik pozisyon.'],
+            ['term' => 'Backfill', 'meaning' => 'Eksik teknik metadata bilgisinin guvenli sekilde tamamlanmasi.'],
         ],
         'pozisyonlar-risk' => [
             ['term' => 'Kalan kapasite', 'meaning' => 'Yeni pozisyon acmak icin elde kalan risk butcesi.'],
             ['term' => 'Stale pozisyon', 'meaning' => 'Uzun suredir acik kalan ve yeniden gozden gecirilen pozisyon.'],
             ['term' => 'Sure baskisiyla cikis', 'meaning' => 'Teknik destek zayifladigi icin uzun sure acik kalan pozisyonun kapatilmasi.'],
             ['term' => 'Uzun sure acik kaldigi icin cikis', 'meaning' => 'Hard-timeout sinirina takilan ve guncel destek bulamayan pozisyonun kapatilmasi.'],
+            ['term' => 'Kapasiteye geri acilan USD', 'meaning' => 'Son 60 dakikada kapanan pozisyonlar sayesinde yeniden kullanilabilir hale gelen risk butcesi.'],
         ],
         'teshis-log' => [
             ['term' => 'Blocker', 'meaning' => 'Kararin execute olmasini engelleyen baskin neden.'],
@@ -1665,6 +1723,8 @@ function dashboard_augment_payload(array $payload): array
         $payload['binance_technical_fresh_score_gap_summary'] = dashboard_build_binance_technical_score_gap_summary_from_rows($freshTechnicalRows);
         $payload['binance_technical_score_blocker_breakdown'] = dashboard_build_binance_technical_score_blocker_breakdown_from_rows($technicalRows);
         $payload['binance_technical_stale_eligibility_summary'] = dashboard_build_binance_technical_stale_eligibility_summary($payload['runtime_summary'] ?? []);
+        $payload['binance_technical_legacy_position_shape_summary'] = dashboard_build_binance_technical_legacy_position_shape_summary($payload['runtime_summary'] ?? []);
+        $payload['binance_technical_legacy_open_positions'] = dashboard_build_binance_technical_legacy_open_positions($payload['runtime_summary'] ?? []);
         $payload['binance_technical_position_pressure_summary'] = dashboard_build_binance_technical_position_pressure_summary($pdo, $payload['runtime_summary'] ?? [], $technicalRows);
         $payload['binance_technical_reject_breakdown'] = dashboard_build_binance_technical_reject_breakdown_from_rows($technicalRows);
         $payload['binance_technical_fresh_reject_breakdown'] = dashboard_build_binance_technical_reject_breakdown_from_rows($freshTechnicalRows);
@@ -1704,6 +1764,8 @@ function dashboard_augment_payload(array $payload): array
         $payload['binance_technical_fresh_score_gap_summary'] = [];
         $payload['binance_technical_score_blocker_breakdown'] = [];
         $payload['binance_technical_stale_eligibility_summary'] = [];
+        $payload['binance_technical_legacy_position_shape_summary'] = [];
+        $payload['binance_technical_legacy_open_positions'] = [];
         $payload['binance_technical_position_pressure_summary'] = [];
         $payload['binance_technical_reject_breakdown'] = [];
         $payload['binance_technical_fresh_reject_breakdown'] = [];

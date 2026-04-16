@@ -177,6 +177,11 @@ class GhostBotRuntime:
         self.technical_open_positions_legacy = 0
         self.technical_open_positions_backfilled = 0
         self.technical_open_positions_ineligible = 0
+        self.technical_open_positions_price_structure = 0
+        self.technical_open_positions_momentum_source = 0
+        self.technical_open_positions_protection_linked = 0
+        self.technical_legacy_position_shape_summary: Dict[str, int] = {}
+        self.technical_legacy_open_positions: list[Dict[str, object]] = []
         self.technical_stale_outcomes: Dict[str, str] = {}
 
         self.scanner: Optional[MarketScanner] = None
@@ -537,26 +542,95 @@ class GhostBotRuntime:
         base_symbol = symbol.split("/")[0].upper()
         return BINANCE_FUTURES_MAPPINGS.get(base_symbol, base_symbol)
 
-    def _classify_binance_technical_open_position(self, position: Dict) -> str:
+    async def _describe_binance_technical_open_position(self, position: Dict) -> Dict[str, object]:
         venue = str(position.get("venue") or "").strip().lower()
         execution_mode = str(position.get("execution_mode") or "").strip().lower()
         status = str(position.get("status") or "").strip().upper()
-        if venue not in {"binance_futures", "binance_spot"}:
-            return "ineligible"
-        if execution_mode != "paper" or status != "OPEN":
-            return "ineligible"
-
-        strategy_profile = str(position.get("strategy_profile") or "").strip()
-        sample_kind = str(position.get("sample_kind") or "").strip()
-        if strategy_profile == STRATEGY_PROFILE_BINANCE_TECHNICAL and sample_kind == "live_paper":
-            return "strict_technical"
-
+        symbol_or_market_id = str(position.get("symbol_or_market_id") or "").strip()
         source_signal = str(position.get("source_signal") or "").strip()
         signal_family = str(position.get("signal_family") or "").strip()
+        strategy_profile = str(position.get("strategy_profile") or "").strip()
+        sample_kind = str(position.get("sample_kind") or "").strip()
+        instrument_type = str(position.get("instrument_type") or "").strip().lower()
+        position_id = position.get("id")
+        age_minutes = self._position_age_minutes(position)
+
+        open_orders = []
+        if self.db is not None and symbol_or_market_id:
+            open_orders = await self.db.get_open_venue_orders(venue, symbol_or_market_id=symbol_or_market_id)
+        related_orders = []
+        for raw_order in open_orders:
+            order = dict(raw_order)
+            order_position_id = order.get("position_id")
+            if order_position_id in (None, "", position_id):
+                related_orders.append(order)
+        order_types = {str(order.get("order_type") or "").strip().upper() for order in related_orders}
+        has_stop_loss_order = "STOP_LOSS" in order_types
+        has_take_profit_order = "TAKE_PROFIT" in order_types
+        protection_order_match = has_stop_loss_order or has_take_profit_order
         normalized_signal_family = normalize_signal_family(signal_family or source_signal)
-        if source_signal == "binance_technical_momentum" or normalized_signal_family == "binance_technical_momentum":
-            return "legacy_technical"
-        return "ineligible"
+        source_signal_match = source_signal in {
+            "binance_technical_momentum",
+            "binance_futures_price_structure",
+            "binance_spot_price_structure",
+        }
+        price_structure_source = source_signal in {"binance_futures_price_structure", "binance_spot_price_structure"}
+        momentum_source = source_signal == "binance_technical_momentum"
+        signal_family_match = signal_family in {"binance_technical_momentum", "technical"} or normalized_signal_family == "technical"
+        strategy_profile_match = strategy_profile == STRATEGY_PROFILE_BINANCE_TECHNICAL
+        sample_kind_match = sample_kind == "live_paper"
+        is_strict = strategy_profile_match and sample_kind_match
+        marker_labels = []
+        if price_structure_source:
+            marker_labels.append("price_structure_source")
+        if momentum_source:
+            marker_labels.append("technical_momentum_source")
+        if signal_family_match:
+            marker_labels.append("technical_signal_family")
+        if strategy_profile_match:
+            marker_labels.append("technical_strategy_profile")
+        if sample_kind_match:
+            marker_labels.append("live_paper_sample")
+        if has_stop_loss_order:
+            marker_labels.append("stop_loss_order")
+        if has_take_profit_order:
+            marker_labels.append("take_profit_order")
+
+        if venue not in {"binance_futures", "binance_spot"}:
+            classification = "ineligible"
+        elif execution_mode != "paper" or status != "OPEN":
+            classification = "ineligible"
+        elif is_strict:
+            classification = "strict_technical"
+        elif source_signal_match or signal_family_match or strategy_profile_match or protection_order_match:
+            classification = "legacy_technical"
+        else:
+            classification = "ineligible"
+
+        return {
+            "position_id": position_id,
+            "classification": classification,
+            "venue": venue,
+            "symbol_or_market_id": symbol_or_market_id,
+            "side": str(position.get("side") or "").strip().upper(),
+            "instrument_type": instrument_type,
+            "source_signal": source_signal,
+            "signal_family": signal_family,
+            "strategy_profile": strategy_profile,
+            "sample_kind": sample_kind,
+            "normalized_signal_family": normalized_signal_family,
+            "position_age_minutes": age_minutes if age_minutes is not None else 0.0,
+            "opened_at": str(position.get("opened_at") or ""),
+            "has_stop_loss_order": has_stop_loss_order,
+            "has_take_profit_order": has_take_profit_order,
+            "protection_order_match": protection_order_match,
+            "price_structure_source": price_structure_source,
+            "momentum_source": momentum_source,
+            "signal_family_match": signal_family_match,
+            "strategy_profile_match": strategy_profile_match,
+            "sample_kind_match": sample_kind_match,
+            "marker_labels": marker_labels,
+        }
 
     async def _backfill_legacy_binance_technical_position(self, position: Dict) -> bool:
         if self.db is None or self.db.conn is None:
@@ -686,10 +760,9 @@ class GhostBotRuntime:
 
     async def _review_stale_binance_technical_positions(self) -> None:
         if (
-            not self.technical_enabled
-            or self.db is None
+            self.db is None
             or self.scanner is None
-            or self.sample_kind != "live_paper"
+            or not self.settings.binance_technical_paper_enabled
         ):
             self.technical_stale_review_candidates_90m = 0
             self.technical_stale_exit_candidates_120m = 0
@@ -699,6 +772,11 @@ class GhostBotRuntime:
             self.technical_open_positions_legacy = 0
             self.technical_open_positions_backfilled = 0
             self.technical_open_positions_ineligible = 0
+            self.technical_open_positions_price_structure = 0
+            self.technical_open_positions_momentum_source = 0
+            self.technical_open_positions_protection_linked = 0
+            self.technical_legacy_position_shape_summary = {}
+            self.technical_legacy_open_positions = []
             self.technical_stale_outcomes = {}
             return
 
@@ -715,11 +793,23 @@ class GhostBotRuntime:
         legacy_positions = 0
         backfilled_positions = 0
         ineligible_positions = 0
+        price_structure_positions = 0
+        momentum_source_positions = 0
+        protection_linked_positions = 0
+        legacy_open_positions: list[Dict[str, object]] = []
 
         for raw_position in open_positions:
             position = dict(raw_position)
             total_positions += 1
-            classification = self._classify_binance_technical_open_position(position)
+            position_shape = await self._describe_binance_technical_open_position(position)
+            classification = str(position_shape.get("classification") or "ineligible")
+            if position_shape.get("price_structure_source"):
+                price_structure_positions += 1
+            if position_shape.get("momentum_source"):
+                momentum_source_positions += 1
+            if position_shape.get("protection_order_match"):
+                protection_linked_positions += 1
+            legacy_open_positions.append(position_shape)
             if classification == "ineligible":
                 ineligible_positions += 1
                 continue
@@ -840,6 +930,20 @@ class GhostBotRuntime:
         self.technical_open_positions_legacy = legacy_positions
         self.technical_open_positions_backfilled = backfilled_positions
         self.technical_open_positions_ineligible = ineligible_positions
+        self.technical_open_positions_price_structure = price_structure_positions
+        self.technical_open_positions_momentum_source = momentum_source_positions
+        self.technical_open_positions_protection_linked = protection_linked_positions
+        self.technical_legacy_position_shape_summary = {
+            "open_binance_paper_positions": total_positions,
+            "strict_technical_positions": strict_positions,
+            "legacy_technical_positions": legacy_positions,
+            "ineligible_positions": ineligible_positions,
+            "price_structure_source_positions": price_structure_positions,
+            "technical_momentum_source_positions": momentum_source_positions,
+            "protection_linked_positions": protection_linked_positions,
+            "backfilled_positions": backfilled_positions,
+        }
+        self.technical_legacy_open_positions = legacy_open_positions[:10]
         self.technical_stale_outcomes = {
             key: value for key, value in self.technical_stale_outcomes.items() if key in current_keys
         }
@@ -942,6 +1046,11 @@ class GhostBotRuntime:
             "technical_open_positions_legacy": self.technical_open_positions_legacy,
             "technical_open_positions_backfilled": self.technical_open_positions_backfilled,
             "technical_open_positions_ineligible": self.technical_open_positions_ineligible,
+            "technical_open_positions_price_structure": self.technical_open_positions_price_structure,
+            "technical_open_positions_momentum_source": self.technical_open_positions_momentum_source,
+            "technical_open_positions_protection_linked": self.technical_open_positions_protection_linked,
+            "technical_legacy_position_shape_summary": self.technical_legacy_position_shape_summary,
+            "technical_legacy_open_positions": self.technical_legacy_open_positions,
             "technical_stale_review_candidates_90m": self.technical_stale_review_candidates_90m,
             "technical_stale_exit_candidates_120m": self.technical_stale_exit_candidates_120m,
             "technical_stale_hard_timeout_candidates_240m": self.technical_stale_hard_timeout_candidates_240m,
