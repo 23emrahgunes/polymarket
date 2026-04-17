@@ -27,6 +27,15 @@ function dashboard_table_has_column(PDO $pdo, string $table, string $column): bo
     return false;
 }
 
+function dashboard_table_exists(PDO $pdo, string $table): bool
+{
+    $safeTable = preg_replace('/[^A-Za-z0-9_]/', '', $table);
+    $statement = $pdo->prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = :table LIMIT 1");
+    $statement->execute([':table' => $safeTable]);
+    $row = $statement->fetch(PDO::FETCH_ASSOC);
+    return is_array($row);
+}
+
 function dashboard_decode_alias_candidates(?string $json): array
 {
     if ($json === null || trim($json) === '') {
@@ -1635,46 +1644,326 @@ function dashboard_build_recent_gate_ready_candidates(array $runtimeSummary): ar
     return $items;
 }
 
+function dashboard_build_polymarket_research_summary(PDO $pdo): array
+{
+    if (!dashboard_table_has_column($pdo, 'whale_wallets', 'address')) {
+        return [
+            'discovery_wallet_summary' => [],
+            'shadow_wallet_summary' => [],
+            'copy_ready_wallet_summary' => [],
+            'shadow_edge_summary' => [],
+            'recent_shadow_actions' => [],
+            'wallet_consistency_table' => [],
+            'shadow_wallet_table' => [],
+            'copy_ready_wallets' => [],
+        ];
+    }
+
+    $tradeClosedAtExpr = dashboard_table_has_column($pdo, 'trades', 'closed_at')
+        ? "closed_at"
+        : "timestamp";
+
+    $candidateRows = dashboard_fetch_all(
+        $pdo,
+        "
+        WITH trade_stats AS (
+            SELECT
+                LOWER(COALESCE(whale_address, '')) AS address,
+                COUNT(CASE WHEN status LIKE 'CLOSED%' THEN 1 END) AS closed_trades,
+                ROUND(COALESCE(SUM(COALESCE(pnl, 0)), 0), 4) AS realized_pnl,
+                COUNT(DISTINCT substr(COALESCE({$tradeClosedAtExpr}, timestamp), 1, 10)) AS active_days,
+                COUNT(*) AS total_trade_rows,
+                SUM(CASE WHEN UPPER(COALESCE(category, '')) = 'CRYPTO' THEN 1 ELSE 0 END) AS crypto_trade_rows,
+                MAX(COALESCE(category, '')) AS specialization_hint
+            FROM trades
+            WHERE TRIM(COALESCE(whale_address, '')) != ''
+            GROUP BY LOWER(COALESCE(whale_address, ''))
+        )
+        SELECT
+            whale_wallets.address,
+            whale_wallets.source_type,
+            whale_wallets.discovery_score,
+            whale_wallets.event_count_24h,
+            whale_wallets.last_event_amount,
+            whale_wallets.last_event_category,
+            COALESCE(whale_stats.trust_score, 0.5) AS trust_score,
+            COALESCE(whale_stats.total_trades, 0) AS closed_trade_count,
+            ROUND(COALESCE(whale_stats.total_pnl, 0), 4) AS realized_pnl,
+            COALESCE(trade_stats.active_days, 0) AS active_days,
+            COALESCE(trade_stats.total_trade_rows, 0) AS total_trade_rows,
+            COALESCE(trade_stats.crypto_trade_rows, 0) AS crypto_trade_rows,
+            COALESCE(trade_stats.specialization_hint, whale_wallets.last_event_category, 'UNKNOWN') AS specialization_hint
+        FROM whale_wallets
+        LEFT JOIN whale_stats ON LOWER(whale_stats.address) = LOWER(whale_wallets.address)
+        LEFT JOIN trade_stats ON trade_stats.address = LOWER(whale_wallets.address)
+        WHERE whale_wallets.enabled = 1
+        ORDER BY whale_wallets.discovery_score DESC, whale_wallets.last_event_amount DESC, whale_wallets.last_seen_at DESC
+        LIMIT 50
+        "
+    );
+
+    $candidates = [];
+    foreach ($candidateRows as $row) {
+        $totalTradeRows = max((int) ($row['total_trade_rows'] ?? 0), 0);
+        $cryptoTradeRows = max((int) ($row['crypto_trade_rows'] ?? 0), 0);
+        $cryptoRatio = $totalTradeRows > 0 ? $cryptoTradeRows / $totalTradeRows : 0.0;
+        $trustScore = (float) ($row['trust_score'] ?? 0.5);
+        $discoveryScore = (float) ($row['discovery_score'] ?? 0.0);
+        $activeDays = (int) ($row['active_days'] ?? 0);
+        $closedTrades = (int) ($row['closed_trade_count'] ?? 0);
+        $realizedPnl = (float) ($row['realized_pnl'] ?? 0.0);
+        $realizedComponent = min(max($realizedPnl / 5000.0, 0.0), 1.0);
+        $activeComponent = min(max($activeDays / 14.0, 0.0), 1.0);
+        $closedComponent = min(max($closedTrades / 25.0, 0.0), 1.0);
+        $consistencyScore = round(
+            ($trustScore * 0.30)
+            + ($discoveryScore * 0.25)
+            + ($closedComponent * 0.20)
+            + ($activeComponent * 0.15)
+            + ($realizedComponent * 0.10),
+            4
+        );
+        $specialization = strtoupper((string) ($row['specialization_hint'] ?? $row['last_event_category'] ?? 'UNKNOWN'));
+        if ($specialization === 'UNKNOWN' && $cryptoRatio >= 0.6) {
+            $specialization = 'CRYPTO';
+        }
+        $candidates[] = [
+            'address' => (string) ($row['address'] ?? ''),
+            'source_type' => (string) ($row['source_type'] ?? ''),
+            'discovery_score' => round($discoveryScore, 4),
+            'trust_score' => round($trustScore, 4),
+            'active_days' => $activeDays,
+            'closed_trade_count' => $closedTrades,
+            'realized_pnl' => round($realizedPnl, 4),
+            'crypto_participation_ratio' => round($cryptoRatio, 4),
+            'specialization' => $specialization,
+            'event_count_24h' => (int) ($row['event_count_24h'] ?? 0),
+            'last_event_amount' => round((float) ($row['last_event_amount'] ?? 0.0), 4),
+            'consistency_score' => $consistencyScore,
+        ];
+    }
+
+    usort(
+        $candidates,
+        static fn (array $left, array $right): int => [$right['consistency_score'], $right['trust_score'], $right['realized_pnl']]
+            <=> [$left['consistency_score'], $left['trust_score'], $left['realized_pnl']]
+    );
+
+    $shadowAggregates = [];
+    if (dashboard_table_exists($pdo, 'polymarket_shadow_actions')) {
+        $shadowRows = dashboard_fetch_all(
+            $pdo,
+            "
+            SELECT
+                wallet_address,
+                COUNT(CASE WHEN status != 'OPEN' THEN 1 END) AS closed_shadow_trades,
+                ROUND(COALESCE(SUM(COALESCE(shadow_pnl, 0)), 0), 4) AS shadow_pnl,
+                ROUND(COALESCE(SUM(COALESCE(shadow_edge, 0)), 0), 4) AS shadow_edge,
+                ROUND(MIN(COALESCE(drawdown_pct, 0)), 4) AS worst_drawdown_pct
+            FROM polymarket_shadow_actions
+            WHERE opened_at >= datetime('now', '-14 days')
+            GROUP BY wallet_address
+            "
+        );
+        foreach ($shadowRows as $row) {
+            $shadowAggregates[strtolower((string) ($row['wallet_address'] ?? ''))] = [
+                'closed_shadow_trades' => (int) ($row['closed_shadow_trades'] ?? 0),
+                'shadow_pnl' => round((float) ($row['shadow_pnl'] ?? 0.0), 4),
+                'shadow_edge' => round((float) ($row['shadow_edge'] ?? 0.0), 4),
+                'worst_drawdown_pct' => round((float) ($row['worst_drawdown_pct'] ?? 0.0), 4),
+            ];
+        }
+    }
+
+    $shadowWalletTable = [];
+    foreach (array_slice($candidates, 0, 20) as $candidate) {
+        $shadowStats = $shadowAggregates[strtolower($candidate['address'])] ?? [
+            'closed_shadow_trades' => 0,
+            'shadow_pnl' => 0.0,
+            'shadow_edge' => 0.0,
+            'worst_drawdown_pct' => 0.0,
+        ];
+        $shadowWalletTable[] = $candidate + $shadowStats;
+    }
+
+    $copyReadyWallets = array_values(
+        array_slice(
+            array_filter(
+                $shadowWalletTable,
+                static fn (array $row): bool =>
+                    (int) ($row['closed_shadow_trades'] ?? 0) >= 3
+                    && (float) ($row['shadow_edge'] ?? 0.0) > 0.0
+                    && (float) ($row['worst_drawdown_pct'] ?? 0.0) >= -15.0
+            ),
+            0,
+            5
+        )
+    );
+
+    $recentShadowActions = [];
+    if (dashboard_table_exists($pdo, 'polymarket_shadow_actions')) {
+        $recentShadowRows = dashboard_fetch_all(
+            $pdo,
+            "
+            SELECT
+                wallet_address,
+                market_id,
+                category,
+                source_type,
+                action_type,
+                shadow_pnl,
+                shadow_edge,
+                drawdown_pct,
+                opened_at,
+                closed_at,
+                status
+            FROM polymarket_shadow_actions
+            ORDER BY COALESCE(closed_at, opened_at) DESC, id DESC
+            LIMIT 12
+            "
+        );
+        foreach ($recentShadowRows as $row) {
+            $recentShadowActions[] = [
+                'wallet_address' => (string) ($row['wallet_address'] ?? ''),
+                'market_id' => (string) ($row['market_id'] ?? ''),
+                'category' => (string) ($row['category'] ?? 'UNKNOWN'),
+                'source_type' => (string) ($row['source_type'] ?? 'unknown'),
+                'action_type' => (string) ($row['action_type'] ?? 'shadow_trade'),
+                'shadow_pnl' => round((float) ($row['shadow_pnl'] ?? 0.0), 4),
+                'shadow_edge' => round((float) ($row['shadow_edge'] ?? 0.0), 4),
+                'drawdown_pct' => round((float) ($row['drawdown_pct'] ?? 0.0), 4),
+                'opened_at' => (string) ($row['opened_at'] ?? ''),
+                'closed_at' => (string) ($row['closed_at'] ?? ''),
+                'status' => (string) ($row['status'] ?? 'OPEN'),
+            ];
+        }
+    }
+
+    return [
+        'discovery_wallet_summary' => [
+            'tracked_wallets' => count($candidates),
+            'discovery_pool_target' => 50,
+            'shadow_pool_target' => 20,
+            'copy_ready_target' => 5,
+            'crypto_specialists' => count(array_filter($candidates, static fn (array $row): bool => $row['specialization'] === 'CRYPTO')),
+            'promoted_to_shadow' => min(count($candidates), 20),
+        ],
+        'shadow_wallet_summary' => [
+            'shadow_wallets' => count($shadowWalletTable),
+            'wallets_with_shadow_actions' => count(array_filter($shadowWalletTable, static fn (array $row): bool => (int) ($row['closed_shadow_trades'] ?? 0) > 0)),
+            'closed_shadow_trades' => array_sum(array_map(static fn (array $row): int => (int) ($row['closed_shadow_trades'] ?? 0), $shadowWalletTable)),
+            'positive_shadow_wallets' => count(array_filter($shadowWalletTable, static fn (array $row): bool => (float) ($row['shadow_edge'] ?? 0.0) > 0.0)),
+        ],
+        'copy_ready_wallet_summary' => [
+            'copy_ready_wallets' => count($copyReadyWallets),
+            'copy_ready_target' => 5,
+            'minimum_shadow_trades' => 3,
+            'positive_shadow_edge_wallets' => count(array_filter($shadowWalletTable, static fn (array $row): bool => (float) ($row['shadow_edge'] ?? 0.0) > 0.0)),
+        ],
+        'shadow_edge_summary' => [
+            'evaluation_window_days' => 14,
+            'net_shadow_edge' => round(array_sum(array_map(static fn (array $row): float => (float) ($row['shadow_edge'] ?? 0.0), $shadowWalletTable)), 4),
+            'net_shadow_pnl' => round(array_sum(array_map(static fn (array $row): float => (float) ($row['shadow_pnl'] ?? 0.0), $shadowWalletTable)), 4),
+            'worst_drawdown_pct' => round(min(array_map(static fn (array $row): float => (float) ($row['worst_drawdown_pct'] ?? 0.0), $shadowWalletTable) ?: [0.0]), 4),
+            'shadow_ready' => count($copyReadyWallets) > 0,
+        ],
+        'recent_shadow_actions' => $recentShadowActions,
+        'wallet_consistency_table' => array_slice($shadowWalletTable, 0, 12),
+        'shadow_wallet_table' => $shadowWalletTable,
+        'copy_ready_wallets' => $copyReadyWallets,
+    ];
+}
+
+function dashboard_build_binance_fresh_pnl_summary(PDO $pdo): array
+{
+    $tradeOpenedAtExpr = dashboard_table_has_column($pdo, 'trades', 'opened_at')
+        ? "opened_at"
+        : "timestamp";
+
+    $rows = dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT status, pnl
+        FROM trades
+        WHERE strategy_profile = 'binance_technical_sampling'
+          AND sample_kind = 'live_paper'
+          AND venue IN ('binance_futures', 'binance_spot')
+          AND COALESCE({$tradeOpenedAtExpr}, timestamp) >= datetime('now', '-7 days')
+        "
+    );
+
+    $closedRows = array_values(array_filter($rows, static fn (array $row): bool => str_starts_with(strtoupper((string) ($row['status'] ?? '')), 'CLOSED')));
+    $wins = count(array_filter($closedRows, static fn (array $row): bool => (float) ($row['pnl'] ?? 0.0) > 0.0));
+    $netPnl = round(array_sum(array_map(static fn (array $row): float => (float) ($row['pnl'] ?? 0.0), $closedRows)), 4);
+
+    return [
+        'fresh_window_days' => 7,
+        'fresh_trade_count' => count($rows),
+        'fresh_closed_trades' => count($closedRows),
+        'net_pnl' => $netPnl,
+        'gross_wins' => round(array_sum(array_map(static fn (array $row): float => max((float) ($row['pnl'] ?? 0.0), 0.0), $closedRows)), 4),
+        'gross_losses' => round(array_sum(array_map(static fn (array $row): float => min((float) ($row['pnl'] ?? 0.0), 0.0), $closedRows)), 4),
+        'win_rate' => count($closedRows) > 0 ? round(($wins / count($closedRows)) * 100.0, 1) : null,
+    ];
+}
+
+function dashboard_build_binance_lane_summary(array $payload): array
+{
+    $freshSummary = $payload['binance_technical_fresh_summary'] ?? [];
+    if (is_array($freshSummary)) {
+        $freshSummary['fresh_window_days'] = (int) ($freshSummary['fresh_window_days'] ?? 7);
+    } else {
+        $freshSummary = [];
+    }
+
+    return [
+        'fresh_technical_summary' => $freshSummary,
+        'fresh_pnl_summary_7d' => $payload['fresh_pnl_summary_7d'] ?? [],
+        'technical_score_summary' => [
+            'component_summary' => $payload['binance_technical_score_component_summary'] ?? [],
+            'gap_summary' => $payload['binance_technical_fresh_score_gap_summary'] ?? [],
+            'blocker_breakdown' => $payload['binance_technical_score_blocker_breakdown'] ?? [],
+        ],
+        'technical_reject_breakdown' => $payload['binance_technical_fresh_reject_breakdown'] ?? [],
+        'position_pressure_summary' => $payload['binance_technical_position_pressure_summary'] ?? [],
+        'legacy_position_summary' => [
+            'stale_eligibility' => $payload['binance_technical_stale_eligibility_summary'] ?? [],
+            'legacy_shape' => $payload['binance_technical_legacy_position_shape_summary'] ?? [],
+            'legacy_open_positions' => $payload['binance_technical_legacy_open_positions'] ?? [],
+        ],
+    ];
+}
+
 function dashboard_build_dashboard_tab_help(): array
 {
     return [
-        'genel-bakis' => 'Bu sekme botun canli durumunu, son kararlari ve hizli genel resmi gosterir.',
-        'polymarket' => 'Bu sekme market esleme, alias cache, whale evreni ve Polymarket kaynak kalitesini gosterir.',
-        'binance-teknik' => 'Bu sekme Binance teknik paper lane performansini, taze 60 dakika ozetini ve recovery metriklerini gosterir.',
-        'pozisyonlar-risk' => 'Bu sekme acik pozisyonlari, kalan kapasiteyi ve stale pozisyon baskisini gosterir.',
-        'teshis-log' => 'Bu sekme blocker dagilimlarini, detayli red nedenlerini ve servis loglarini gosterir.',
+        'polymarket-research' => 'Bu sekme istikrarli Polymarket cüzdanlarini once kesfeder, sonra shadow cohort ve copy-ready kisitli listeyi gosterir.',
+        'binance-technical' => 'Bu sekme bagimsiz Binance teknik paper lane performansini, taze 7 gun PnL ozetini ve kapasite baskisini gosterir.',
+        'sozluk-aciklamalar' => 'Bu sekme metriklerin ne anlama geldigini sade Turkce ile aciklar ve servis logunu tek yerde toplar.',
     ];
 }
 
 function dashboard_build_dashboard_glossary(): array
 {
     return [
-        'genel-bakis' => [
-            ['term' => 'Nihai karar', 'meaning' => 'Panelin mevcut veriye gore verdigi ust seviye operasyon yorumu.'],
-            ['term' => 'Eslenen orderflow', 'meaning' => 'Gelen akisin market ile bag kurulabilen kismi.'],
+        'polymarket-research' => [
+            ['term' => 'Discovery pool', 'meaning' => 'Izlenen aday cüzdan havuzu. Burada amac hemen trade acmak degil, once iyi aday toplamak.'],
+            ['term' => 'Shadow cohort', 'meaning' => 'Gercek takip yerine gecikmeli taklit simülasyonu yapilan ikinci kademe cüzdan grubu.'],
+            ['term' => 'Copy-ready', 'meaning' => 'Shadow takipte artida kalan ve drawdowni kabul edilebilir olan kisa liste.'],
+            ['term' => 'Shadow edge', 'meaning' => 'Cüzdanin ham karindan degil, bizim gecikmeli takip simülasyonumuzdan kalan net avantaj.'],
+            ['term' => 'Tutarlilik skoru', 'meaning' => 'Aktif gun, kapanmis islem, guven skoru ve realized PnL ile olusan bileşik kalite puani.'],
         ],
-        'polymarket' => [
-            ['term' => 'Market eslesmedi', 'meaning' => 'Akis var ama dogru markete baglanamadi.'],
-            ['term' => 'Alias cache', 'meaning' => 'Market kimliklerini hizli bulmak icin tutulan esleme cache katmani.'],
-            ['term' => 'Whale', 'meaning' => 'Yuksek hacimli veya tekrar eden profesyonel cuzdan davranisi.'],
+        'binance-technical' => [
+            ['term' => 'Fresh 7g paper PnL', 'meaning' => 'Yeni Binance lane tarafindan son 7 günde acilan paper islemlerden gelen net sonuc.'],
+            ['term' => 'Score quality', 'meaning' => 'RSI, MACD, momentum, hacim ve mikro yapi bilesenlerinin skora katkisi.'],
+            ['term' => 'Spread reject', 'meaning' => 'Piyasa yapisi guvenli degilse sinyal olsa bile giris acilmaz.'],
+            ['term' => 'Position pressure', 'meaning' => 'Acilan eski ve yeni pozisyonlarin yeni sinyal acma kapasitesini ne kadar kistigi.'],
+            ['term' => 'Legacy position', 'meaning' => 'Yeni lane disinda kalmis veya eski metadata ile tasinan acik Binance paper pozisyonu.'],
         ],
-        'binance-teknik' => [
-            ['term' => 'Skor esik alti', 'meaning' => 'Sinyal var ama islem acacak kadar guclu degil.'],
-            ['term' => 'Teknik uyum zayif', 'meaning' => 'EMA, MACD ve momentum ayni yone yeterince destek vermiyor.'],
-            ['term' => 'Taze ozet', 'meaning' => 'Yalnizca son 60 dakikadaki teknik davranisi gosterir.'],
-            ['term' => 'Eski teknik pozisyon', 'meaning' => 'Eski surumden kalan, teknik lane metadata bilgisi eksik acik pozisyon.'],
-            ['term' => 'Backfill', 'meaning' => 'Eksik teknik metadata bilgisinin guvenli sekilde tamamlanmasi.'],
-        ],
-        'pozisyonlar-risk' => [
-            ['term' => 'Kalan kapasite', 'meaning' => 'Yeni pozisyon acmak icin elde kalan risk butcesi.'],
-            ['term' => 'Stale pozisyon', 'meaning' => 'Uzun suredir acik kalan ve yeniden gozden gecirilen pozisyon.'],
-            ['term' => 'Sure baskisiyla cikis', 'meaning' => 'Teknik destek zayifladigi icin uzun sure acik kalan pozisyonun kapatilmasi.'],
-            ['term' => 'Uzun sure acik kaldigi icin cikis', 'meaning' => 'Hard-timeout sinirina takilan ve guncel destek bulamayan pozisyonun kapatilmasi.'],
-            ['term' => 'Kapasiteye geri acilan USD', 'meaning' => 'Son 60 dakikada kapanan pozisyonlar sayesinde yeniden kullanilabilir hale gelen risk butcesi.'],
-        ],
-        'teshis-log' => [
-            ['term' => 'Blocker', 'meaning' => 'Kararin execute olmasini engelleyen baskin neden.'],
-            ['term' => 'Servis log ozeti', 'meaning' => 'Botun son calisma satirlarini hizli okumak icin log kesiti.'],
+        'sozluk-aciklamalar' => [
+            ['term' => 'Trade acmak degil, once kanit', 'meaning' => 'Polymarket lane once istikrari ispatlar; shadow edge pozitif olmadan copy acmaz.'],
+            ['term' => 'Tek basari metriği', 'meaning' => 'Her lane sadece bir ana metrikle yonetilir; metrik iyilesmiyorsa patch durur.'],
+            ['term' => 'Servis log ozeti', 'meaning' => 'Son calisma satirlarini kisa bir blokta gosterir; hata ayiklamayi hizlandirir.'],
         ],
     ];
 }
@@ -1718,6 +2007,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['sampling_reject_breakdown'] = dashboard_build_sampling_reject_breakdown($pdo);
         $payload['binance_technical_summary'] = dashboard_build_binance_technical_summary_from_rows($technicalRows);
         $payload['binance_technical_fresh_summary'] = dashboard_build_binance_technical_summary_from_rows($freshTechnicalRows);
+        $payload['fresh_pnl_summary_7d'] = dashboard_build_binance_fresh_pnl_summary($pdo);
         $payload['binance_technical_gate_funnel'] = dashboard_build_binance_technical_gate_funnel_from_rows($technicalRows);
         $payload['binance_technical_fresh_gate_funnel'] = dashboard_build_binance_technical_gate_funnel_from_rows($freshTechnicalRows);
         $payload['binance_technical_recovery_summary'] = dashboard_build_binance_technical_recovery_summary_from_rows($technicalRows, $payload['runtime_summary'] ?? []);
@@ -1747,6 +2037,8 @@ function dashboard_augment_payload(array $payload): array
         $payload['gated_reject_breakdown'] = dashboard_build_gated_reject_breakdown($pdo);
         $payload['relaxed_gate_reject_breakdown'] = dashboard_build_relaxed_gate_reject_breakdown($pdo);
         $payload['whale_copy_recovery_summary'] = dashboard_build_whale_copy_recovery_summary($pdo);
+        $payload = array_merge($payload, dashboard_build_polymarket_research_summary($pdo));
+        $payload = array_merge($payload, dashboard_build_binance_lane_summary($payload));
         $payload['dashboard_tab_help'] = dashboard_build_dashboard_tab_help();
         $payload['dashboard_glossary'] = dashboard_build_dashboard_glossary();
         $payload = dashboard_augment_recent_decisions($pdo, $payload);
@@ -1759,6 +2051,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['sampling_reject_breakdown'] = [];
         $payload['binance_technical_summary'] = [];
         $payload['binance_technical_fresh_summary'] = [];
+        $payload['fresh_pnl_summary_7d'] = [];
         $payload['binance_technical_gate_funnel'] = [];
         $payload['binance_technical_fresh_gate_funnel'] = [];
         $payload['binance_technical_recovery_summary'] = [];
@@ -1788,6 +2081,8 @@ function dashboard_augment_payload(array $payload): array
         $payload['gated_reject_breakdown'] = [];
         $payload['relaxed_gate_reject_breakdown'] = [];
         $payload['whale_copy_recovery_summary'] = [];
+        $payload = array_merge($payload, dashboard_build_polymarket_research_summary(new PDO('sqlite::memory:')));
+        $payload = array_merge($payload, dashboard_build_binance_lane_summary($payload));
         $payload['dashboard_tab_help'] = dashboard_build_dashboard_tab_help();
         $payload['dashboard_glossary'] = dashboard_build_dashboard_glossary();
         $payload['runtime_summary'] = array_merge(

@@ -96,10 +96,11 @@ def test_prune_runtime_data_dry_run_does_not_delete(tmp_path: Path) -> None:
     )
 
     assert "mode=dry_run" in result.stdout
-    assert "- discovery_route_only_rejects: 1" in result.stdout
-    assert "- stale_discovery_rejects: 1" in result.stdout
-    assert "- stale_orderflow_rejects: 1" in result.stdout
-    assert "- stale_non_reject_audit: 1" in result.stdout
+    assert "prune_plan" in result.stdout
+    assert "discovery_route_only_rejects: 2" in result.stdout
+    assert "stale_discovery_rejects: 1" in result.stdout
+    assert "stale_orderflow_rejects: 1" in result.stdout
+    assert "stale_non_reject_audit: 1" in result.stdout
     assert _count_rows(db_path, "decision_audit") == 8
     assert _count_rows(db_path, "market_aliases") == 3
 
@@ -125,13 +126,14 @@ def test_prune_runtime_data_apply_and_optional_alias_prune(tmp_path: Path) -> No
     )
 
     assert "mode=apply" in result.stdout
+    assert "deleted_rows" in result.stdout
     assert "vacuum=running" in result.stdout
-    assert "- discovery_route_only_rejects: 1" in result.stdout
-    assert "- stale_discovery_rejects: 1" in result.stdout
-    assert "- stale_orderflow_rejects: 1" in result.stdout
-    assert "- stale_non_reject_audit: 1" in result.stdout
-    assert "- inactive_market_aliases: 1" in result.stdout
+    assert "discovery_route_only_rejects: 2" in result.stdout
+    assert "stale_discovery_rejects: 1" in result.stdout
+    assert "stale_orderflow_rejects: 1" in result.stdout
+    assert "stale_non_reject_audit: 1" in result.stdout
+    assert "inactive_market_aliases: 1" in result.stdout
 
-    assert _count_rows(db_path, "decision_audit") == 4
+    assert _count_rows(db_path, "decision_audit") == 3
     assert _count_rows(db_path, "market_aliases") == 2
     assert _count_rows(db_path, "runtime_status_snapshot") == 1

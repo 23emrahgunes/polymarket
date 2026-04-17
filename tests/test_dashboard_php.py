@@ -64,14 +64,14 @@ def _create_dashboard_db(path: Path) -> None:
         ('binance_futures', 'BTC/USDT:USDT', 'STOP_LOSS', 'SELL', 0.001, 100000.0, 97000.0, 1, 'OPEN', '2026-04-09 10:00:00'),
     )
     cur.execute(
-        'CREATE TABLE whale_wallets (address TEXT, source_type TEXT, enabled INTEGER, discovery_score REAL, last_event_amount REAL, event_count_24h INTEGER, failure_streak INTEGER, last_seen_at TEXT)'
+        'CREATE TABLE whale_wallets (address TEXT, source_type TEXT, enabled INTEGER, discovery_score REAL, last_event_amount REAL, event_count_24h INTEGER, failure_streak INTEGER, last_seen_at TEXT, last_event_category TEXT)'
     )
     cur.executemany(
-        'INSERT INTO whale_wallets VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO whale_wallets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
-            ('0xaaa', 'leaderboard', 1, 0.91, 12000.0, 5, 0, '2026-04-09 10:00:00'),
-            ('0xbbb', 'activity_discovery', 1, 0.72, 8000.0, 3, 1, '2026-04-09 10:00:00'),
-            ('0xccc', 'graph_discovery', 1, 0.68, 5500.0, 2, 0, '2026-04-09 10:00:00'),
+            ('0xaaa', 'leaderboard', 1, 0.91, 12000.0, 5, 0, '2026-04-09 10:00:00', 'CRYPTO'),
+            ('0xbbb', 'activity_discovery', 1, 0.72, 8000.0, 3, 1, '2026-04-09 10:00:00', 'POLITICS'),
+            ('0xccc', 'graph_discovery', 1, 0.68, 5500.0, 2, 0, '2026-04-09 10:00:00', 'CRYPTO'),
         ],
     )
     cur.execute(
@@ -119,6 +119,18 @@ def _create_dashboard_db(path: Path) -> None:
     )
     cur.execute(
         'CREATE TABLE runtime_status_snapshot (id INTEGER PRIMARY KEY, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, metrics_json TEXT NOT NULL)'
+    )
+    cur.execute(
+        'CREATE TABLE polymarket_shadow_actions (id INTEGER PRIMARY KEY, wallet_address TEXT, market_id TEXT, category TEXT, source_type TEXT, action_type TEXT, shadow_pnl REAL, shadow_edge REAL, drawdown_pct REAL, opened_at TEXT, closed_at TEXT, status TEXT)'
+    )
+    cur.executemany(
+        'INSERT INTO polymarket_shadow_actions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+            (1, '0xaaa', 'market-2', 'CRYPTO', 'leaderboard', 'shadow_trade', 6.5, 3.2, -2.1, '2026-04-08 10:00:00', '2026-04-08 12:00:00', 'CLOSED_WIN'),
+            (2, '0xaaa', 'market-3', 'CRYPTO', 'leaderboard', 'shadow_trade', 4.0, 1.6, -1.0, '2026-04-09 09:00:00', '2026-04-09 10:30:00', 'CLOSED_WIN'),
+            (3, '0xaaa', 'market-4', 'CRYPTO', 'leaderboard', 'shadow_trade', 3.0, 1.1, -0.8, '2026-04-09 11:00:00', '2026-04-09 12:00:00', 'CLOSED_WIN'),
+            (4, '0xbbb', 'market-5', 'POLITICS', 'activity_discovery', 'shadow_trade', -1.2, -0.6, -6.0, '2026-04-09 07:00:00', '2026-04-09 08:00:00', 'CLOSED_LOSS'),
+        ],
     )
     conn.commit()
     conn.close()
@@ -262,6 +274,18 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
 
     assert 'dashboard_tab_help' in payload
     assert 'dashboard_glossary' in payload
+    assert 'discovery_wallet_summary' in payload
+    assert 'shadow_wallet_summary' in payload
+    assert 'copy_ready_wallet_summary' in payload
+    assert 'shadow_edge_summary' in payload
+    assert 'recent_shadow_actions' in payload
+    assert 'wallet_consistency_table' in payload
+    assert 'fresh_technical_summary' in payload
+    assert 'fresh_pnl_summary_7d' in payload
+    assert 'technical_score_summary' in payload
+    assert 'technical_reject_breakdown' in payload
+    assert 'position_pressure_summary' in payload
+    assert 'legacy_position_summary' in payload
     assert 'binance_technical_fresh_summary' in payload
     assert 'binance_technical_stale_eligibility_summary' in payload
     assert 'binance_technical_fresh_gate_funnel' in payload
@@ -298,6 +322,19 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['top_whales'][1]['trust_score'] == 0.5
     assert payload['top_whales'][1]['total_trades'] == 0
     assert payload['top_whales'][1]['win_rate'] is None
+    assert payload['discovery_wallet_summary']['tracked_wallets'] == 3
+    assert payload['discovery_wallet_summary']['promoted_to_shadow'] == 3
+    assert payload['shadow_wallet_summary']['wallets_with_shadow_actions'] == 2
+    assert payload['copy_ready_wallet_summary']['copy_ready_wallets'] == 1
+    assert payload['shadow_edge_summary']['shadow_ready'] is True
+    assert payload['recent_shadow_actions'][0]['wallet_address'] == '0xaaa'
+    assert payload['wallet_consistency_table'][0]['address'] == '0xaaa'
+    assert payload['copy_ready_wallets'][0]['address'] == '0xaaa'
+    assert payload['fresh_technical_summary']['fresh_window_days'] == 7
+    assert payload['fresh_pnl_summary_7d']['fresh_window_days'] == 7
+    assert payload['position_pressure_summary']['open_positions'] == 1
+    assert 'open_binance_paper_positions' in payload['legacy_position_summary']['legacy_shape']
+    assert payload['legacy_position_summary']['legacy_open_positions'] == []
     whale_counts = {row['source_type']: row['count'] for row in payload['whale_wallet_counts']}
     assert whale_counts['leaderboard'] == 1
     assert whale_counts['activity_discovery'] == 1
@@ -808,6 +845,37 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     response = _request(dashboard_server.base_url + '/index.php', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD))
     html = response.read().decode('utf-8')
     assert 'Ghost Trader Operasyon Paneli' in html
+    assert 'Polymarket Research' in html
+    assert 'Binance Technical' in html
+    assert ('Sözlük / Açıklamalar' in html) or ('SÃ¶zlÃ¼k / AÃ§Ä±klamalar' in html)
+    assert 'Bu sekme neyi gosteriyor?' in html
+    assert 'Discovery Hunisi' in html
+    assert 'Discovery Wallet Ozeti' in html
+    assert 'Shadow Cohort Ozeti' in html
+    assert 'Copy-ready Ozeti' in html
+    assert 'Shadow Edge Ozeti' in html
+    assert 'Cuzdan Tutarlilik Tablosu' in html
+    assert 'Copy-ready Kisa Liste' in html
+    assert 'Son Shadow Aksiyonlari' in html
+    assert 'Fresh 7g Paper PnL' in html
+    assert 'Fresh PnL Ozeti' in html
+    assert 'Fresh Teknik Ozet' in html
+    assert 'Fresh Teknik Red Nedenleri' in html
+    assert 'Skor Kalite Ozeti' in html
+    assert 'Score Component Ozeti' in html
+    assert 'Score Gap Ozeti' in html
+    assert 'Score Blocker Dagilimi' in html
+    assert 'Pozisyon Baskisi ve Legacy Durum' in html
+    assert 'Position Pressure' in html
+    assert 'Legacy Position Ozeti' in html
+    assert 'Acik Pozisyonlar' in html
+    assert 'Acik Emirler' in html
+    assert 'Sozluk ve Log' in html
+    assert 'Terimler ve Aciklamalar' in html
+    assert 'Plain Turkish' in html
+    assert 'Servis Log Ozeti' in html
+    assert 'Shadow edge' in html
+    return
     assert 'Son Kararlar' in html
     assert 'Sampling modu' in html
     assert 'İşlem ve Karar Akışı' in html

@@ -457,18 +457,16 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
 
     <section class="tabs-shell" id="dashboard-tabs">
         <div class="tabs-bar" role="tablist" aria-label="Dashboard sekmeleri">
-            <button class="tab-button" type="button" data-tab-trigger="genel-bakis">Genel Bakis</button>
-            <button class="tab-button" type="button" data-tab-trigger="polymarket">Polymarket</button>
-            <button class="tab-button" type="button" data-tab-trigger="binance-teknik">Binance Teknik</button>
-            <button class="tab-button" type="button" data-tab-trigger="pozisyonlar-risk">Pozisyonlar ve Risk</button>
-            <button class="tab-button" type="button" data-tab-trigger="teshis-log">Teshis ve Log</button>
+            <button class="tab-button" type="button" data-tab-trigger="polymarket-research">Polymarket Research</button>
+            <button class="tab-button" type="button" data-tab-trigger="binance-technical">Binance Technical</button>
+            <button class="tab-button" type="button" data-tab-trigger="sozluk-aciklamalar">Sözlük / Açıklamalar</button>
         </div>
         <div class="tab-help-card">
             <div class="subcard-header">
                 <h3 class="subcard-title">Bu sekme neyi gosteriyor?</h3>
-                <span class="badge info" id="tab-help-badge">Genel Bakis</span>
+                <span class="badge info" id="tab-help-badge">Polymarket Research</span>
             </div>
-            <p class="tab-help-copy" id="tab-help-copy">Bu sekme botun canli durumunu, son kararlari ve hizli genel resmi gosterir.</p>
+            <p class="tab-help-copy" id="tab-help-copy">Bu sekme istikrarli Polymarket adaylarini, shadow cohort sonucunu ve copy-ready kisa listeyi gosterir.</p>
             <div class="glossary-list" id="tab-glossary">
                 <div class="glossary-item"><strong>Sure baskisiyla cikis</strong><span>Teknik destek zayiflarsa uzun sure acik kalan paper pozisyon kapatilir.</span></div>
                 <div class="glossary-item"><strong>Uzun sure acik kaldigi icin cikis</strong><span>Hard-timeout sinirina takilan ve guncel destek bulamayan pozisyon kapatilir.</span></div>
@@ -477,6 +475,103 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
     </section>
 
     <section class="grid">
+        <div class="section-marker" data-tab="polymarket-research"><span class="section-label">Polymarket Research</span></div>
+        <article class="panel panel-wide" data-tab="polymarket-research">
+            <div class="panel-header"><h2>Discovery Hunisi</h2><span class="badge info">50 / 20 / 5</span></div>
+            <p class="panel-copy">Bu lane trade acmaz. Once aday cüzdan toplar, sonra shadow cohort ile takip eder, en son copy-ready kisa listeyi cikarir.</p>
+            <div class="panel-subgrid">
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Discovery Wallet Ozeti</h3><span class="badge info">Pool</span></div>
+                    <div class="metric-list" id="discovery-wallet-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Shadow Cohort Ozeti</h3><span class="badge info">Shadow</span></div>
+                    <div class="metric-list" id="shadow-wallet-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Copy-ready Ozeti</h3><span class="badge warn">Gate</span></div>
+                    <div class="metric-list" id="copy-ready-wallet-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Shadow Edge Ozeti</h3><span class="badge info">Main Metric</span></div>
+                    <div class="metric-list" id="shadow-edge-summary"></div>
+                </div>
+            </div>
+        </article>
+        <article class="panel panel-wide" data-tab="polymarket-research">
+            <div class="panel-header"><h2>Cuzdan Tutarlilik Tablosu</h2><span class="badge info">Top Cohort</span></div>
+            <div id="wallet-consistency-table"></div>
+        </article>
+        <article class="panel panel-wide" data-tab="polymarket-research">
+            <div class="panel-header"><h2>Copy-ready Kisa Liste</h2><span class="badge warn">Only If Proven</span></div>
+            <div id="copy-ready-wallets"></div>
+        </article>
+        <article class="panel panel-wide" data-tab="polymarket-research">
+            <div class="panel-header"><h2>Son Shadow Aksiyonlari</h2><span class="badge info">Recent</span></div>
+            <div id="recent-shadow-actions"></div>
+        </article>
+
+        <div class="section-marker" data-tab="binance-technical"><span class="section-label">Binance Technical</span></div>
+        <article class="panel panel-wide" data-tab="binance-technical">
+            <div class="panel-header"><h2>Fresh 7g Paper PnL</h2><span class="badge warn">Main Metric</span></div>
+            <div class="panel-subgrid">
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Fresh PnL Ozeti</h3><span class="badge info">7 Gun</span></div>
+                    <div class="metric-list" id="fresh-pnl-summary-7d"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Fresh Teknik Ozet</h3><span class="badge info">Lane</span></div>
+                    <div class="metric-list" id="fresh-technical-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Fresh Teknik Red Nedenleri</h3><span class="badge warn">Blocker</span></div>
+                    <div id="lane-technical-reject-breakdown"></div>
+                </div>
+            </div>
+        </article>
+        <article class="panel panel-wide" data-tab="binance-technical">
+            <div class="panel-header"><h2>Skor Kalite Ozeti</h2><span class="badge info">Technical</span></div>
+            <div class="panel-subgrid">
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Score Component Ozeti</h3><span class="badge info">Components</span></div>
+                    <div class="metric-list" id="lane-technical-score-components"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Score Gap Ozeti</h3><span class="badge info">Gap</span></div>
+                    <div class="metric-list" id="lane-technical-score-gap"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Score Blocker Dagilimi</h3><span class="badge warn">Score</span></div>
+                    <div id="lane-technical-score-blockers"></div>
+                </div>
+            </div>
+        </article>
+        <article class="panel panel-wide" data-tab="binance-technical">
+            <div class="panel-header"><h2>Pozisyon Baskisi ve Legacy Durum</h2><span class="badge warn">Capacity</span></div>
+            <div class="panel-subgrid">
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Position Pressure</h3><span class="badge warn">Risk</span></div>
+                    <div class="metric-list" id="lane-position-pressure-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Legacy Position Ozeti</h3><span class="badge info">Legacy</span></div>
+                    <div class="metric-list" id="legacy-position-summary"></div>
+                </div>
+            </div>
+        </article>
+        <article class="panel panel-half" data-tab="binance-technical"><div class="panel-header"><h2>Acik Pozisyonlar</h2><span class="badge info">Venue</span></div><div id="open-positions"></div></article>
+        <article class="panel panel-half" data-tab="binance-technical"><div class="panel-header"><h2>Acik Emirler</h2><span class="badge info">Protection</span></div><div id="open-orders"></div></article>
+
+        <div class="section-marker" data-tab="sozluk-aciklamalar"><span class="section-label">Sozluk ve Log</span></div>
+        <article class="panel panel-wide" data-tab="sozluk-aciklamalar">
+            <div class="panel-header"><h2>Terimler ve Aciklamalar</h2><span class="badge info">Plain Turkish</span></div>
+            <p class="panel-copy">Bu sekme hangi metrin ne ise yaradigini sade Turkce ile anlatir. Uzun tek-scroll diagnostik yerine sade sekmeli okuma hedeflenir.</p>
+            <div class="glossary-list" id="lane-glossary-copy"></div>
+        </article>
+        <article class="panel panel-wide" data-tab="sozluk-aciklamalar"><div class="panel-header"><h2>Servis Log Ozeti</h2><span class="badge info">Best Effort</span></div><pre id="service-log">Yukleniyor...</pre></article>
+    </section>
+
+    <section class="grid is-hidden" aria-hidden="true">
         <div class="section-marker" data-tabs="genel-bakis,pozisyonlar-risk"><span class="section-label">İşlem ve Karar Akışı</span></div>
         <article class="panel panel-wide" data-tab="genel-bakis"><div class="panel-header"><h2>Son Kararlar</h2><span class="badge warn">Denetim Akışı</span></div><p class="panel-copy">Kaynak, neden, skor, mapping aşaması ve işlem boyutuyla birlikte son red, karar, işlem ve çıkış olayları.</p><div id="recent-decisions"></div></article>
         <article class="panel panel-half" data-tab="pozisyonlar-risk"><div class="panel-header"><h2>Açık Pozisyonlar</h2><span class="badge info">Venue Maruziyeti</span></div><div id="open-positions"></div></article>
@@ -650,8 +745,8 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
 </div>
 <script>
 const refreshSeconds = <?= json_encode($refreshSeconds, JSON_UNESCAPED_SLASHES) ?>;
-const DASHBOARD_TABS = ['genel-bakis', 'polymarket', 'binance-teknik', 'pozisyonlar-risk', 'teshis-log'];
-let activeTab = 'genel-bakis';
+const DASHBOARD_TABS = ['polymarket-research', 'binance-technical', 'sozluk-aciklamalar'];
+let activeTab = 'polymarket-research';
 let latestPayload = null;
 
 function parseTabList(value) {
@@ -667,17 +762,16 @@ function renderTabHelp(payload) {
     const badge = document.getElementById('tab-help-badge');
     const copy = document.getElementById('tab-help-copy');
     const list = document.getElementById('tab-glossary');
+    const glossaryCopy = document.getElementById('lane-glossary-copy');
     if (!badge || !copy || !list) { return; }
 
     const labels = {
-        'genel-bakis': 'Genel Bakis',
-        'polymarket': 'Polymarket',
-        'binance-teknik': 'Binance Teknik',
-        'pozisyonlar-risk': 'Pozisyonlar ve Risk',
-        'teshis-log': 'Teshis ve Log'
+        'polymarket-research': 'Polymarket Research',
+        'binance-technical': 'Binance Technical',
+        'sozluk-aciklamalar': 'Sözlük / Açıklamalar'
     };
 
-    badge.textContent = labels[activeTab] || 'Genel Bakis';
+    badge.textContent = labels[activeTab] || 'Polymarket Research';
     copy.textContent = help[activeTab] || 'Bu sekme secili alanin ne ise yaradigini hizli ozetler.';
 
     const rows = Array.isArray(glossary[activeTab]) ? glossary[activeTab] : [];
@@ -687,6 +781,18 @@ function renderTabHelp(payload) {
             <div class="glossary-meaning">${escapeHtml(item.meaning || '')}</div>
         </div>
     `).join('');
+
+    if (glossaryCopy) {
+        const allRows = Object.entries(glossary).flatMap(([group, items]) =>
+            (Array.isArray(items) ? items : []).map((item) => ({ group, ...item }))
+        );
+        glossaryCopy.innerHTML = allRows.map((item) => `
+            <div class="glossary-item">
+                <div class="glossary-term">${escapeHtml(labels[item.group] || item.group || 'Sekme')} · ${escapeHtml(item.term || 'Terim')}</div>
+                <div class="glossary-meaning">${escapeHtml(item.meaning || '')}</div>
+            </div>
+        `).join('');
+    }
 }
 
 function applyActiveTab() {
@@ -709,7 +815,7 @@ function applyActiveTab() {
 }
 
 function setActiveTab(tabId, syncHash = true) {
-    activeTab = DASHBOARD_TABS.includes(tabId) ? tabId : 'genel-bakis';
+    activeTab = DASHBOARD_TABS.includes(tabId) ? tabId : 'polymarket-research';
     if (syncHash && window.history?.replaceState) {
         window.history.replaceState(null, '', `#${activeTab}`);
     }
@@ -718,16 +824,16 @@ function setActiveTab(tabId, syncHash = true) {
 
 function setupTabs() {
     document.querySelectorAll('[data-tab-trigger]').forEach((button) => {
-        button.addEventListener('click', () => setActiveTab(button.getAttribute('data-tab-trigger') || 'genel-bakis'));
+        button.addEventListener('click', () => setActiveTab(button.getAttribute('data-tab-trigger') || 'polymarket-research'));
     });
 
     window.addEventListener('hashchange', () => {
         const hashTab = window.location.hash.replace(/^#/, '');
-        setActiveTab(hashTab || 'genel-bakis', false);
+        setActiveTab(hashTab || 'polymarket-research', false);
     });
 
     const initialTab = window.location.hash.replace(/^#/, '');
-    setActiveTab(initialTab || 'genel-bakis', !initialTab);
+    setActiveTab(initialTab || 'polymarket-research', !initialTab);
 }
 
 function escapeHtml(value) {
@@ -1534,6 +1640,130 @@ function updatePanels(payload) {
         { key: 'reason', label: 'Blocker', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
         { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
     ], payload.binance_technical_score_blocker_breakdown, 'Henuz teknik skor blocker verisi birikmedi.');
+
+    const polymarketResearch = {
+        discovery: payload.discovery_wallet_summary || {},
+        shadow: payload.shadow_wallet_summary || {},
+        copyReady: payload.copy_ready_wallet_summary || {},
+        shadowEdge: payload.shadow_edge_summary || {},
+    };
+    renderMetrics('discovery-wallet-summary', [
+        { label: 'Izlenen aday', value: formatNumber(polymarketResearch.discovery.tracked_wallets, 0) },
+        { label: 'Discovery hedefi', value: formatNumber(polymarketResearch.discovery.discovery_pool_target, 0) },
+        { label: 'Shadow hedefi', value: formatNumber(polymarketResearch.discovery.shadow_pool_target, 0) },
+        { label: 'Copy-ready hedefi', value: formatNumber(polymarketResearch.discovery.copy_ready_target, 0) },
+        { label: 'Crypto specialist', value: formatNumber(polymarketResearch.discovery.crypto_specialists, 0) },
+        { label: 'Shadowa terfi', value: formatNumber(polymarketResearch.discovery.promoted_to_shadow, 0) }
+    ]);
+    renderMetrics('shadow-wallet-summary', [
+        { label: 'Shadow wallet', value: formatNumber(polymarketResearch.shadow.shadow_wallets, 0) },
+        { label: 'Aksiyon goren wallet', value: formatNumber(polymarketResearch.shadow.wallets_with_shadow_actions, 0) },
+        { label: 'Kapanmis shadow trade', value: formatNumber(polymarketResearch.shadow.closed_shadow_trades, 0) },
+        { label: 'Pozitif shadow wallet', value: formatNumber(polymarketResearch.shadow.positive_shadow_wallets, 0) }
+    ]);
+    renderMetrics('copy-ready-wallet-summary', [
+        { label: 'Copy-ready wallet', value: formatNumber(polymarketResearch.copyReady.copy_ready_wallets, 0) },
+        { label: 'Copy-ready hedefi', value: formatNumber(polymarketResearch.copyReady.copy_ready_target, 0) },
+        { label: 'Min shadow trade', value: formatNumber(polymarketResearch.copyReady.minimum_shadow_trades, 0) },
+        { label: 'Pozitif edge wallet', value: formatNumber(polymarketResearch.copyReady.positive_shadow_edge_wallets, 0) }
+    ]);
+    renderMetrics('shadow-edge-summary', [
+        { label: 'Pencere gun', value: formatNumber(polymarketResearch.shadowEdge.evaluation_window_days, 0) },
+        { label: 'Net shadow edge', value: formatNumber(polymarketResearch.shadowEdge.net_shadow_edge, 4) },
+        { label: 'Net shadow PnL', value: formatNumber(polymarketResearch.shadowEdge.net_shadow_pnl, 2) },
+        { label: 'En kotu drawdown %', value: formatNumber(polymarketResearch.shadowEdge.worst_drawdown_pct, 2) },
+        { label: 'Copy-ready var mi', value: polymarketResearch.shadowEdge.shadow_ready ? 'evet' : 'hayir' }
+    ]);
+    renderTable('wallet-consistency-table', [
+        { key: 'address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.address || '', 20) },
+        { key: 'source_type', label: 'Kaynak', render: (row) => escapeHtml(row.source_type || '') },
+        { key: 'specialization', label: 'Uzmanlik', render: (row) => escapeHtml(row.specialization || 'UNKNOWN') },
+        { key: 'consistency_score', label: 'Tutarlilik', render: (row) => escapeHtml(formatNumber(row.consistency_score, 3)) },
+        { key: 'trust_score', label: 'Guven', render: (row) => escapeHtml(formatNumber(row.trust_score, 3)) },
+        { key: 'active_days', label: 'Aktif gun', render: (row) => escapeHtml(formatNumber(row.active_days, 0)) },
+        { key: 'closed_trade_count', label: 'Kapanmis islem', render: (row) => escapeHtml(formatNumber(row.closed_trade_count, 0)) },
+        { key: 'shadow_edge', label: 'Shadow edge', render: (row) => escapeHtml(formatNumber(row.shadow_edge, 3)) }
+    ], payload.wallet_consistency_table || [], 'Henuz wallet consistency verisi yok.');
+    renderTable('copy-ready-wallets', [
+        { key: 'address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.address || '', 22) },
+        { key: 'specialization', label: 'Uzmanlik', render: (row) => escapeHtml(row.specialization || 'UNKNOWN') },
+        { key: 'closed_shadow_trades', label: 'Shadow trade', render: (row) => escapeHtml(formatNumber(row.closed_shadow_trades, 0)) },
+        { key: 'shadow_edge', label: 'Shadow edge', render: (row) => escapeHtml(formatNumber(row.shadow_edge, 3)) },
+        { key: 'worst_drawdown_pct', label: 'Worst DD %', render: (row) => escapeHtml(formatNumber(row.worst_drawdown_pct, 2)) }
+    ], payload.copy_ready_wallets || [], 'Henuz copy-ready cüzdan yok.');
+    renderTable('recent-shadow-actions', [
+        { key: 'opened_at', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.opened_at || '') },
+        { key: 'wallet_address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.wallet_address || '', 20) },
+        { key: 'market_id', label: 'Market', mono: true, render: (row) => truncateHtml(row.market_id || '', 24) },
+        { key: 'category', label: 'Kategori', render: (row) => escapeHtml(translateCategory(row.category || 'UNKNOWN')) },
+        { key: 'action_type', label: 'Aksiyon', render: (row) => escapeHtml(row.action_type || 'shadow_trade') },
+        { key: 'shadow_edge', label: 'Shadow edge', render: (row) => escapeHtml(formatNumber(row.shadow_edge, 3)) },
+        { key: 'shadow_pnl', label: 'Shadow PnL', render: (row) => escapeHtml(formatNumber(row.shadow_pnl, 2)) },
+        { key: 'status', label: 'Durum', render: (row) => escapeHtml(row.status || 'OPEN') }
+    ], payload.recent_shadow_actions || [], 'Henuz shadow aksiyonu yok.');
+
+    const binanceLane = payload.fresh_technical_summary || {};
+    const freshPnl = payload.fresh_pnl_summary_7d || {};
+    const technicalScore = payload.technical_score_summary || {};
+    const positionPressure = payload.position_pressure_summary || {};
+    const legacyPosition = payload.legacy_position_summary || {};
+    renderMetrics('fresh-pnl-summary-7d', [
+        { label: 'Pencere', value: `${formatNumber(freshPnl.fresh_window_days || 7, 0)} gun` },
+        { label: 'Net PnL', value: formatNumber(freshPnl.net_pnl, 2) },
+        { label: 'Gross win', value: formatNumber(freshPnl.gross_wins, 2) },
+        { label: 'Gross loss', value: formatNumber(freshPnl.gross_losses, 2) },
+        { label: 'Win rate', value: freshPnl.win_rate === null || freshPnl.win_rate === undefined ? 'yok' : `${formatNumber(freshPnl.win_rate, 1)}%` },
+        { label: 'Kapanmis trade', value: formatNumber(freshPnl.fresh_closed_trades, 0) }
+    ]);
+    renderMetrics('fresh-technical-summary', [
+        { label: 'Sembol sayisi', value: formatNumber((binanceLane.symbols || []).length, 0) },
+        { label: 'Fresh trade', value: formatNumber(binanceLane.fresh_trade_count, 0) },
+        { label: 'Fresh closed', value: formatNumber(binanceLane.fresh_closed_trades, 0) },
+        { label: 'Fresh open', value: formatNumber(binanceLane.fresh_open_trades, 0) },
+        { label: 'Win', value: formatNumber(binanceLane.wins, 0) },
+        { label: 'Loss', value: formatNumber(binanceLane.losses, 0) },
+        { label: 'Execute', value: formatNumber(binanceLane.fresh_execute_count, 0) }
+    ]);
+    renderMetrics('lane-technical-score-components', [
+        { label: 'Karar satiri', value: formatNumber(technicalScore.component_summary?.sample_count || technicalScore.decision_rows, 0) },
+        { label: 'Ortalama score', value: formatNumber(technicalScore.avg_score || technicalScore.component_summary?.avg_final_score, 3) },
+        { label: 'Ortalama threshold', value: formatNumber(technicalScore.avg_threshold, 3) },
+        { label: 'Ortalama RSI', value: formatNumber(technicalScore.component_summary?.avg_rsi_component, 3) },
+        { label: 'Ortalama MACD', value: formatNumber(technicalScore.component_summary?.avg_macd_component, 3) },
+        { label: 'Ortalama momentum', value: formatNumber(technicalScore.component_summary?.avg_momentum_component, 3) },
+        { label: 'Ortalama hacim', value: formatNumber(technicalScore.component_summary?.avg_volume_component, 3) },
+        { label: 'Ortalama micro', value: formatNumber(technicalScore.component_summary?.avg_microstructure_component, 3) }
+    ]);
+    renderMetrics('lane-technical-score-gap', [
+        { label: 'Ortalama gap', value: formatNumber(technicalScore.gap_summary?.avg_score_gap_to_threshold, 3) },
+        { label: 'Esik alti', value: formatNumber(technicalScore.gap_summary?.below_threshold_count, 0) },
+        { label: 'Near-threshold', value: formatNumber(technicalScore.gap_summary?.near_threshold_count, 0) },
+        { label: 'Derin esik alti', value: formatNumber(technicalScore.gap_summary?.deep_below_threshold_count, 0) }
+    ]);
+    renderTable('lane-technical-score-blockers', [
+        { key: 'reason', label: 'Blocker', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], technicalScore.blocker_breakdown || [], 'Henuz score blocker verisi yok.');
+    renderTable('lane-technical-reject-breakdown', [
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'yok')) },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.technical_reject_breakdown || [], 'Henuz fresh teknik red verisi yok.');
+    renderMetrics('lane-position-pressure-summary', [
+        { label: 'Acik pozisyon', value: formatNumber(positionPressure.open_positions, 0) },
+        { label: 'Fresh acik', value: formatNumber(positionPressure.fresh_open_positions, 0) },
+        { label: 'Legacy acik', value: formatNumber(positionPressure.legacy_open_positions, 0) },
+        { label: 'Acik notional', value: formatNumber(positionPressure.open_notional_usd, 2) },
+        { label: 'Acik unrealized pnl', value: formatNumber(positionPressure.open_unrealized_pnl, 2) },
+        { label: 'En eski acik pozisyon (dk)', value: formatNumber(positionPressure.oldest_open_position_minutes, 0) }
+    ]);
+    renderMetrics('legacy-position-summary', [
+        { label: 'Legacy open', value: formatNumber(legacyPosition.legacy_open_positions || legacyPosition.stale_eligibility?.technical_open_positions_legacy, 0) },
+        { label: 'Strict fresh', value: formatNumber(legacyPosition.strict_fresh_positions || legacyPosition.stale_eligibility?.technical_open_positions_strict, 0) },
+        { label: 'Backfill', value: formatNumber(legacyPosition.stale_eligibility?.technical_open_positions_backfilled, 0) },
+        { label: 'Rescue', value: formatNumber(legacyPosition.stale_eligibility?.technical_open_positions_rescue, 0) },
+        { label: 'Ineligible', value: formatNumber(legacyPosition.stale_eligibility?.technical_open_positions_ineligible, 0) },
+        { label: 'Legacy sembol', value: Array.isArray(legacyPosition.legacy_symbols) && legacyPosition.legacy_symbols.length > 0 ? legacyPosition.legacy_symbols.join(', ') : 'yok', long: true }
+    ]);
 
     const logLines = Array.isArray(payload.service_log_excerpt) ? payload.service_log_excerpt : [];
     document.getElementById('service-log').textContent = logLines.length > 0 ? logLines.join('\n') : 'Servis logu alınamadı.';
