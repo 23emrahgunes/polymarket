@@ -319,15 +319,28 @@ def test_polymarket_research_service_builds_shadow_funnel(tmp_path: Path) -> Non
     )
 
     summary = service.build_summary()
+    persisted_rows = repository.fetch_persisted_wallet_snapshots()
+    persisted_by_address = {str(row["address"]): row for row in persisted_rows}
 
     assert summary["discovery_wallet_summary"]["tracked_wallets"] == 3
     assert summary["discovery_wallet_summary"]["crypto_specialists"] == 2
+    assert summary["discovery_wallet_summary"]["persisted_wallet_snapshots"] == 3
     assert summary["shadow_wallet_summary"]["wallets_with_shadow_actions"] == 2
     assert summary["copy_ready_wallet_summary"]["copy_ready_wallets"] == 1
     assert summary["copy_ready_wallets"][0]["address"] == "0xaaa"
     assert summary["shadow_edge_summary"]["shadow_ready"] is True
     assert summary["recent_shadow_actions"][0]["wallet_address"] in {"0xaaa", "0xbbb"}
     assert summary["wallet_consistency_table"][0]["address"] == "0xaaa"
+    assert len(persisted_rows) == 3
+    assert persisted_by_address["0xaaa"]["cohort"] == "copy_ready"
+    assert persisted_by_address["0xaaa"]["copy_ready_eligible"] == 1
+    assert persisted_by_address["0xaaa"]["shadow_eligible"] == 1
+    assert persisted_by_address["0xaaa"]["copy_ready_rank"] == 1
+    assert persisted_by_address["0xaaa"]["profit_consistency_score"] > 0
+    assert persisted_by_address["0xaaa"]["recency_score"] > 0
+    assert persisted_by_address["0xaaa"]["frequency_score"] > 0
+    assert persisted_by_address["0xbbb"]["cohort"] == "shadow"
+    assert persisted_by_address["0xccc"]["cohort"] == "shadow"
 
 
 def test_binance_technical_service_builds_fresh_and_legacy_summaries(tmp_path: Path) -> None:

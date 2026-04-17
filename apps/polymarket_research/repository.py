@@ -11,6 +11,14 @@ class PolymarketResearchRepository:
     def __init__(self, db_path: str):
         self.db_path = db_path
 
+    @staticmethod
+    def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
+
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -44,18 +52,67 @@ class PolymarketResearchRepository:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS polymarket_research_wallets (
+                    address TEXT PRIMARY KEY,
+                    source_type TEXT NOT NULL DEFAULT 'unknown',
+                    cohort TEXT NOT NULL DEFAULT 'discovery',
+                    discovery_rank INTEGER NOT NULL DEFAULT 0,
+                    shadow_rank INTEGER NOT NULL DEFAULT 0,
+                    copy_ready_rank INTEGER NOT NULL DEFAULT 0,
+                    discovery_score REAL NOT NULL DEFAULT 0,
+                    trust_score REAL NOT NULL DEFAULT 0.5,
+                    consistency_score REAL NOT NULL DEFAULT 0,
+                    profit_consistency_score REAL NOT NULL DEFAULT 0,
+                    recency_score REAL NOT NULL DEFAULT 0,
+                    frequency_score REAL NOT NULL DEFAULT 0,
+                    drawdown_estimate_pct REAL NOT NULL DEFAULT 0,
+                    active_days INTEGER NOT NULL DEFAULT 0,
+                    closed_trade_count INTEGER NOT NULL DEFAULT 0,
+                    realized_pnl REAL NOT NULL DEFAULT 0,
+                    crypto_participation_ratio REAL NOT NULL DEFAULT 0,
+                    specialization TEXT NOT NULL DEFAULT 'UNKNOWN',
+                    event_count_24h INTEGER NOT NULL DEFAULT 0,
+                    last_event_amount REAL NOT NULL DEFAULT 0,
+                    last_seen_at TEXT,
+                    closed_shadow_trades INTEGER NOT NULL DEFAULT 0,
+                    shadow_pnl REAL NOT NULL DEFAULT 0,
+                    shadow_edge REAL NOT NULL DEFAULT 0,
+                    worst_drawdown_pct REAL NOT NULL DEFAULT 0,
+                    shadow_eligible INTEGER NOT NULL DEFAULT 0,
+                    copy_ready_eligible INTEGER NOT NULL DEFAULT 0,
+                    refreshed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_polymarket_research_wallets_cohort_rank
+                ON polymarket_research_wallets (cohort, discovery_rank, shadow_rank, copy_ready_rank)
+                """
+            )
             connection.commit()
 
     def fetch_candidate_wallets(self, limit: int) -> list[sqlite3.Row]:
         with self.connect() as connection:
-            cursor = connection.execute(
-                """
+            if not self._table_exists(connection, "whale_wallets"):
+                return []
+
+            has_whale_stats = self._table_exists(connection, "whale_stats")
+            has_trades = self._table_exists(connection, "trades")
+            trade_closed_expr = "COALESCE(closed_at, timestamp)"
+
+            trade_cte = ""
+            trade_join = ""
+            if has_trades:
+                trade_cte = f"""
                 WITH trade_stats AS (
                     SELECT
                         LOWER(COALESCE(whale_address, '')) AS address,
                         COUNT(CASE WHEN status LIKE 'CLOSED%' THEN 1 END) AS closed_trades,
                         ROUND(COALESCE(SUM(COALESCE(pnl, 0)), 0), 4) AS realized_pnl,
-                        COUNT(DISTINCT substr(COALESCE(closed_at, timestamp), 1, 10)) AS active_days,
+                        COUNT(DISTINCT substr({trade_closed_expr}, 1, 10)) AS active_days,
                         COUNT(*) AS total_trade_rows,
                         SUM(CASE WHEN UPPER(COALESCE(category, '')) = 'CRYPTO' THEN 1 ELSE 0 END) AS crypto_trade_rows,
                         MAX(COALESCE(category, '')) AS specialization_hint
@@ -63,6 +120,22 @@ class PolymarketResearchRepository:
                     WHERE TRIM(COALESCE(whale_address, '')) != ''
                     GROUP BY LOWER(COALESCE(whale_address, ''))
                 )
+                """
+                trade_join = "LEFT JOIN trade_stats ON trade_stats.address = LOWER(whale_wallets.address)"
+
+            whale_stats_join = ""
+            trust_score_expr = "0.5 AS trust_score"
+            closed_trade_count_expr = "0 AS closed_trade_count"
+            realized_pnl_expr = "0.0 AS realized_pnl"
+            if has_whale_stats:
+                whale_stats_join = "LEFT JOIN whale_stats ON LOWER(whale_stats.address) = LOWER(whale_wallets.address)"
+                trust_score_expr = "COALESCE(whale_stats.trust_score, 0.5) AS trust_score"
+                closed_trade_count_expr = "COALESCE(whale_stats.total_trades, 0) AS closed_trade_count"
+                realized_pnl_expr = "ROUND(COALESCE(whale_stats.total_pnl, 0), 4) AS realized_pnl"
+
+            cursor = connection.execute(
+                f"""
+                {trade_cte}
                 SELECT
                     whale_wallets.address,
                     whale_wallets.source_type,
@@ -71,21 +144,51 @@ class PolymarketResearchRepository:
                     whale_wallets.last_event_amount,
                     whale_wallets.last_event_category,
                     whale_wallets.last_seen_at,
-                    COALESCE(whale_stats.trust_score, 0.5) AS trust_score,
-                    COALESCE(whale_stats.total_trades, 0) AS closed_trade_count,
-                    ROUND(COALESCE(whale_stats.total_pnl, 0), 4) AS realized_pnl,
+                    {trust_score_expr},
+                    {closed_trade_count_expr},
+                    {realized_pnl_expr},
                     COALESCE(trade_stats.active_days, 0) AS active_days,
                     COALESCE(trade_stats.total_trade_rows, 0) AS total_trade_rows,
                     COALESCE(trade_stats.crypto_trade_rows, 0) AS crypto_trade_rows,
                     COALESCE(trade_stats.specialization_hint, whale_wallets.last_event_category, 'UNKNOWN') AS specialization_hint
                 FROM whale_wallets
-                LEFT JOIN whale_stats ON LOWER(whale_stats.address) = LOWER(whale_wallets.address)
-                LEFT JOIN trade_stats ON trade_stats.address = LOWER(whale_wallets.address)
+                {whale_stats_join}
+                {trade_join}
                 WHERE whale_wallets.enabled = 1
                 ORDER BY whale_wallets.discovery_score DESC, whale_wallets.last_event_amount DESC, whale_wallets.last_seen_at DESC
                 LIMIT ?
                 """,
                 (max(limit, 1),),
+            )
+            return cursor.fetchall()
+
+    def fetch_wallet_trade_rows(self, addresses: list[str]) -> list[sqlite3.Row]:
+        if not addresses:
+            return []
+
+        with self.connect() as connection:
+            if not self._table_exists(connection, "trades"):
+                return []
+
+            normalized_addresses = [address.lower() for address in addresses if address.strip()]
+            if not normalized_addresses:
+                return []
+
+            placeholders = ", ".join("?" for _ in normalized_addresses)
+            cursor = connection.execute(
+                f"""
+                SELECT
+                    LOWER(COALESCE(whale_address, '')) AS address,
+                    COALESCE(pnl, 0) AS pnl,
+                    COALESCE(closed_at, timestamp) AS occurred_at,
+                    COALESCE(category, 'UNKNOWN') AS category,
+                    COALESCE(status, '') AS status
+                FROM trades
+                WHERE LOWER(COALESCE(whale_address, '')) IN ({placeholders})
+                  AND status LIKE 'CLOSED%'
+                ORDER BY COALESCE(closed_at, timestamp) ASC, id ASC
+                """,
+                tuple(normalized_addresses),
             )
             return cursor.fetchall()
 
@@ -141,6 +244,120 @@ class PolymarketResearchRepository:
                 """,
                 (max(limit, 1),),
             )
+            return cursor.fetchall()
+
+    def replace_wallet_snapshots(self, rows: list[dict[str, object]]) -> None:
+        self.ensure_tables()
+        with self.connect() as connection:
+            connection.execute("DELETE FROM polymarket_research_wallets")
+            if rows:
+                connection.executemany(
+                    """
+                    INSERT INTO polymarket_research_wallets (
+                        address,
+                        source_type,
+                        cohort,
+                        discovery_rank,
+                        shadow_rank,
+                        copy_ready_rank,
+                        discovery_score,
+                        trust_score,
+                        consistency_score,
+                        profit_consistency_score,
+                        recency_score,
+                        frequency_score,
+                        drawdown_estimate_pct,
+                        active_days,
+                        closed_trade_count,
+                        realized_pnl,
+                        crypto_participation_ratio,
+                        specialization,
+                        event_count_24h,
+                        last_event_amount,
+                        last_seen_at,
+                        closed_shadow_trades,
+                        shadow_pnl,
+                        shadow_edge,
+                        worst_drawdown_pct,
+                        shadow_eligible,
+                        copy_ready_eligible,
+                        refreshed_at
+                    ) VALUES (
+                        :address,
+                        :source_type,
+                        :cohort,
+                        :discovery_rank,
+                        :shadow_rank,
+                        :copy_ready_rank,
+                        :discovery_score,
+                        :trust_score,
+                        :consistency_score,
+                        :profit_consistency_score,
+                        :recency_score,
+                        :frequency_score,
+                        :drawdown_estimate_pct,
+                        :active_days,
+                        :closed_trade_count,
+                        :realized_pnl,
+                        :crypto_participation_ratio,
+                        :specialization,
+                        :event_count_24h,
+                        :last_event_amount,
+                        :last_seen_at,
+                        :closed_shadow_trades,
+                        :shadow_pnl,
+                        :shadow_edge,
+                        :worst_drawdown_pct,
+                        :shadow_eligible,
+                        :copy_ready_eligible,
+                        CURRENT_TIMESTAMP
+                    )
+                    """,
+                    rows,
+                )
+            connection.commit()
+
+    def fetch_persisted_wallet_snapshots(self, limit: int | None = None) -> list[sqlite3.Row]:
+        self.ensure_tables()
+        with self.connect() as connection:
+            query = """
+                SELECT
+                    address,
+                    source_type,
+                    cohort,
+                    discovery_rank,
+                    shadow_rank,
+                    copy_ready_rank,
+                    discovery_score,
+                    trust_score,
+                    consistency_score,
+                    profit_consistency_score,
+                    recency_score,
+                    frequency_score,
+                    drawdown_estimate_pct,
+                    active_days,
+                    closed_trade_count,
+                    realized_pnl,
+                    crypto_participation_ratio,
+                    specialization,
+                    event_count_24h,
+                    last_event_amount,
+                    last_seen_at,
+                    closed_shadow_trades,
+                    shadow_pnl,
+                    shadow_edge,
+                    worst_drawdown_pct,
+                    shadow_eligible,
+                    copy_ready_eligible,
+                    refreshed_at
+                FROM polymarket_research_wallets
+                ORDER BY discovery_rank ASC, consistency_score DESC, trust_score DESC
+            """
+            params: tuple[object, ...] = ()
+            if limit is not None:
+                query += " LIMIT ?"
+                params = (max(limit, 1),)
+            cursor = connection.execute(query, params)
             return cursor.fetchall()
 
     def seed_shadow_action(

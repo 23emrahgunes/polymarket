@@ -1646,6 +1646,182 @@ function dashboard_build_recent_gate_ready_candidates(array $runtimeSummary): ar
 
 function dashboard_build_polymarket_research_summary(PDO $pdo): array
 {
+    if (dashboard_table_exists($pdo, 'polymarket_research_wallets')) {
+        $persistedCount = (int) ((dashboard_fetch_one($pdo, 'SELECT COUNT(*) AS count FROM polymarket_research_wallets')['count'] ?? 0));
+        if ($persistedCount > 0) {
+            $walletRows = dashboard_fetch_all(
+                $pdo,
+                "
+                SELECT
+                    address,
+                    source_type,
+                    cohort,
+                    discovery_rank,
+                    shadow_rank,
+                    copy_ready_rank,
+                    discovery_score,
+                    trust_score,
+                    consistency_score,
+                    profit_consistency_score,
+                    recency_score,
+                    frequency_score,
+                    drawdown_estimate_pct,
+                    active_days,
+                    closed_trade_count,
+                    realized_pnl,
+                    crypto_participation_ratio,
+                    specialization,
+                    event_count_24h,
+                    last_event_amount,
+                    last_seen_at,
+                    closed_shadow_trades,
+                    shadow_pnl,
+                    shadow_edge,
+                    worst_drawdown_pct,
+                    shadow_eligible,
+                    copy_ready_eligible,
+                    refreshed_at
+                FROM polymarket_research_wallets
+                ORDER BY discovery_rank ASC, consistency_score DESC, trust_score DESC
+                LIMIT 50
+                "
+            );
+
+            $candidates = array_map(
+                static fn (array $row): array => [
+                    'address' => (string) ($row['address'] ?? ''),
+                    'source_type' => (string) ($row['source_type'] ?? 'unknown'),
+                    'cohort' => (string) ($row['cohort'] ?? 'discovery'),
+                    'discovery_rank' => (int) ($row['discovery_rank'] ?? 0),
+                    'shadow_rank' => (int) ($row['shadow_rank'] ?? 0),
+                    'copy_ready_rank' => (int) ($row['copy_ready_rank'] ?? 0),
+                    'discovery_score' => round((float) ($row['discovery_score'] ?? 0.0), 4),
+                    'trust_score' => round((float) ($row['trust_score'] ?? 0.5), 4),
+                    'consistency_score' => round((float) ($row['consistency_score'] ?? 0.0), 4),
+                    'profit_consistency_score' => round((float) ($row['profit_consistency_score'] ?? 0.0), 4),
+                    'recency_score' => round((float) ($row['recency_score'] ?? 0.0), 4),
+                    'frequency_score' => round((float) ($row['frequency_score'] ?? 0.0), 4),
+                    'drawdown_estimate_pct' => round((float) ($row['drawdown_estimate_pct'] ?? 0.0), 4),
+                    'active_days' => (int) ($row['active_days'] ?? 0),
+                    'closed_trade_count' => (int) ($row['closed_trade_count'] ?? 0),
+                    'realized_pnl' => round((float) ($row['realized_pnl'] ?? 0.0), 4),
+                    'crypto_participation_ratio' => round((float) ($row['crypto_participation_ratio'] ?? 0.0), 4),
+                    'specialization' => strtoupper((string) ($row['specialization'] ?? 'UNKNOWN')),
+                    'event_count_24h' => (int) ($row['event_count_24h'] ?? 0),
+                    'last_event_amount' => round((float) ($row['last_event_amount'] ?? 0.0), 4),
+                    'last_seen_at' => (string) ($row['last_seen_at'] ?? ''),
+                    'closed_shadow_trades' => (int) ($row['closed_shadow_trades'] ?? 0),
+                    'shadow_pnl' => round((float) ($row['shadow_pnl'] ?? 0.0), 4),
+                    'shadow_edge' => round((float) ($row['shadow_edge'] ?? 0.0), 4),
+                    'worst_drawdown_pct' => round((float) ($row['worst_drawdown_pct'] ?? 0.0), 4),
+                    'shadow_eligible' => !empty($row['shadow_eligible']),
+                    'copy_ready_eligible' => !empty($row['copy_ready_eligible']),
+                ],
+                $walletRows
+            );
+
+            $shadowWalletTable = array_values(
+                array_filter(
+                    $candidates,
+                    static fn (array $row): bool => !empty($row['shadow_eligible']) || in_array($row['cohort'], ['shadow', 'copy_ready'], true)
+                )
+            );
+            usort(
+                $shadowWalletTable,
+                static fn (array $left, array $right): int => [$left['shadow_rank'] ?: 9999, $left['discovery_rank']]
+                    <=> [$right['shadow_rank'] ?: 9999, $right['discovery_rank']]
+            );
+            $shadowWalletTable = array_slice($shadowWalletTable, 0, 20);
+
+            $copyReadyWallets = array_values(
+                array_filter(
+                    $candidates,
+                    static fn (array $row): bool => !empty($row['copy_ready_eligible']) || ($row['cohort'] ?? '') === 'copy_ready'
+                )
+            );
+            usort(
+                $copyReadyWallets,
+                static fn (array $left, array $right): int => [$left['copy_ready_rank'] ?: 9999, $left['discovery_rank']]
+                    <=> [$right['copy_ready_rank'] ?: 9999, $right['discovery_rank']]
+            );
+            $copyReadyWallets = array_slice($copyReadyWallets, 0, 5);
+
+            $recentShadowActions = [];
+            if (dashboard_table_exists($pdo, 'polymarket_shadow_actions')) {
+                $recentShadowRows = dashboard_fetch_all(
+                    $pdo,
+                    "
+                    SELECT
+                        wallet_address,
+                        market_id,
+                        category,
+                        source_type,
+                        action_type,
+                        shadow_pnl,
+                        shadow_edge,
+                        drawdown_pct,
+                        opened_at,
+                        closed_at,
+                        status
+                    FROM polymarket_shadow_actions
+                    ORDER BY COALESCE(closed_at, opened_at) DESC, id DESC
+                    LIMIT 12
+                    "
+                );
+                foreach ($recentShadowRows as $row) {
+                    $recentShadowActions[] = [
+                        'wallet_address' => (string) ($row['wallet_address'] ?? ''),
+                        'market_id' => (string) ($row['market_id'] ?? ''),
+                        'category' => (string) ($row['category'] ?? 'UNKNOWN'),
+                        'source_type' => (string) ($row['source_type'] ?? 'unknown'),
+                        'action_type' => (string) ($row['action_type'] ?? 'shadow_trade'),
+                        'shadow_pnl' => round((float) ($row['shadow_pnl'] ?? 0.0), 4),
+                        'shadow_edge' => round((float) ($row['shadow_edge'] ?? 0.0), 4),
+                        'drawdown_pct' => round((float) ($row['drawdown_pct'] ?? 0.0), 4),
+                        'opened_at' => (string) ($row['opened_at'] ?? ''),
+                        'closed_at' => (string) ($row['closed_at'] ?? ''),
+                        'status' => (string) ($row['status'] ?? 'OPEN'),
+                    ];
+                }
+            }
+
+            return [
+                'discovery_wallet_summary' => [
+                    'tracked_wallets' => count($candidates),
+                    'discovery_pool_target' => 50,
+                    'shadow_pool_target' => 20,
+                    'copy_ready_target' => 5,
+                    'crypto_specialists' => count(array_filter($candidates, static fn (array $row): bool => ($row['specialization'] ?? '') === 'CRYPTO')),
+                    'promoted_to_shadow' => count($shadowWalletTable),
+                    'persisted_wallet_snapshots' => count($candidates),
+                ],
+                'shadow_wallet_summary' => [
+                    'shadow_wallets' => count($shadowWalletTable),
+                    'wallets_with_shadow_actions' => count(array_filter($shadowWalletTable, static fn (array $row): bool => (int) ($row['closed_shadow_trades'] ?? 0) > 0)),
+                    'closed_shadow_trades' => array_sum(array_map(static fn (array $row): int => (int) ($row['closed_shadow_trades'] ?? 0), $shadowWalletTable)),
+                    'positive_shadow_wallets' => count(array_filter($shadowWalletTable, static fn (array $row): bool => (float) ($row['shadow_edge'] ?? 0.0) > 0.0)),
+                ],
+                'copy_ready_wallet_summary' => [
+                    'copy_ready_wallets' => count($copyReadyWallets),
+                    'copy_ready_target' => 5,
+                    'minimum_shadow_trades' => 3,
+                    'positive_shadow_edge_wallets' => count(array_filter($shadowWalletTable, static fn (array $row): bool => (float) ($row['shadow_edge'] ?? 0.0) > 0.0)),
+                ],
+                'shadow_edge_summary' => [
+                    'evaluation_window_days' => 14,
+                    'net_shadow_edge' => round(array_sum(array_map(static fn (array $row): float => (float) ($row['shadow_edge'] ?? 0.0), $shadowWalletTable)), 4),
+                    'net_shadow_pnl' => round(array_sum(array_map(static fn (array $row): float => (float) ($row['shadow_pnl'] ?? 0.0), $shadowWalletTable)), 4),
+                    'worst_drawdown_pct' => round(min(array_map(static fn (array $row): float => (float) ($row['worst_drawdown_pct'] ?? 0.0), $shadowWalletTable) ?: [0.0]), 4),
+                    'shadow_ready' => count($copyReadyWallets) > 0,
+                ],
+                'recent_shadow_actions' => $recentShadowActions,
+                'wallet_consistency_table' => array_slice($candidates, 0, 12),
+                'shadow_wallet_table' => $shadowWalletTable,
+                'copy_ready_wallets' => $copyReadyWallets,
+            ];
+        }
+    }
+
     if (!dashboard_table_has_column($pdo, 'whale_wallets', 'address')) {
         return [
             'discovery_wallet_summary' => [],
