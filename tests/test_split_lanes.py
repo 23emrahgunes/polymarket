@@ -40,6 +40,16 @@ def _create_polymarket_research_db(db_path: Path) -> None:
     )
     cur.execute(
         """
+        CREATE TABLE whale_wallet_sources (
+            address TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            last_seen_at TEXT,
+            PRIMARY KEY (address, source_type)
+        )
+        """
+    )
+    cur.execute(
+        """
         CREATE TABLE trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             whale_address TEXT,
@@ -61,7 +71,9 @@ def _create_polymarket_research_db(db_path: Path) -> None:
         [
             ("0xaaa", "leaderboard", 0.92, 9, 1500.0, "CRYPTO", "2026-04-17 09:00:00", 1),
             ("0xbbb", "activity_discovery", 0.71, 4, 900.0, "CRYPTO", "2026-04-17 08:00:00", 1),
-            ("0xccc", "persisted_wallets", 0.51, 2, 250.0, "SPORTS", "2026-04-17 07:00:00", 1),
+            ("0xccc", "persisted_wallets", 0.66, 5, 420.0, "SPORTS", "2026-04-17 07:00:00", 1),
+            ("0xddd", "static_seed", 0.88, 7, 1100.0, "CRYPTO", "2026-04-17 06:00:00", 1),
+            ("0xeee", "graph_discovery", 0.69, 6, 980.0, "CRYPTO", "2026-04-17 05:00:00", 1),
         ],
     )
     cur.executemany(
@@ -69,7 +81,20 @@ def _create_polymarket_research_db(db_path: Path) -> None:
         [
             ("0xaaa", 0.84, 12, 3250.0),
             ("0xbbb", 0.61, 6, 420.0),
-            ("0xccc", 0.40, 1, -10.0),
+            ("0xccc", 0.52, 5, 140.0),
+            ("0xddd", 0.79, 11, 1200.0),
+            ("0xeee", 0.58, 4, 260.0),
+        ],
+    )
+    cur.executemany(
+        "INSERT INTO whale_wallet_sources (address, source_type, last_seen_at) VALUES (?, ?, ?)",
+        [
+            ("0xaaa", "leaderboard", "2026-04-17 09:00:00"),
+            ("0xaaa", "manual_confirmed", "2026-04-17 09:00:00"),
+            ("0xbbb", "activity_discovery", "2026-04-17 08:00:00"),
+            ("0xccc", "persisted_wallets", "2026-04-17 07:00:00"),
+            ("0xddd", "static_seed", "2026-04-17 06:00:00"),
+            ("0xeee", "graph_discovery", "2026-04-17 05:00:00"),
         ],
     )
     cur.executemany(
@@ -83,7 +108,13 @@ def _create_polymarket_research_db(db_path: Path) -> None:
             ("0xaaa", "CLOSED", 800.0, "2026-04-14 12:00:00", "2026-04-14 12:00:00", "CRYPTO"),
             ("0xbbb", "CLOSED", 150.0, "2026-04-16 10:00:00", "2026-04-16 10:00:00", "CRYPTO"),
             ("0xbbb", "CLOSED", 50.0, "2026-04-13 09:00:00", "2026-04-13 09:00:00", "CRYPTO"),
-            ("0xccc", "CLOSED", -10.0, "2026-04-12 08:00:00", "2026-04-12 08:00:00", "SPORTS"),
+            ("0xbbb", "CLOSED", 25.0, "2026-04-11 08:00:00", "2026-04-11 08:00:00", "CRYPTO"),
+            ("0xccc", "CLOSED", 80.0, "2026-04-16 08:00:00", "2026-04-16 08:00:00", "SPORTS"),
+            ("0xccc", "CLOSED", 40.0, "2026-04-14 08:00:00", "2026-04-14 08:00:00", "SPORTS"),
+            ("0xccc", "CLOSED", 20.0, "2026-04-12 08:00:00", "2026-04-12 08:00:00", "SPORTS"),
+            ("0xeee", "CLOSED", 110.0, "2026-04-16 06:00:00", "2026-04-16 06:00:00", "CRYPTO"),
+            ("0xeee", "CLOSED", 90.0, "2026-04-13 06:00:00", "2026-04-13 06:00:00", "CRYPTO"),
+            ("0xeee", "CLOSED", 60.0, "2026-04-11 06:00:00", "2026-04-11 06:00:00", "CRYPTO"),
         ],
     )
     conn.commit()
@@ -306,6 +337,15 @@ def test_polymarket_research_service_builds_shadow_funnel(tmp_path: Path) -> Non
         shadow_edge=-10.0,
         drawdown_pct=-8.0,
     )
+    repository.seed_shadow_action(
+        wallet_address="0xeee",
+        market_id="market-5",
+        category="CRYPTO",
+        source_type="graph_discovery",
+        shadow_pnl=10.0,
+        shadow_edge=4.0,
+        drawdown_pct=-5.0,
+    )
 
     service = PolymarketResearchService(
         PolymarketResearchSettings(
@@ -321,17 +361,40 @@ def test_polymarket_research_service_builds_shadow_funnel(tmp_path: Path) -> Non
     summary = service.build_summary()
     persisted_rows = repository.fetch_persisted_wallet_snapshots()
     persisted_by_address = {str(row["address"]): row for row in persisted_rows}
+    discovery_sources = {
+        row["bucket"]: row["actual"] for row in summary["discovery_source_summary"]["rows"]
+    }
+    shadow_blockers = {
+        row["reason"]: row["count"] for row in summary["shadow_promotion_summary"]["blocker_counts"]
+    }
 
-    assert summary["discovery_wallet_summary"]["tracked_wallets"] == 3
-    assert summary["discovery_wallet_summary"]["crypto_specialists"] == 2
-    assert summary["discovery_wallet_summary"]["persisted_wallet_snapshots"] == 3
-    assert summary["shadow_wallet_summary"]["wallets_with_shadow_actions"] == 2
+    assert summary["discovery_wallet_summary"]["tracked_wallets"] == 5
+    assert summary["discovery_wallet_summary"]["crypto_specialists"] == 4
+    assert summary["discovery_wallet_summary"]["persisted_wallet_snapshots"] == 5
+    assert summary["discovery_wallet_summary"]["promoted_to_shadow"] == 3
+    assert summary["discovery_source_summary"]["selected_wallets"] == 5
+    assert summary["discovery_source_summary"]["static_seed_used"] == 1
+    assert discovery_sources["leaderboard"] == 1
+    assert discovery_sources["activity_discovery"] == 1
+    assert discovery_sources["graph_discovery"] == 1
+    assert discovery_sources["manual_persisted"] == 1
+    assert summary["shadow_promotion_summary"]["eligible_wallets"] == 3
+    assert summary["shadow_promotion_summary"]["promoted_wallets"] == 3
+    assert summary["shadow_promotion_summary"]["blocked_wallets"] == 2
+    assert shadow_blockers["non_crypto_specialist"] == 1
+    assert shadow_blockers["seed_only_excluded"] == 1
+    assert summary["wallet_provenance_summary"]["multi_source_wallets"] == 1
+    assert summary["wallet_provenance_summary"]["single_source_wallets"] == 4
+    assert summary["wallet_provenance_summary"]["seed_only_wallets"] == 1
+    assert summary["shadow_wallet_summary"]["wallets_with_shadow_actions"] == 3
     assert summary["copy_ready_wallet_summary"]["copy_ready_wallets"] == 1
     assert summary["copy_ready_wallets"][0]["address"] == "0xaaa"
     assert summary["shadow_edge_summary"]["shadow_ready"] is True
-    assert summary["recent_shadow_actions"][0]["wallet_address"] in {"0xaaa", "0xbbb"}
+    assert summary["recent_shadow_actions"][0]["wallet_address"] in {"0xaaa", "0xbbb", "0xeee"}
     assert summary["wallet_consistency_table"][0]["address"] == "0xaaa"
-    assert len(persisted_rows) == 3
+    assert summary["wallet_consistency_table"][0]["primary_source"] == "leaderboard"
+    assert "manual_confirmed" in summary["wallet_consistency_table"][0]["source_labels"]
+    assert len(persisted_rows) == 5
     assert persisted_by_address["0xaaa"]["cohort"] == "copy_ready"
     assert persisted_by_address["0xaaa"]["copy_ready_eligible"] == 1
     assert persisted_by_address["0xaaa"]["shadow_eligible"] == 1
@@ -340,7 +403,12 @@ def test_polymarket_research_service_builds_shadow_funnel(tmp_path: Path) -> Non
     assert persisted_by_address["0xaaa"]["recency_score"] > 0
     assert persisted_by_address["0xaaa"]["frequency_score"] > 0
     assert persisted_by_address["0xbbb"]["cohort"] == "shadow"
-    assert persisted_by_address["0xccc"]["cohort"] == "shadow"
+    assert persisted_by_address["0xbbb"]["shadow_gate_reason"] == "eligible"
+    assert persisted_by_address["0xccc"]["cohort"] == "discovery"
+    assert persisted_by_address["0xccc"]["shadow_gate_reason"] == "non_crypto_specialist"
+    assert persisted_by_address["0xddd"]["cohort"] == "discovery"
+    assert persisted_by_address["0xddd"]["shadow_gate_reason"] == "seed_only_excluded"
+    assert persisted_by_address["0xeee"]["cohort"] == "shadow"
 
 
 def test_binance_technical_service_builds_fresh_and_legacy_summaries(tmp_path: Path) -> None:

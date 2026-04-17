@@ -1646,6 +1646,24 @@ function dashboard_build_recent_gate_ready_candidates(array $runtimeSummary): ar
 
 function dashboard_build_polymarket_research_summary(PDO $pdo): array
 {
+    $emptyDiscoverySourceSummary = [
+        'rows' => [],
+        'selected_wallets' => 0,
+        'min_viable_pool' => 30,
+        'static_seed_used' => 0,
+    ];
+    $emptyShadowPromotionSummary = [
+        'eligible_wallets' => 0,
+        'promoted_wallets' => 0,
+        'blocked_wallets' => 0,
+        'blocker_counts' => [],
+    ];
+    $emptyWalletProvenanceSummary = [
+        'multi_source_wallets' => 0,
+        'single_source_wallets' => 0,
+        'seed_only_wallets' => 0,
+    ];
+
     if (dashboard_table_exists($pdo, 'polymarket_research_wallets')) {
         $persistedCount = (int) ((dashboard_fetch_one($pdo, 'SELECT COUNT(*) AS count FROM polymarket_research_wallets')['count'] ?? 0));
         if ($persistedCount > 0) {
@@ -1655,6 +1673,10 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                 SELECT
                     address,
                     source_type,
+                    primary_source,
+                    source_labels,
+                    source_count,
+                    discovery_bucket,
                     cohort,
                     discovery_rank,
                     shadow_rank,
@@ -1678,6 +1700,10 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                     shadow_pnl,
                     shadow_edge,
                     worst_drawdown_pct,
+                    shadow_gate_status,
+                    shadow_gate_reason,
+                    copy_ready_gate_status,
+                    copy_ready_gate_reason,
                     shadow_eligible,
                     copy_ready_eligible,
                     refreshed_at
@@ -1691,6 +1717,15 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                 static fn (array $row): array => [
                     'address' => (string) ($row['address'] ?? ''),
                     'source_type' => (string) ($row['source_type'] ?? 'unknown'),
+                    'primary_source' => (string) ($row['primary_source'] ?? $row['source_type'] ?? 'unknown'),
+                    'source_labels' => array_values(
+                        array_filter(
+                            (array) json_decode((string) ($row['source_labels'] ?? '[]'), true),
+                            static fn ($value): bool => is_string($value) && trim($value) !== ''
+                        )
+                    ),
+                    'source_count' => (int) ($row['source_count'] ?? 0),
+                    'discovery_bucket' => (string) ($row['discovery_bucket'] ?? 'unassigned'),
                     'cohort' => (string) ($row['cohort'] ?? 'discovery'),
                     'discovery_rank' => (int) ($row['discovery_rank'] ?? 0),
                     'shadow_rank' => (int) ($row['shadow_rank'] ?? 0),
@@ -1714,6 +1749,10 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                     'shadow_pnl' => round((float) ($row['shadow_pnl'] ?? 0.0), 4),
                     'shadow_edge' => round((float) ($row['shadow_edge'] ?? 0.0), 4),
                     'worst_drawdown_pct' => round((float) ($row['worst_drawdown_pct'] ?? 0.0), 4),
+                    'shadow_gate_status' => (string) ($row['shadow_gate_status'] ?? 'blocked'),
+                    'shadow_gate_reason' => (string) ($row['shadow_gate_reason'] ?? 'low_consistency'),
+                    'copy_ready_gate_status' => (string) ($row['copy_ready_gate_status'] ?? 'blocked'),
+                    'copy_ready_gate_reason' => (string) ($row['copy_ready_gate_reason'] ?? 'needs_shadow_history'),
                     'shadow_eligible' => !empty($row['shadow_eligible']),
                     'copy_ready_eligible' => !empty($row['copy_ready_eligible']),
                 ],
@@ -1745,6 +1784,90 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                     <=> [$right['copy_ready_rank'] ?: 9999, $right['discovery_rank']]
             );
             $copyReadyWallets = array_slice($copyReadyWallets, 0, 5);
+
+            $bucketTargets = [
+                'leaderboard' => 15,
+                'activity_discovery' => 15,
+                'graph_discovery' => 10,
+                'manual_persisted' => 10,
+            ];
+            $bucketCounts = array_fill_keys(array_keys($bucketTargets), 0);
+            $staticSeedUsed = 0;
+            $shadowEligibleCount = 0;
+            $shadowBlockedCount = 0;
+            $shadowBlockers = [];
+            $multiSourceWallets = 0;
+            $singleSourceWallets = 0;
+            $seedOnlyWallets = 0;
+
+            foreach ($candidates as $candidate) {
+                $bucket = (string) ($candidate['discovery_bucket'] ?? 'unassigned');
+                if (array_key_exists($bucket, $bucketCounts)) {
+                    $bucketCounts[$bucket] += 1;
+                } elseif ($bucket === 'static_seed') {
+                    $staticSeedUsed += 1;
+                }
+
+                $sourceLabels = array_values(
+                    array_map(
+                        static fn ($label): string => strtolower(trim((string) $label)),
+                        (array) ($candidate['source_labels'] ?? [])
+                    )
+                );
+                $sourceLabels = array_values(array_filter($sourceLabels, static fn (string $label): bool => $label !== ''));
+                $sourceLabels = array_values(array_unique($sourceLabels));
+                if ((int) ($candidate['source_count'] ?? 0) > 1) {
+                    $multiSourceWallets += 1;
+                } elseif ((int) ($candidate['source_count'] ?? 0) === 1) {
+                    $singleSourceWallets += 1;
+                }
+                if ($sourceLabels === ['static_seed']) {
+                    $seedOnlyWallets += 1;
+                }
+
+                if ((string) ($candidate['shadow_gate_reason'] ?? '') === 'eligible') {
+                    $shadowEligibleCount += 1;
+                }
+                if ((string) ($candidate['shadow_gate_status'] ?? '') === 'blocked') {
+                    $shadowBlockedCount += 1;
+                    $reason = (string) ($candidate['shadow_gate_reason'] ?? 'unknown');
+                    $shadowBlockers[$reason] = ($shadowBlockers[$reason] ?? 0) + 1;
+                }
+            }
+
+            $discoverySourceSummary = [
+                'rows' => array_values(
+                    array_map(
+                        static fn (string $bucket, int $target): array => [
+                            'bucket' => $bucket,
+                            'target' => $target,
+                            'actual' => $bucketCounts[$bucket] ?? 0,
+                        ],
+                        array_keys($bucketTargets),
+                        array_values($bucketTargets)
+                    )
+                ),
+                'selected_wallets' => count($candidates),
+                'min_viable_pool' => 30,
+                'static_seed_used' => $staticSeedUsed,
+            ];
+
+            $shadowPromotionSummary = [
+                'eligible_wallets' => $shadowEligibleCount,
+                'promoted_wallets' => count($shadowWalletTable),
+                'blocked_wallets' => $shadowBlockedCount,
+                'blocker_counts' => array_map(
+                    static fn (string $reason, int $count): array => ['reason' => $reason, 'count' => $count],
+                    array_keys($shadowBlockers),
+                    array_values($shadowBlockers)
+                ),
+            ];
+
+            $walletProvenanceSummary = [
+                'multi_source_wallets' => $multiSourceWallets,
+                'single_source_wallets' => $singleSourceWallets,
+                'seed_only_wallets' => $seedOnlyWallets,
+            ];
 
             $recentShadowActions = [];
             if (dashboard_table_exists($pdo, 'polymarket_shadow_actions')) {
@@ -1795,18 +1918,21 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                     'promoted_to_shadow' => count($shadowWalletTable),
                     'persisted_wallet_snapshots' => count($candidates),
                 ],
+                'discovery_source_summary' => $discoverySourceSummary,
                 'shadow_wallet_summary' => [
                     'shadow_wallets' => count($shadowWalletTable),
                     'wallets_with_shadow_actions' => count(array_filter($shadowWalletTable, static fn (array $row): bool => (int) ($row['closed_shadow_trades'] ?? 0) > 0)),
                     'closed_shadow_trades' => array_sum(array_map(static fn (array $row): int => (int) ($row['closed_shadow_trades'] ?? 0), $shadowWalletTable)),
                     'positive_shadow_wallets' => count(array_filter($shadowWalletTable, static fn (array $row): bool => (float) ($row['shadow_edge'] ?? 0.0) > 0.0)),
                 ],
+                'shadow_promotion_summary' => $shadowPromotionSummary,
                 'copy_ready_wallet_summary' => [
                     'copy_ready_wallets' => count($copyReadyWallets),
                     'copy_ready_target' => 5,
                     'minimum_shadow_trades' => 3,
                     'positive_shadow_edge_wallets' => count(array_filter($shadowWalletTable, static fn (array $row): bool => (float) ($row['shadow_edge'] ?? 0.0) > 0.0)),
                 ],
+                'wallet_provenance_summary' => $walletProvenanceSummary,
                 'shadow_edge_summary' => [
                     'evaluation_window_days' => 14,
                     'net_shadow_edge' => round(array_sum(array_map(static fn (array $row): float => (float) ($row['shadow_edge'] ?? 0.0), $shadowWalletTable)), 4),
@@ -1825,8 +1951,11 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
     if (!dashboard_table_has_column($pdo, 'whale_wallets', 'address')) {
         return [
             'discovery_wallet_summary' => [],
+            'discovery_source_summary' => $emptyDiscoverySourceSummary,
             'shadow_wallet_summary' => [],
+            'shadow_promotion_summary' => $emptyShadowPromotionSummary,
             'copy_ready_wallet_summary' => [],
+            'wallet_provenance_summary' => $emptyWalletProvenanceSummary,
             'shadow_edge_summary' => [],
             'recent_shadow_actions' => [],
             'wallet_consistency_table' => [],
@@ -2024,18 +2153,21 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
             'crypto_specialists' => count(array_filter($candidates, static fn (array $row): bool => $row['specialization'] === 'CRYPTO')),
             'promoted_to_shadow' => min(count($candidates), 20),
         ],
+        'discovery_source_summary' => $emptyDiscoverySourceSummary,
         'shadow_wallet_summary' => [
             'shadow_wallets' => count($shadowWalletTable),
             'wallets_with_shadow_actions' => count(array_filter($shadowWalletTable, static fn (array $row): bool => (int) ($row['closed_shadow_trades'] ?? 0) > 0)),
             'closed_shadow_trades' => array_sum(array_map(static fn (array $row): int => (int) ($row['closed_shadow_trades'] ?? 0), $shadowWalletTable)),
             'positive_shadow_wallets' => count(array_filter($shadowWalletTable, static fn (array $row): bool => (float) ($row['shadow_edge'] ?? 0.0) > 0.0)),
         ],
+        'shadow_promotion_summary' => $emptyShadowPromotionSummary,
         'copy_ready_wallet_summary' => [
             'copy_ready_wallets' => count($copyReadyWallets),
             'copy_ready_target' => 5,
             'minimum_shadow_trades' => 3,
             'positive_shadow_edge_wallets' => count(array_filter($shadowWalletTable, static fn (array $row): bool => (float) ($row['shadow_edge'] ?? 0.0) > 0.0)),
         ],
+        'wallet_provenance_summary' => $emptyWalletProvenanceSummary,
         'shadow_edge_summary' => [
             'evaluation_window_days' => 14,
             'net_shadow_edge' => round(array_sum(array_map(static fn (array $row): float => (float) ($row['shadow_edge'] ?? 0.0), $shadowWalletTable)), 4),
@@ -2128,6 +2260,10 @@ function dashboard_build_dashboard_glossary(): array
             ['term' => 'Copy-ready', 'meaning' => 'Shadow takipte artida kalan ve drawdowni kabul edilebilir olan kisa liste.'],
             ['term' => 'Shadow edge', 'meaning' => 'Cüzdanin ham karindan degil, bizim gecikmeli takip simülasyonumuzdan kalan net avantaj.'],
             ['term' => 'Tutarlilik skoru', 'meaning' => 'Aktif gun, kapanmis islem, guven skoru ve realized PnL ile olusan bileşik kalite puani.'],
+            ['term' => 'Primary source', 'meaning' => 'Cuzdanin en baskin geldigi kaynak.'],
+            ['term' => 'Source labels', 'meaning' => 'Bu cüzdanin hangi listelerde gorundugu.'],
+            ['term' => 'Shadow eligible', 'meaning' => 'Gecikmeli takibe alinmaya uygun.'],
+            ['term' => 'Seed-only excluded', 'meaning' => 'Sadece tohum listede var, veri kaniti yetmiyor.'],
         ],
         'binance-technical' => [
             ['term' => 'Fresh 7g paper PnL', 'meaning' => 'Yeni Binance lane tarafindan son 7 günde acilan paper islemlerden gelen net sonuc.'],

@@ -19,6 +19,17 @@ class PolymarketResearchRepository:
         ).fetchone()
         return row is not None
 
+    @staticmethod
+    def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
+        if not PolymarketResearchRepository._table_exists(connection, table_name):
+            return set()
+        rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return {str(row[1]) for row in rows}
+
+    def _ensure_column(self, connection: sqlite3.Connection, table_name: str, column_name: str, column_def: str) -> None:
+        if column_name not in self._table_columns(connection, table_name):
+            connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
+
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -57,6 +68,10 @@ class PolymarketResearchRepository:
                 CREATE TABLE IF NOT EXISTS polymarket_research_wallets (
                     address TEXT PRIMARY KEY,
                     source_type TEXT NOT NULL DEFAULT 'unknown',
+                    primary_source TEXT NOT NULL DEFAULT 'unknown',
+                    source_labels TEXT NOT NULL DEFAULT '[]',
+                    source_count INTEGER NOT NULL DEFAULT 0,
+                    discovery_bucket TEXT NOT NULL DEFAULT 'unassigned',
                     cohort TEXT NOT NULL DEFAULT 'discovery',
                     discovery_rank INTEGER NOT NULL DEFAULT 0,
                     shadow_rank INTEGER NOT NULL DEFAULT 0,
@@ -80,12 +95,27 @@ class PolymarketResearchRepository:
                     shadow_pnl REAL NOT NULL DEFAULT 0,
                     shadow_edge REAL NOT NULL DEFAULT 0,
                     worst_drawdown_pct REAL NOT NULL DEFAULT 0,
+                    shadow_gate_status TEXT NOT NULL DEFAULT 'blocked',
+                    shadow_gate_reason TEXT NOT NULL DEFAULT 'low_consistency',
+                    copy_ready_gate_status TEXT NOT NULL DEFAULT 'blocked',
+                    copy_ready_gate_reason TEXT NOT NULL DEFAULT 'needs_shadow_history',
                     shadow_eligible INTEGER NOT NULL DEFAULT 0,
                     copy_ready_eligible INTEGER NOT NULL DEFAULT 0,
                     refreshed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
+            for column_name, column_def in [
+                ("primary_source", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ("source_labels", "TEXT NOT NULL DEFAULT '[]'"),
+                ("source_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("discovery_bucket", "TEXT NOT NULL DEFAULT 'unassigned'"),
+                ("shadow_gate_status", "TEXT NOT NULL DEFAULT 'blocked'"),
+                ("shadow_gate_reason", "TEXT NOT NULL DEFAULT 'low_consistency'"),
+                ("copy_ready_gate_status", "TEXT NOT NULL DEFAULT 'blocked'"),
+                ("copy_ready_gate_reason", "TEXT NOT NULL DEFAULT 'needs_shadow_history'"),
+            ]:
+                self._ensure_column(connection, "polymarket_research_wallets", column_name, column_def)
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_polymarket_research_wallets_cohort_rank
@@ -94,7 +124,11 @@ class PolymarketResearchRepository:
             )
             connection.commit()
 
-    def fetch_candidate_wallets(self, limit: int) -> list[sqlite3.Row]:
+    def fetch_candidate_wallets(
+        self,
+        limit: int | None = None,
+        source_types: list[str] | None = None,
+    ) -> list[sqlite3.Row]:
         with self.connect() as connection:
             if not self._table_exists(connection, "whale_wallets"):
                 return []
@@ -133,8 +167,16 @@ class PolymarketResearchRepository:
                 closed_trade_count_expr = "COALESCE(whale_stats.total_trades, 0) AS closed_trade_count"
                 realized_pnl_expr = "ROUND(COALESCE(whale_stats.total_pnl, 0), 4) AS realized_pnl"
 
-            cursor = connection.execute(
-                f"""
+            where_clauses = ["whale_wallets.enabled = 1"]
+            params: list[object] = []
+            if source_types:
+                normalized_sources = [source_type for source_type in source_types if str(source_type).strip()]
+                if normalized_sources:
+                    placeholders = ", ".join("?" for _ in normalized_sources)
+                    where_clauses.append(f"whale_wallets.source_type IN ({placeholders})")
+                    params.extend(normalized_sources)
+
+            query = f"""
                 {trade_cte}
                 SELECT
                     whale_wallets.address,
@@ -154,11 +196,64 @@ class PolymarketResearchRepository:
                 FROM whale_wallets
                 {whale_stats_join}
                 {trade_join}
-                WHERE whale_wallets.enabled = 1
+                WHERE {" AND ".join(where_clauses)}
                 ORDER BY whale_wallets.discovery_score DESC, whale_wallets.last_event_amount DESC, whale_wallets.last_seen_at DESC
-                LIMIT ?
+            """
+            if limit is not None:
+                query += "\nLIMIT ?"
+                params.append(max(limit, 1))
+
+            cursor = connection.execute(query, tuple(params))
+            return cursor.fetchall()
+
+    def fetch_wallet_provenance(self, addresses: list[str]) -> list[sqlite3.Row]:
+        if not addresses:
+            return []
+
+        normalized_addresses = [address.lower() for address in addresses if str(address).strip()]
+        if not normalized_addresses:
+            return []
+
+        with self.connect() as connection:
+            if not self._table_exists(connection, "whale_wallets"):
+                return []
+
+            placeholders = ", ".join("?" for _ in normalized_addresses)
+            if self._table_exists(connection, "whale_wallet_sources"):
+                params = tuple(normalized_addresses + normalized_addresses)
+                query = f"""
+                    SELECT
+                        address,
+                        source_type,
+                        MAX(last_seen_at) AS last_seen_at
+                    FROM (
+                        SELECT LOWER(address) AS address, source_type, last_seen_at
+                        FROM whale_wallet_sources
+                        WHERE LOWER(address) IN ({placeholders})
+                        UNION ALL
+                        SELECT LOWER(address) AS address, source_type, last_seen_at
+                        FROM whale_wallets
+                        WHERE LOWER(address) IN ({placeholders})
+                    ) provenance
+                    WHERE TRIM(COALESCE(source_type, '')) != ''
+                    GROUP BY address, source_type
+                    ORDER BY address ASC, source_type ASC
+                """
+                cursor = connection.execute(query, params)
+                return cursor.fetchall()
+
+            cursor = connection.execute(
+                f"""
+                    SELECT
+                        LOWER(address) AS address,
+                        source_type,
+                        last_seen_at
+                    FROM whale_wallets
+                    WHERE LOWER(address) IN ({placeholders})
+                      AND TRIM(COALESCE(source_type, '')) != ''
+                    ORDER BY LOWER(address) ASC, source_type ASC
                 """,
-                (max(limit, 1),),
+                tuple(normalized_addresses),
             )
             return cursor.fetchall()
 
@@ -256,6 +351,10 @@ class PolymarketResearchRepository:
                     INSERT INTO polymarket_research_wallets (
                         address,
                         source_type,
+                        primary_source,
+                        source_labels,
+                        source_count,
+                        discovery_bucket,
                         cohort,
                         discovery_rank,
                         shadow_rank,
@@ -279,12 +378,20 @@ class PolymarketResearchRepository:
                         shadow_pnl,
                         shadow_edge,
                         worst_drawdown_pct,
+                        shadow_gate_status,
+                        shadow_gate_reason,
+                        copy_ready_gate_status,
+                        copy_ready_gate_reason,
                         shadow_eligible,
                         copy_ready_eligible,
                         refreshed_at
                     ) VALUES (
                         :address,
                         :source_type,
+                        :primary_source,
+                        :source_labels,
+                        :source_count,
+                        :discovery_bucket,
                         :cohort,
                         :discovery_rank,
                         :shadow_rank,
@@ -308,6 +415,10 @@ class PolymarketResearchRepository:
                         :shadow_pnl,
                         :shadow_edge,
                         :worst_drawdown_pct,
+                        :shadow_gate_status,
+                        :shadow_gate_reason,
+                        :copy_ready_gate_status,
+                        :copy_ready_gate_reason,
                         :shadow_eligible,
                         :copy_ready_eligible,
                         CURRENT_TIMESTAMP
@@ -324,6 +435,10 @@ class PolymarketResearchRepository:
                 SELECT
                     address,
                     source_type,
+                    primary_source,
+                    source_labels,
+                    source_count,
+                    discovery_bucket,
                     cohort,
                     discovery_rank,
                     shadow_rank,
@@ -347,6 +462,10 @@ class PolymarketResearchRepository:
                     shadow_pnl,
                     shadow_edge,
                     worst_drawdown_pct,
+                    shadow_gate_status,
+                    shadow_gate_reason,
+                    copy_ready_gate_status,
+                    copy_ready_gate_reason,
                     shadow_eligible,
                     copy_ready_eligible,
                     refreshed_at

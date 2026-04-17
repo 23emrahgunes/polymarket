@@ -132,6 +132,87 @@ def _create_dashboard_db(path: Path) -> None:
             (4, '0xbbb', 'market-5', 'POLITICS', 'activity_discovery', 'shadow_trade', -1.2, -0.6, -6.0, '2026-04-09 07:00:00', '2026-04-09 08:00:00', 'CLOSED_LOSS'),
         ],
     )
+    cur.execute(
+        """
+        CREATE TABLE polymarket_research_wallets (
+            address TEXT PRIMARY KEY,
+            source_type TEXT NOT NULL DEFAULT 'unknown',
+            primary_source TEXT NOT NULL DEFAULT 'unknown',
+            source_labels TEXT NOT NULL DEFAULT '[]',
+            source_count INTEGER NOT NULL DEFAULT 0,
+            discovery_bucket TEXT NOT NULL DEFAULT 'unassigned',
+            cohort TEXT NOT NULL DEFAULT 'discovery',
+            discovery_rank INTEGER NOT NULL DEFAULT 0,
+            shadow_rank INTEGER NOT NULL DEFAULT 0,
+            copy_ready_rank INTEGER NOT NULL DEFAULT 0,
+            discovery_score REAL NOT NULL DEFAULT 0,
+            trust_score REAL NOT NULL DEFAULT 0.5,
+            consistency_score REAL NOT NULL DEFAULT 0,
+            profit_consistency_score REAL NOT NULL DEFAULT 0,
+            recency_score REAL NOT NULL DEFAULT 0,
+            frequency_score REAL NOT NULL DEFAULT 0,
+            drawdown_estimate_pct REAL NOT NULL DEFAULT 0,
+            active_days INTEGER NOT NULL DEFAULT 0,
+            closed_trade_count INTEGER NOT NULL DEFAULT 0,
+            realized_pnl REAL NOT NULL DEFAULT 0,
+            crypto_participation_ratio REAL NOT NULL DEFAULT 0,
+            specialization TEXT NOT NULL DEFAULT 'UNKNOWN',
+            event_count_24h INTEGER NOT NULL DEFAULT 0,
+            last_event_amount REAL NOT NULL DEFAULT 0,
+            last_seen_at TEXT,
+            closed_shadow_trades INTEGER NOT NULL DEFAULT 0,
+            shadow_pnl REAL NOT NULL DEFAULT 0,
+            shadow_edge REAL NOT NULL DEFAULT 0,
+            worst_drawdown_pct REAL NOT NULL DEFAULT 0,
+            shadow_gate_status TEXT NOT NULL DEFAULT 'blocked',
+            shadow_gate_reason TEXT NOT NULL DEFAULT 'low_consistency',
+            copy_ready_gate_status TEXT NOT NULL DEFAULT 'blocked',
+            copy_ready_gate_reason TEXT NOT NULL DEFAULT 'needs_shadow_history',
+            shadow_eligible INTEGER NOT NULL DEFAULT 0,
+            copy_ready_eligible INTEGER NOT NULL DEFAULT 0,
+            refreshed_at TEXT
+        )
+        """
+    )
+    cur.executemany(
+        """
+        INSERT INTO polymarket_research_wallets (
+            address, source_type, primary_source, source_labels, source_count, discovery_bucket, cohort,
+            discovery_rank, shadow_rank, copy_ready_rank, discovery_score, trust_score, consistency_score,
+            profit_consistency_score, recency_score, frequency_score, drawdown_estimate_pct, active_days,
+            closed_trade_count, realized_pnl, crypto_participation_ratio, specialization, event_count_24h,
+            last_event_amount, last_seen_at, closed_shadow_trades, shadow_pnl, shadow_edge, worst_drawdown_pct,
+            shadow_gate_status, shadow_gate_reason, copy_ready_gate_status, copy_ready_gate_reason,
+            shadow_eligible, copy_ready_eligible, refreshed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                '0xaaa', 'leaderboard', 'leaderboard', json.dumps(['leaderboard', 'manual_confirmed']), 2,
+                'leaderboard', 'copy_ready', 1, 1, 1, 0.91, 0.75, 0.88, 0.91, 0.92, 0.84, 2.1, 6, 12, 3250.0,
+                1.0, 'CRYPTO', 5, 12000.0, '2026-04-09 10:00:00', 3, 13.5, 5.9, -2.1,
+                'promoted', 'eligible', 'promoted', 'eligible', 1, 1, '2026-04-09 10:00:00'
+            ),
+            (
+                '0xbbb', 'activity_discovery', 'activity_discovery', json.dumps(['activity_discovery']), 1,
+                'activity_discovery', 'shadow', 2, 2, 0, 0.72, 0.50, 0.62, 0.51, 0.66, 0.44, 6.0, 4, 4, 420.0,
+                0.75, 'CRYPTO', 3, 8000.0, '2026-04-09 10:00:00', 1, -1.2, -0.6, -6.0,
+                'promoted', 'eligible', 'blocked', 'needs_shadow_history', 1, 0, '2026-04-09 10:00:00'
+            ),
+            (
+                '0xccc', 'graph_discovery', 'graph_discovery', json.dumps(['graph_discovery']), 1,
+                'graph_discovery', 'discovery', 3, 0, 0, 0.68, 0.50, 0.41, 0.38, 0.52, 0.31, 4.4, 2, 2, 120.0,
+                1.0, 'CRYPTO', 2, 5500.0, '2026-04-09 10:00:00', 0, 0.0, 0.0, 0.0,
+                'blocked', 'low_activity', 'blocked', 'not_shadow_wallet', 0, 0, '2026-04-09 10:00:00'
+            ),
+            (
+                '0xddd', 'static_seed', 'static_seed', json.dumps(['static_seed']), 1,
+                'static_seed', 'discovery', 4, 0, 0, 0.83, 0.50, 0.79, 0.82, 0.71, 0.67, 3.1, 7, 7, 900.0,
+                1.0, 'CRYPTO', 2, 4000.0, '2026-04-09 10:00:00', 0, 0.0, 0.0, 0.0,
+                'blocked', 'seed_only_excluded', 'blocked', 'not_shadow_wallet', 0, 0, '2026-04-09 10:00:00'
+            ),
+        ],
+    )
     conn.commit()
     conn.close()
 
@@ -275,8 +356,11 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert 'dashboard_tab_help' in payload
     assert 'dashboard_glossary' in payload
     assert 'discovery_wallet_summary' in payload
+    assert 'discovery_source_summary' in payload
     assert 'shadow_wallet_summary' in payload
+    assert 'shadow_promotion_summary' in payload
     assert 'copy_ready_wallet_summary' in payload
+    assert 'wallet_provenance_summary' in payload
     assert 'shadow_edge_summary' in payload
     assert 'recent_shadow_actions' in payload
     assert 'wallet_consistency_table' in payload
@@ -322,13 +406,32 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['top_whales'][1]['trust_score'] == 0.5
     assert payload['top_whales'][1]['total_trades'] == 0
     assert payload['top_whales'][1]['win_rate'] is None
-    assert payload['discovery_wallet_summary']['tracked_wallets'] == 3
-    assert payload['discovery_wallet_summary']['promoted_to_shadow'] == 3
+    assert payload['discovery_wallet_summary']['tracked_wallets'] == 4
+    assert payload['discovery_wallet_summary']['promoted_to_shadow'] == 2
     assert payload['shadow_wallet_summary']['wallets_with_shadow_actions'] == 2
     assert payload['copy_ready_wallet_summary']['copy_ready_wallets'] == 1
     assert payload['shadow_edge_summary']['shadow_ready'] is True
+    assert payload['discovery_source_summary']['selected_wallets'] == 4
+    assert payload['discovery_source_summary']['static_seed_used'] == 1
+    discovery_source_counts = {row['bucket']: row['actual'] for row in payload['discovery_source_summary']['rows']}
+    assert discovery_source_counts['leaderboard'] == 1
+    assert discovery_source_counts['activity_discovery'] == 1
+    assert discovery_source_counts['graph_discovery'] == 1
+    assert discovery_source_counts['manual_persisted'] == 0
+    assert payload['shadow_promotion_summary']['eligible_wallets'] == 2
+    assert payload['shadow_promotion_summary']['promoted_wallets'] == 2
+    blocker_counts = {row['reason']: row['count'] for row in payload['shadow_promotion_summary']['blocker_counts']}
+    assert blocker_counts['low_activity'] == 1
+    assert blocker_counts['seed_only_excluded'] == 1
+    assert payload['wallet_provenance_summary']['multi_source_wallets'] == 1
+    assert payload['wallet_provenance_summary']['single_source_wallets'] == 3
+    assert payload['wallet_provenance_summary']['seed_only_wallets'] == 1
     assert payload['recent_shadow_actions'][0]['wallet_address'] == '0xaaa'
     assert payload['wallet_consistency_table'][0]['address'] == '0xaaa'
+    assert payload['wallet_consistency_table'][0]['primary_source'] == 'leaderboard'
+    assert 'manual_confirmed' in payload['wallet_consistency_table'][0]['source_labels']
+    assert payload['wallet_consistency_table'][0]['shadow_gate_status'] == 'promoted'
+    assert payload['wallet_consistency_table'][0]['shadow_gate_reason'] == 'eligible'
     assert payload['copy_ready_wallets'][0]['address'] == '0xaaa'
     assert payload['fresh_technical_summary']['fresh_window_days'] == 7
     assert payload['fresh_pnl_summary_7d']['fresh_window_days'] == 7
@@ -854,9 +957,16 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Shadow Cohort Ozeti' in html
     assert 'Copy-ready Ozeti' in html
     assert 'Shadow Edge Ozeti' in html
+    assert 'Kaynak Dagilimi' in html
+    assert 'Shadow Terfi Ozeti' in html
+    assert 'Cuzdan Provenance' in html
     assert 'Cuzdan Tutarlilik Tablosu' in html
     assert 'Copy-ready Kisa Liste' in html
     assert 'Son Shadow Aksiyonlari' in html
+    assert 'Ana Kaynak' in html
+    assert 'Kaynak Etiketleri' in html
+    assert 'Shadow Durumu' in html
+    assert 'Shadow Nedeni' in html
     assert 'Fresh 7g Paper PnL' in html
     assert 'Fresh PnL Ozeti' in html
     assert 'Fresh Teknik Ozet' in html

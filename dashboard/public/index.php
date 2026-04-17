@@ -496,10 +496,23 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                     <div class="subcard-header"><h3 class="subcard-title">Shadow Edge Ozeti</h3><span class="badge info">Main Metric</span></div>
                     <div class="metric-list" id="shadow-edge-summary"></div>
                 </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Kaynak Dagilimi</h3><span class="badge info">Source Mix</span></div>
+                    <div class="metric-list" id="discovery-source-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Shadow Terfi Ozeti</h3><span class="badge warn">Gate</span></div>
+                    <div class="metric-list" id="shadow-promotion-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Cuzdan Provenance</h3><span class="badge info">Provenance</span></div>
+                    <div class="metric-list" id="wallet-provenance-summary"></div>
+                </div>
             </div>
         </article>
         <article class="panel panel-wide" data-tab="polymarket-research">
             <div class="panel-header"><h2>Cuzdan Tutarlilik Tablosu</h2><span class="badge info">Top Cohort</span></div>
+            <p class="panel-copy">Bu tabloda cüzdanin en baskin kaynagi, hangi listelerde gorundugu ve shadow cohorta neden girdigi ya da giremedigi birlikte gorulur.</p>
             <div id="wallet-consistency-table"></div>
         </article>
         <article class="panel panel-wide" data-tab="polymarket-research">
@@ -969,6 +982,16 @@ function translateReason(value) {
         macd_not_aligned: 'MACD hizalanmadi',
         missing_price_history: 'fiyat gecmisi eksik',
         missing_futures_volume: 'futures hacmi eksik',
+        eligible: 'Gecikmeli takibe uygun',
+        low_consistency: 'Tutarlilik skoru dusuk',
+        low_activity: 'Aktif gun sayisi dusuk',
+        low_closed_trades: 'Kapanmis islem sayisi dusuk',
+        non_crypto_specialist: 'Crypto uzmanligi zayif',
+        seed_only_excluded: 'Sadece tohum listede var, veri kaniti yetmiyor',
+        not_shadow_wallet: 'Shadow cohortta degil',
+        needs_shadow_history: 'Yeterli shadow gecmisi yok',
+        negative_shadow_edge: 'Shadow edge negatif',
+        drawdown_too_deep: 'Drawdown fazla derin',
         none: 'yok'
     };
     return map[text] || String(value ?? 'yok');
@@ -1674,14 +1697,52 @@ function updatePanels(payload) {
         { label: 'En kotu drawdown %', value: formatNumber(polymarketResearch.shadowEdge.worst_drawdown_pct, 2) },
         { label: 'Copy-ready var mi', value: polymarketResearch.shadowEdge.shadow_ready ? 'evet' : 'hayir' }
     ]);
+    const discoverySourceSummary = payload.discovery_source_summary || {};
+    const discoverySourceRows = Array.isArray(discoverySourceSummary.rows) ? discoverySourceSummary.rows : [];
+    const discoveryBucketValue = (bucket) => {
+        const row = discoverySourceRows.find((item) => item.bucket === bucket);
+        return `${formatNumber(row?.actual, 0)} / ${formatNumber(row?.target, 0)}`;
+    };
+    renderMetrics('discovery-source-summary', [
+        { label: 'Secilen wallet', value: formatNumber(discoverySourceSummary.selected_wallets, 0) },
+        { label: 'Min uygulanabilir havuz', value: formatNumber(discoverySourceSummary.min_viable_pool, 0) },
+        { label: 'Leaderboard', value: discoveryBucketValue('leaderboard') },
+        { label: 'Activity discovery', value: discoveryBucketValue('activity_discovery') },
+        { label: 'Graph discovery', value: discoveryBucketValue('graph_discovery') },
+        { label: 'Manual / persisted', value: discoveryBucketValue('manual_persisted') },
+        { label: 'Static seed kullanimi', value: formatNumber(discoverySourceSummary.static_seed_used, 0) }
+    ]);
+    const shadowPromotionSummary = payload.shadow_promotion_summary || {};
+    const blockerRows = Array.isArray(shadowPromotionSummary.blocker_counts) ? shadowPromotionSummary.blocker_counts : [];
+    renderMetrics('shadow-promotion-summary', [
+        { label: 'Shadow eligible', value: formatNumber(shadowPromotionSummary.eligible_wallets, 0) },
+        { label: 'Shadowa terfi eden', value: formatNumber(shadowPromotionSummary.promoted_wallets, 0) },
+        { label: 'Blocked wallet', value: formatNumber(shadowPromotionSummary.blocked_wallets, 0) },
+        {
+            label: 'Blocker dagilimi',
+            value: blockerRows.length > 0
+                ? blockerRows.map((row) => `${translateReason(row.reason || 'none')}: ${formatNumber(row.count, 0)}`).join(', ')
+                : 'yok',
+            long: true
+        }
+    ]);
+    const walletProvenanceSummary = payload.wallet_provenance_summary || {};
+    renderMetrics('wallet-provenance-summary', [
+        { label: 'Cok kaynakli wallet', value: formatNumber(walletProvenanceSummary.multi_source_wallets, 0) },
+        { label: 'Tek kaynakli wallet', value: formatNumber(walletProvenanceSummary.single_source_wallets, 0) },
+        { label: 'Seed-only wallet', value: formatNumber(walletProvenanceSummary.seed_only_wallets, 0) }
+    ]);
     renderTable('wallet-consistency-table', [
         { key: 'address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.address || '', 20) },
-        { key: 'source_type', label: 'Kaynak', render: (row) => escapeHtml(row.source_type || '') },
+        { key: 'primary_source', label: 'Ana Kaynak', render: (row) => escapeHtml(row.primary_source || row.source_type || '') },
+        { key: 'source_labels', label: 'Kaynak Etiketleri', render: (row) => escapeHtml(Array.isArray(row.source_labels) ? row.source_labels.join(', ') : '') },
         { key: 'specialization', label: 'Uzmanlik', render: (row) => escapeHtml(row.specialization || 'UNKNOWN') },
         { key: 'consistency_score', label: 'Tutarlilik', render: (row) => escapeHtml(formatNumber(row.consistency_score, 3)) },
         { key: 'trust_score', label: 'Guven', render: (row) => escapeHtml(formatNumber(row.trust_score, 3)) },
         { key: 'active_days', label: 'Aktif gun', render: (row) => escapeHtml(formatNumber(row.active_days, 0)) },
         { key: 'closed_trade_count', label: 'Kapanmis islem', render: (row) => escapeHtml(formatNumber(row.closed_trade_count, 0)) },
+        { key: 'shadow_gate_status', label: 'Shadow Durumu', render: (row) => escapeHtml(row.shadow_gate_status || 'blocked') },
+        { key: 'shadow_gate_reason', label: 'Shadow Nedeni', render: (row) => escapeHtml(translateReason(row.shadow_gate_reason || 'none')) },
         { key: 'shadow_edge', label: 'Shadow edge', render: (row) => escapeHtml(formatNumber(row.shadow_edge, 3)) }
     ], payload.wallet_consistency_table || [], 'Henuz wallet consistency verisi yok.');
     renderTable('copy-ready-wallets', [
