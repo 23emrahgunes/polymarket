@@ -524,7 +524,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         </article>
         <article class="panel panel-wide" data-tab="polymarket-research">
             <div class="panel-header"><h2>Oncelikli Izleme Listesi</h2><span class="badge warn">Curated</span></div>
-            <p class="panel-copy">Burada elle oncelik verdigimiz uzman adaylari gorulur. Handle bagli ama adresi cozulmemis adaylar discovery ve shadow sayilarini bozmaz.</p>
+            <p class="panel-copy">Burada elle oncelik verdigimiz uzman adaylari gorulur. Manual link, dogrulanmis cuzdan adresini handle kaydina elle baglar; adresi cozulmemis adaylar discovery ve shadow sayilarini bozmaz.</p>
             <div id="priority-watchlist"></div>
         </article>
         <article class="panel panel-wide" data-tab="polymarket-research">
@@ -1789,6 +1789,7 @@ function updatePanels(payload) {
     renderTable('priority-watchlist', [
         { key: 'priority_rank', label: 'Oncelik', render: (row) => escapeHtml(formatNumber(row.priority_rank, 0)) },
         { key: 'display_name', label: 'Isim', render: (row) => escapeHtml(row.display_name || '') },
+        { key: 'profile_ref', label: 'Profil', render: (row) => row.profile_ref ? `<a href="${escapeHtml(row.profile_ref)}" target="_blank" rel="noopener">Profil</a>` : '-' },
         { key: 'target_specialization', label: 'Hedef', render: (row) => escapeHtml(row.target_specialization || 'UNKNOWN') },
         { key: 'priority_mode', label: 'Mod', render: (row) => escapeHtml(row.priority_mode || 'normal') },
         { key: 'status', label: 'Watchlist', render: (row) => escapeHtml(row.status || 'pending_resolution') },

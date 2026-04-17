@@ -480,6 +480,7 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['wallet_consistency_table'][0]['identity_resolution_status'] == 'linked'
     assert payload['copy_ready_wallets'][0]['address'] == '0xaaa'
     assert payload['priority_watchlist_rows'][0]['display_name'] == 'ohanism'
+    assert payload['priority_watchlist_rows'][0]['profile_ref'] == 'https://polymarket.com/tr/@ohanism'
     assert payload['priority_watchlist_rows'][0]['identity_resolution_status'] == 'pending_resolution'
     assert payload['priority_watchlist_rows'][1]['wallet_address'] == '0xaaa'
     assert payload['priority_watchlist_rows'][1]['promoted_to_shadow'] is True
@@ -1011,6 +1012,7 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Shadow Terfi Ozeti' in html
     assert 'Cuzdan Provenance' in html
     assert 'Oncelikli Izleme Listesi' in html
+    assert 'Manual link' in html
     assert 'Kimlik Cozumleme Durumu' in html
     assert 'Shadow Replay Ozeti' in html
     assert 'Cuzdan Tutarlilik Tablosu' in html
@@ -1021,6 +1023,7 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Shadow Durumu' in html
     assert 'Shadow Nedeni' in html
     assert 'Oncelik' in html
+    assert 'Profil' in html
     assert 'Watchlist Durumu' in html
     assert 'Kimlik Durumu' in html
     assert 'Fresh 7g Paper PnL' in html

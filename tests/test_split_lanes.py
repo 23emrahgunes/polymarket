@@ -3,9 +3,12 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from apps.binance_technical.config import BinanceTechnicalSettings
 from apps.binance_technical.repository import BinanceTechnicalRepository
 from apps.binance_technical.service import BinanceTechnicalService
+from apps.polymarket_research.cli import main as polymarket_research_cli_main
 from apps.polymarket_research.config import PolymarketResearchSettings
 from apps.polymarket_research.repository import PolymarketResearchRepository
 from apps.polymarket_research.service import PolymarketResearchService
@@ -459,6 +462,123 @@ def test_polymarket_research_service_builds_shadow_funnel(tmp_path: Path) -> Non
     assert persisted_by_address["0xddd"]["cohort"] == "discovery"
     assert persisted_by_address["0xddd"]["shadow_gate_reason"] == "seed_only_excluded"
     assert persisted_by_address["0xeee"]["cohort"] == "copy_ready"
+
+
+def test_polymarket_watchlist_manual_linking_guards(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket_research.db"
+    _create_polymarket_research_db(db_path)
+    repository = PolymarketResearchRepository(str(db_path))
+    repository.ensure_tables()
+
+    seeded_row = repository.fetch_watchlist_row(1)
+    assert seeded_row is not None
+    assert seeded_row["display_name"] == "ohanism"
+    assert seeded_row["status"] == "pending_resolution"
+    assert seeded_row["wallet_address"] is None
+
+    linked_address = "0x1111111111111111111111111111111111111111"
+    linked_row = repository.link_watchlist_wallet(
+        row_id=1,
+        wallet_address=linked_address.upper().replace("X", "x"),
+        notes="verified manually",
+    )
+    assert linked_row["wallet_address"] == linked_address
+    assert linked_row["status"] == "linked"
+    assert linked_row["notes"] == "verified manually"
+
+    relinked_row = repository.link_watchlist_wallet(row_id=1, wallet_address=linked_address)
+    assert relinked_row["wallet_address"] == linked_address
+
+    added_row = repository.add_watchlist_row(
+        display_name="second-specialist",
+        profile_ref="https://polymarket.com/tr/@second-specialist",
+        priority_rank=2,
+        priority_mode="fast_track_shadow",
+        notes="operator candidate",
+    )
+    assert added_row["status"] == "pending_resolution"
+    assert added_row["wallet_address"] is None
+
+    with pytest.raises(ValueError, match="0x-prefixed"):
+        repository.link_watchlist_wallet(row_id=added_row["id"], wallet_address="not-a-wallet")
+
+    with pytest.raises(ValueError, match="already linked"):
+        repository.link_watchlist_wallet(row_id=added_row["id"], wallet_address=linked_address)
+
+
+def test_polymarket_research_cli_watchlist_commands(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    db_path = tmp_path / "polymarket_research.db"
+    _create_polymarket_research_db(db_path)
+
+    assert polymarket_research_cli_main(["watchlist-list", "--db-path", str(db_path)]) == 0
+    list_output = capsys.readouterr().out
+    assert "WATCHLIST_ROWS" in list_output
+    assert "ohanism" in list_output
+    assert "pending_resolution" in list_output
+
+    linked_address = "0x2222222222222222222222222222222222222222"
+    assert (
+        polymarket_research_cli_main(
+            [
+                "watchlist-link",
+                "--db-path",
+                str(db_path),
+                "--id",
+                "1",
+                "--wallet-address",
+                linked_address,
+                "--notes",
+                "verified manually",
+            ]
+        )
+        == 0
+    )
+    link_output = capsys.readouterr().out
+    assert "WATCHLIST_ROW_LINKED" in link_output
+    assert linked_address in link_output
+
+    repository = PolymarketResearchRepository(str(db_path))
+    linked_row = repository.fetch_watchlist_row(1)
+    assert linked_row is not None
+    assert linked_row["wallet_address"] == linked_address
+    assert linked_row["status"] == "linked"
+
+    assert (
+        polymarket_research_cli_main(
+            [
+                "watchlist-add",
+                "--db-path",
+                str(db_path),
+                "--display-name",
+                "new-specialist",
+                "--profile-ref",
+                "https://polymarket.com/tr/@new-specialist",
+                "--priority-rank",
+                "3",
+            ]
+        )
+        == 0
+    )
+    add_output = capsys.readouterr().out
+    assert "WATCHLIST_ROW_ADDED" in add_output
+    assert "new-specialist" in add_output
+
+    assert (
+        polymarket_research_cli_main(
+            [
+                "watchlist-link",
+                "--db-path",
+                str(db_path),
+                "--id",
+                "1",
+                "--wallet-address",
+                "bad-address",
+            ]
+        )
+        == 2
+    )
+    invalid_result = capsys.readouterr()
+    assert "0x-prefixed" in invalid_result.err
 
 
 def test_binance_technical_service_builds_fresh_and_legacy_summaries(tmp_path: Path) -> None:

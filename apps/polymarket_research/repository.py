@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+
+
+WALLET_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
+
+
+def normalize_wallet_address(wallet_address: str) -> str:
+    normalized = str(wallet_address or "").strip().lower()
+    if not WALLET_ADDRESS_RE.match(normalized):
+        raise ValueError("wallet_address must be a 0x-prefixed 40-hex-character address")
+    return normalized
 
 
 class PolymarketResearchRepository:
@@ -489,6 +500,160 @@ class PolymarketResearchRepository:
                 """
             )
             return cursor.fetchall()
+
+    def fetch_watchlist_row(self, row_id: int) -> sqlite3.Row | None:
+        self.ensure_tables()
+        with self.connect() as connection:
+            return connection.execute(
+                """
+                SELECT
+                    id,
+                    display_name,
+                    profile_ref,
+                    wallet_address,
+                    priority_rank,
+                    priority_mode,
+                    target_specialization,
+                    status,
+                    notes,
+                    created_at,
+                    updated_at
+                FROM polymarket_research_watchlist
+                WHERE id = ?
+                """,
+                (int(row_id),),
+            ).fetchone()
+
+    def add_watchlist_row(
+        self,
+        *,
+        display_name: str,
+        profile_ref: str,
+        priority_rank: int,
+        priority_mode: str = "normal",
+        target_specialization: str = "CRYPTO",
+        notes: str | None = None,
+    ) -> sqlite3.Row:
+        self.ensure_tables()
+        normalized_display = str(display_name or "").strip()
+        normalized_profile = str(profile_ref or "").strip()
+        normalized_mode = str(priority_mode or "normal").strip() or "normal"
+        normalized_specialization = str(target_specialization or "CRYPTO").strip().upper() or "CRYPTO"
+        if not normalized_display:
+            raise ValueError("display_name is required")
+        if not normalized_profile:
+            raise ValueError("profile_ref is required")
+
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO polymarket_research_watchlist (
+                    display_name,
+                    profile_ref,
+                    wallet_address,
+                    priority_rank,
+                    priority_mode,
+                    target_specialization,
+                    status,
+                    notes,
+                    updated_at
+                ) VALUES (?, ?, NULL, ?, ?, ?, 'pending_resolution', ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    normalized_display,
+                    normalized_profile,
+                    int(priority_rank),
+                    normalized_mode,
+                    normalized_specialization,
+                    notes,
+                ),
+            )
+            row_id = int(cursor.lastrowid)
+            connection.commit()
+            return connection.execute(
+                """
+                SELECT
+                    id,
+                    display_name,
+                    profile_ref,
+                    wallet_address,
+                    priority_rank,
+                    priority_mode,
+                    target_specialization,
+                    status,
+                    notes,
+                    created_at,
+                    updated_at
+                FROM polymarket_research_watchlist
+                WHERE id = ?
+                """,
+                (row_id,),
+            ).fetchone()
+
+    def link_watchlist_wallet(self, row_id: int, wallet_address: str, notes: str | None = None) -> sqlite3.Row:
+        self.ensure_tables()
+        normalized_address = normalize_wallet_address(wallet_address)
+        normalized_notes = None if notes is None else str(notes)
+
+        with self.connect() as connection:
+            existing_row = connection.execute(
+                """
+                SELECT id
+                FROM polymarket_research_watchlist
+                WHERE id = ?
+                """,
+                (int(row_id),),
+            ).fetchone()
+            if existing_row is None:
+                raise ValueError(f"watchlist row {row_id} was not found")
+
+            duplicate_row = connection.execute(
+                """
+                SELECT id
+                FROM polymarket_research_watchlist
+                WHERE LOWER(COALESCE(wallet_address, '')) = ?
+                  AND id != ?
+                LIMIT 1
+                """,
+                (normalized_address, int(row_id)),
+            ).fetchone()
+            if duplicate_row is not None:
+                raise ValueError(
+                    f"wallet_address already linked to watchlist row {int(duplicate_row['id'])}"
+                )
+
+            connection.execute(
+                """
+                UPDATE polymarket_research_watchlist
+                SET
+                    wallet_address = ?,
+                    status = 'linked',
+                    notes = CASE WHEN ? IS NULL THEN notes ELSE ? END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (normalized_address, normalized_notes, normalized_notes, int(row_id)),
+            )
+            connection.commit()
+            return connection.execute(
+                """
+                SELECT
+                    id,
+                    display_name,
+                    profile_ref,
+                    wallet_address,
+                    priority_rank,
+                    priority_mode,
+                    target_specialization,
+                    status,
+                    notes,
+                    created_at,
+                    updated_at
+                FROM polymarket_research_watchlist
+                WHERE id = ?
+                """,
+                (int(row_id),),
+            ).fetchone()
 
     def replace_wallet_snapshots(self, rows: list[dict[str, object]]) -> None:
         self.ensure_tables()

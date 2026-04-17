@@ -2420,6 +2420,7 @@ function dashboard_build_dashboard_glossary(): array
             ['term' => 'Seed-only excluded', 'meaning' => 'Sadece tohum listede var, veri kaniti yetmiyor.'],
             ['term' => 'Priority watchlist', 'meaning' => 'Elle oncelik verdigimiz uzman cüzdan listesi.'],
             ['term' => 'Pending resolution', 'meaning' => 'Handle var, adres henuz baglanmadi.'],
+            ['term' => 'Manual link', 'meaning' => 'Dogruladigimiz cuzdan adresini watchlist kaydina elle baglama.'],
             ['term' => 'Fast-track shadow', 'meaning' => 'Normal sirayi beklemeden shadow takibe alinacak.'],
             ['term' => 'Shadow replay', 'meaning' => 'Gecmis kapanmis islemlerden gecikmeli takip simulasyonu.'],
         ],
