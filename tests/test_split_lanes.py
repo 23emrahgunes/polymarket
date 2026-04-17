@@ -53,11 +53,16 @@ def _create_polymarket_research_db(db_path: Path) -> None:
         CREATE TABLE trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             whale_address TEXT,
+            venue TEXT,
+            market_id TEXT,
             status TEXT,
             pnl REAL,
+            size REAL,
             closed_at TEXT,
             timestamp TEXT,
-            category TEXT
+            category TEXT,
+            source_signal TEXT,
+            side TEXT
         )
         """
     )
@@ -99,22 +104,24 @@ def _create_polymarket_research_db(db_path: Path) -> None:
     )
     cur.executemany(
         """
-        INSERT INTO trades (whale_address, status, pnl, closed_at, timestamp, category)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO trades (
+            whale_address, venue, market_id, status, pnl, size, closed_at, timestamp, category, source_signal, side
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            ("0xaaa", "CLOSED", 1200.0, "2026-04-16 12:00:00", "2026-04-16 12:00:00", "CRYPTO"),
-            ("0xaaa", "CLOSED", 900.0, "2026-04-15 12:00:00", "2026-04-15 12:00:00", "CRYPTO"),
-            ("0xaaa", "CLOSED", 800.0, "2026-04-14 12:00:00", "2026-04-14 12:00:00", "CRYPTO"),
-            ("0xbbb", "CLOSED", 150.0, "2026-04-16 10:00:00", "2026-04-16 10:00:00", "CRYPTO"),
-            ("0xbbb", "CLOSED", 50.0, "2026-04-13 09:00:00", "2026-04-13 09:00:00", "CRYPTO"),
-            ("0xbbb", "CLOSED", 25.0, "2026-04-11 08:00:00", "2026-04-11 08:00:00", "CRYPTO"),
-            ("0xccc", "CLOSED", 80.0, "2026-04-16 08:00:00", "2026-04-16 08:00:00", "SPORTS"),
-            ("0xccc", "CLOSED", 40.0, "2026-04-14 08:00:00", "2026-04-14 08:00:00", "SPORTS"),
-            ("0xccc", "CLOSED", 20.0, "2026-04-12 08:00:00", "2026-04-12 08:00:00", "SPORTS"),
-            ("0xeee", "CLOSED", 110.0, "2026-04-16 06:00:00", "2026-04-16 06:00:00", "CRYPTO"),
-            ("0xeee", "CLOSED", 90.0, "2026-04-13 06:00:00", "2026-04-13 06:00:00", "CRYPTO"),
-            ("0xeee", "CLOSED", 60.0, "2026-04-11 06:00:00", "2026-04-11 06:00:00", "CRYPTO"),
+            ("0xaaa", "polymarket", "Bitcoin Up or Down - Apr 16", "CLOSED", 1200.0, 500.0, "2026-04-16 12:00:00", "2026-04-16 12:00:00", "CRYPTO", "manual_replay", "BUY"),
+            ("0xaaa", "polymarket", "Ethereum Up or Down - Apr 15", "CLOSED", 900.0, 350.0, "2026-04-15 12:00:00", "2026-04-15 12:00:00", "CRYPTO", "manual_replay", "BUY"),
+            ("0xaaa", "polymarket", "Bitcoin Up or Down - Apr 14", "CLOSED", 800.0, 320.0, "2026-04-14 12:00:00", "2026-04-14 12:00:00", "CRYPTO", "manual_replay", "BUY"),
+            ("0xbbb", "polymarket", "Bitcoin Up or Down - Apr 16", "CLOSED", 150.0, 120.0, "2026-04-16 10:00:00", "2026-04-16 10:00:00", "CRYPTO", "manual_replay", "BUY"),
+            ("0xbbb", "polymarket", "Ethereum Up or Down - Apr 13", "CLOSED", 50.0, 80.0, "2026-04-13 09:00:00", "2026-04-13 09:00:00", "CRYPTO", "manual_replay", "BUY"),
+            ("0xbbb", "polymarket", "Bitcoin Up or Down - Apr 11", "CLOSED", 25.0, 60.0, "2026-04-11 08:00:00", "2026-04-11 08:00:00", "CRYPTO", "manual_replay", "BUY"),
+            ("0xccc", "polymarket", "Sports Market - Apr 16", "CLOSED", 80.0, 75.0, "2026-04-16 08:00:00", "2026-04-16 08:00:00", "SPORTS", "manual_replay", "BUY"),
+            ("0xccc", "polymarket", "Sports Market - Apr 14", "CLOSED", 40.0, 55.0, "2026-04-14 08:00:00", "2026-04-14 08:00:00", "SPORTS", "manual_replay", "BUY"),
+            ("0xccc", "polymarket", "Sports Market - Apr 12", "CLOSED", 20.0, 45.0, "2026-04-12 08:00:00", "2026-04-12 08:00:00", "SPORTS", "manual_replay", "BUY"),
+            ("0xeee", "polymarket", "Bitcoin Up or Down - Apr 16", "CLOSED", 110.0, 95.0, "2026-04-16 06:00:00", "2026-04-16 06:00:00", "CRYPTO", "manual_replay", "BUY"),
+            ("0xeee", "polymarket", "Ethereum Up or Down - Apr 13", "CLOSED", 90.0, 85.0, "2026-04-13 06:00:00", "2026-04-13 06:00:00", "CRYPTO", "manual_replay", "BUY"),
+            ("0xeee", "polymarket", "Bitcoin Up or Down - Apr 11", "CLOSED", 60.0, 65.0, "2026-04-11 06:00:00", "2026-04-11 06:00:00", "CRYPTO", "manual_replay", "BUY"),
         ],
     )
     conn.commit()
@@ -301,6 +308,26 @@ def test_polymarket_research_service_builds_shadow_funnel(tmp_path: Path) -> Non
 
     repository = PolymarketResearchRepository(str(db_path))
     repository.ensure_tables()
+    with repository.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO polymarket_research_watchlist (
+                display_name, profile_ref, wallet_address, priority_rank, priority_mode,
+                target_specialization, status, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "crypto-pro",
+                "https://polymarket.com/tr/@crypto-pro",
+                "0xaaa",
+                2,
+                "fast_track_shadow",
+                "CRYPTO",
+                "linked",
+                "Linked priority specialist",
+            ),
+        )
+        connection.commit()
     repository.seed_shadow_action(
         wallet_address="0xaaa",
         market_id="market-1",
@@ -368,16 +395,23 @@ def test_polymarket_research_service_builds_shadow_funnel(tmp_path: Path) -> Non
         row["reason"]: row["count"] for row in summary["shadow_promotion_summary"]["blocker_counts"]
     }
 
+    assert summary["priority_watchlist_summary"]["total_watchlist_rows"] == 2
+    assert summary["priority_watchlist_summary"]["linked_rows"] == 1
+    assert summary["priority_watchlist_summary"]["pending_resolution_rows"] == 1
+    assert summary["priority_watchlist_summary"]["promoted_priority_wallets"] == 1
+    assert summary["identity_resolution_summary"]["pending_handle_only_entries"] == 1
+    assert summary["identity_resolution_summary"]["linked_entries"] == 1
+    assert summary["identity_resolution_summary"]["unresolved_but_ranked_entries"] == 1
     assert summary["discovery_wallet_summary"]["tracked_wallets"] == 5
     assert summary["discovery_wallet_summary"]["crypto_specialists"] == 4
     assert summary["discovery_wallet_summary"]["persisted_wallet_snapshots"] == 5
     assert summary["discovery_wallet_summary"]["promoted_to_shadow"] == 3
     assert summary["discovery_source_summary"]["selected_wallets"] == 5
     assert summary["discovery_source_summary"]["static_seed_used"] == 1
-    assert discovery_sources["leaderboard"] == 1
+    assert discovery_sources["leaderboard"] == 0
     assert discovery_sources["activity_discovery"] == 1
     assert discovery_sources["graph_discovery"] == 1
-    assert discovery_sources["manual_persisted"] == 1
+    assert discovery_sources["manual_persisted"] == 2
     assert summary["shadow_promotion_summary"]["eligible_wallets"] == 3
     assert summary["shadow_promotion_summary"]["promoted_wallets"] == 3
     assert summary["shadow_promotion_summary"]["blocked_wallets"] == 2
@@ -387,13 +421,25 @@ def test_polymarket_research_service_builds_shadow_funnel(tmp_path: Path) -> Non
     assert summary["wallet_provenance_summary"]["single_source_wallets"] == 4
     assert summary["wallet_provenance_summary"]["seed_only_wallets"] == 1
     assert summary["shadow_wallet_summary"]["wallets_with_shadow_actions"] == 3
-    assert summary["copy_ready_wallet_summary"]["copy_ready_wallets"] == 1
+    assert summary["copy_ready_wallet_summary"]["copy_ready_wallets"] == 2
     assert summary["copy_ready_wallets"][0]["address"] == "0xaaa"
     assert summary["shadow_edge_summary"]["shadow_ready"] is True
+    assert summary["shadow_replay_summary"]["replayed_actions_created"] == 9
+    assert summary["shadow_replay_summary"]["wallets_with_replay_history"] == 3
+    assert summary["shadow_replay_summary"]["net_shadow_pnl"] == 3381.65
+    assert summary["shadow_replay_summary"]["net_shadow_edge"] == 12.8849
+    assert summary["shadow_replay_summary"]["eligible_without_trade_history"] == 0
+    assert summary["priority_watchlist_rows"][0]["display_name"] == "ohanism"
+    assert summary["priority_watchlist_rows"][0]["identity_resolution_status"] == "pending_resolution"
+    assert summary["priority_watchlist_rows"][1]["wallet_address"] == "0xaaa"
+    assert summary["priority_watchlist_rows"][1]["promoted_to_shadow"] is True
     assert summary["recent_shadow_actions"][0]["wallet_address"] in {"0xaaa", "0xbbb", "0xeee"}
     assert summary["wallet_consistency_table"][0]["address"] == "0xaaa"
-    assert summary["wallet_consistency_table"][0]["primary_source"] == "leaderboard"
+    assert summary["wallet_consistency_table"][0]["primary_source"] == "manual_persisted"
     assert "manual_confirmed" in summary["wallet_consistency_table"][0]["source_labels"]
+    assert summary["wallet_consistency_table"][0]["watchlist_priority_rank"] == 2
+    assert summary["wallet_consistency_table"][0]["watchlist_status"] == "linked"
+    assert summary["wallet_consistency_table"][0]["identity_resolution_status"] == "linked"
     assert len(persisted_rows) == 5
     assert persisted_by_address["0xaaa"]["cohort"] == "copy_ready"
     assert persisted_by_address["0xaaa"]["copy_ready_eligible"] == 1
@@ -402,13 +448,17 @@ def test_polymarket_research_service_builds_shadow_funnel(tmp_path: Path) -> Non
     assert persisted_by_address["0xaaa"]["profit_consistency_score"] > 0
     assert persisted_by_address["0xaaa"]["recency_score"] > 0
     assert persisted_by_address["0xaaa"]["frequency_score"] > 0
+    assert persisted_by_address["0xaaa"]["watchlist_priority_rank"] == 2
+    assert persisted_by_address["0xaaa"]["watchlist_mode"] == "fast_track_shadow"
+    assert persisted_by_address["0xaaa"]["identity_resolution_status"] == "linked"
+    assert persisted_by_address["0xaaa"]["priority_pinned"] == 1
     assert persisted_by_address["0xbbb"]["cohort"] == "shadow"
     assert persisted_by_address["0xbbb"]["shadow_gate_reason"] == "eligible"
     assert persisted_by_address["0xccc"]["cohort"] == "discovery"
     assert persisted_by_address["0xccc"]["shadow_gate_reason"] == "non_crypto_specialist"
     assert persisted_by_address["0xddd"]["cohort"] == "discovery"
     assert persisted_by_address["0xddd"]["shadow_gate_reason"] == "seed_only_excluded"
-    assert persisted_by_address["0xeee"]["cohort"] == "shadow"
+    assert persisted_by_address["0xeee"]["cohort"] == "copy_ready"
 
 
 def test_binance_technical_service_builds_fresh_and_legacy_summaries(tmp_path: Path) -> None:

@@ -51,7 +51,9 @@ class PolymarketResearchRepository:
                     category TEXT,
                     source_type TEXT,
                     action_type TEXT NOT NULL DEFAULT 'shadow_trade',
+                    replay_key TEXT,
                     raw_wallet_pnl REAL DEFAULT 0,
+                    raw_notional_usd REAL DEFAULT 0,
                     shadow_pnl REAL DEFAULT 0,
                     shadow_edge REAL DEFAULT 0,
                     drawdown_pct REAL DEFAULT 0,
@@ -60,6 +62,32 @@ class PolymarketResearchRepository:
                     opened_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     closed_at DATETIME,
                     status TEXT NOT NULL DEFAULT 'OPEN'
+                )
+                """
+            )
+            self._ensure_column(connection, "polymarket_shadow_actions", "replay_key", "TEXT")
+            self._ensure_column(connection, "polymarket_shadow_actions", "raw_notional_usd", "REAL DEFAULT 0")
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_polymarket_shadow_actions_replay_key
+                ON polymarket_shadow_actions (replay_key)
+                WHERE replay_key IS NOT NULL
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS polymarket_research_watchlist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    display_name TEXT NOT NULL,
+                    profile_ref TEXT,
+                    wallet_address TEXT,
+                    priority_rank INTEGER NOT NULL DEFAULT 0,
+                    priority_mode TEXT NOT NULL DEFAULT 'normal',
+                    target_specialization TEXT NOT NULL DEFAULT 'UNKNOWN',
+                    status TEXT NOT NULL DEFAULT 'pending_resolution',
+                    notes TEXT,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -101,6 +129,11 @@ class PolymarketResearchRepository:
                     copy_ready_gate_reason TEXT NOT NULL DEFAULT 'needs_shadow_history',
                     shadow_eligible INTEGER NOT NULL DEFAULT 0,
                     copy_ready_eligible INTEGER NOT NULL DEFAULT 0,
+                    watchlist_priority_rank INTEGER NOT NULL DEFAULT 0,
+                    watchlist_status TEXT NOT NULL DEFAULT '',
+                    watchlist_mode TEXT NOT NULL DEFAULT '',
+                    identity_resolution_status TEXT NOT NULL DEFAULT 'untracked',
+                    priority_pinned INTEGER NOT NULL DEFAULT 0,
                     refreshed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -114,12 +147,48 @@ class PolymarketResearchRepository:
                 ("shadow_gate_reason", "TEXT NOT NULL DEFAULT 'low_consistency'"),
                 ("copy_ready_gate_status", "TEXT NOT NULL DEFAULT 'blocked'"),
                 ("copy_ready_gate_reason", "TEXT NOT NULL DEFAULT 'needs_shadow_history'"),
+                ("watchlist_priority_rank", "INTEGER NOT NULL DEFAULT 0"),
+                ("watchlist_status", "TEXT NOT NULL DEFAULT ''"),
+                ("watchlist_mode", "TEXT NOT NULL DEFAULT ''"),
+                ("identity_resolution_status", "TEXT NOT NULL DEFAULT 'untracked'"),
+                ("priority_pinned", "INTEGER NOT NULL DEFAULT 0"),
             ]:
                 self._ensure_column(connection, "polymarket_research_wallets", column_name, column_def)
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_polymarket_research_wallets_cohort_rank
                 ON polymarket_research_wallets (cohort, discovery_rank, shadow_rank, copy_ready_rank)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_polymarket_research_watchlist_priority
+                ON polymarket_research_watchlist (priority_rank ASC, updated_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO polymarket_research_watchlist (
+                    id,
+                    display_name,
+                    profile_ref,
+                    wallet_address,
+                    priority_rank,
+                    priority_mode,
+                    target_specialization,
+                    status,
+                    notes
+                ) VALUES (
+                    1,
+                    'ohanism',
+                    'https://polymarket.com/tr/@ohanism',
+                    NULL,
+                    1,
+                    'fast_track_shadow',
+                    'CRYPTO',
+                    'pending_resolution',
+                    'Seeded priority specialist candidate'
+                )
                 """
             )
             connection.commit()
@@ -287,6 +356,59 @@ class PolymarketResearchRepository:
             )
             return cursor.fetchall()
 
+    def fetch_replay_trade_rows(self, addresses: list[str], window_days: int) -> list[sqlite3.Row]:
+        if not addresses:
+            return []
+
+        with self.connect() as connection:
+            if not self._table_exists(connection, "trades"):
+                return []
+
+            normalized_addresses = [address.lower() for address in addresses if address.strip()]
+            if not normalized_addresses:
+                return []
+
+            trade_columns = self._table_columns(connection, "trades")
+
+            def column_or_fallback(name: str, fallback: str) -> str:
+                return name if name in trade_columns else fallback
+
+            venue_column = column_or_fallback("venue", "'polymarket'")
+            venue_expr = f"COALESCE({venue_column}, 'polymarket')"
+            market_expr = f"COALESCE({column_or_fallback('market_id', 'NULL')}, {column_or_fallback('symbol_or_market_id', 'NULL')}, 'unknown-market')"
+            size_expr = f"COALESCE({column_or_fallback('size', 'NULL')}, ABS(COALESCE(pnl, 0)), 0)"
+            occurred_expr = f"COALESCE({column_or_fallback('closed_at', 'NULL')}, {column_or_fallback('timestamp', 'NULL')}, CURRENT_TIMESTAMP)"
+            category_expr = f"COALESCE({column_or_fallback('category', 'NULL')}, 'UNKNOWN')"
+            status_expr = f"COALESCE({column_or_fallback('status', 'NULL')}, '')"
+            side_expr = f"COALESCE({column_or_fallback('side', 'NULL')}, '')"
+            source_signal_expr = f"COALESCE({column_or_fallback('source_signal', 'NULL')}, '')"
+
+            placeholders = ", ".join("?" for _ in normalized_addresses)
+            cursor = connection.execute(
+                f"""
+                SELECT
+                    id,
+                    LOWER(COALESCE(whale_address, '')) AS wallet_address,
+                    {venue_expr} AS venue,
+                    {market_expr} AS market_id,
+                    {category_expr} AS category,
+                    {status_expr} AS status,
+                    COALESCE(pnl, 0) AS pnl,
+                    {size_expr} AS size,
+                    {occurred_expr} AS occurred_at,
+                    {side_expr} AS side,
+                    {source_signal_expr} AS source_signal
+                FROM trades
+                WHERE LOWER(COALESCE(whale_address, '')) IN ({placeholders})
+                  AND {status_expr} LIKE 'CLOSED%'
+                  AND {venue_expr} = 'polymarket'
+                  AND {occurred_expr} >= datetime('now', ?)
+                ORDER BY {occurred_expr} ASC, id ASC
+                """,
+                tuple(normalized_addresses) + (f"-{max(window_days, 1)} days",),
+            )
+            return cursor.fetchall()
+
     def fetch_shadow_action_rows(self, window_days: int) -> list[sqlite3.Row]:
         with self.connect() as connection:
             cursor = connection.execute(
@@ -297,7 +419,9 @@ class PolymarketResearchRepository:
                     category,
                     source_type,
                     action_type,
+                    replay_key,
                     raw_wallet_pnl,
+                    raw_notional_usd,
                     shadow_pnl,
                     shadow_edge,
                     drawdown_pct,
@@ -324,7 +448,9 @@ class PolymarketResearchRepository:
                     category,
                     source_type,
                     action_type,
+                    replay_key,
                     raw_wallet_pnl,
+                    raw_notional_usd,
                     shadow_pnl,
                     shadow_edge,
                     drawdown_pct,
@@ -338,6 +464,29 @@ class PolymarketResearchRepository:
                 LIMIT ?
                 """,
                 (max(limit, 1),),
+            )
+            return cursor.fetchall()
+
+    def fetch_watchlist_rows(self) -> list[sqlite3.Row]:
+        self.ensure_tables()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                SELECT
+                    id,
+                    display_name,
+                    profile_ref,
+                    wallet_address,
+                    priority_rank,
+                    priority_mode,
+                    target_specialization,
+                    status,
+                    notes,
+                    created_at,
+                    updated_at
+                FROM polymarket_research_watchlist
+                ORDER BY priority_rank ASC, updated_at DESC, id ASC
+                """
             )
             return cursor.fetchall()
 
@@ -384,6 +533,11 @@ class PolymarketResearchRepository:
                         copy_ready_gate_reason,
                         shadow_eligible,
                         copy_ready_eligible,
+                        watchlist_priority_rank,
+                        watchlist_status,
+                        watchlist_mode,
+                        identity_resolution_status,
+                        priority_pinned,
                         refreshed_at
                     ) VALUES (
                         :address,
@@ -421,6 +575,11 @@ class PolymarketResearchRepository:
                         :copy_ready_gate_reason,
                         :shadow_eligible,
                         :copy_ready_eligible,
+                        :watchlist_priority_rank,
+                        :watchlist_status,
+                        :watchlist_mode,
+                        :identity_resolution_status,
+                        :priority_pinned,
                         CURRENT_TIMESTAMP
                     )
                     """,
@@ -468,6 +627,11 @@ class PolymarketResearchRepository:
                     copy_ready_gate_reason,
                     shadow_eligible,
                     copy_ready_eligible,
+                    watchlist_priority_rank,
+                    watchlist_status,
+                    watchlist_mode,
+                    identity_resolution_status,
+                    priority_pinned,
                     refreshed_at
                 FROM polymarket_research_wallets
                 ORDER BY discovery_rank ASC, consistency_score DESC, trust_score DESC
@@ -490,8 +654,11 @@ class PolymarketResearchRepository:
         shadow_edge: float,
         drawdown_pct: float = 0.0,
         raw_wallet_pnl: float = 0.0,
+        raw_notional_usd: float = 0.0,
         delayed_seconds: int = 0,
         status: str = "CLOSED",
+        action_type: str = "shadow_trade",
+        replay_key: str | None = None,
         notes: dict | None = None,
     ) -> None:
         with self.connect() as connection:
@@ -502,7 +669,10 @@ class PolymarketResearchRepository:
                     market_id,
                     category,
                     source_type,
+                    action_type,
+                    replay_key,
                     raw_wallet_pnl,
+                    raw_notional_usd,
                     shadow_pnl,
                     shadow_edge,
                     drawdown_pct,
@@ -511,14 +681,17 @@ class PolymarketResearchRepository:
                     status,
                     opened_at,
                     closed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
                 (
                     wallet_address,
                     market_id,
                     category,
                     source_type,
+                    action_type,
+                    replay_key,
                     raw_wallet_pnl,
+                    raw_notional_usd,
                     shadow_pnl,
                     shadow_edge,
                     drawdown_pct,
@@ -527,4 +700,51 @@ class PolymarketResearchRepository:
                     status,
                 ),
             )
+            connection.commit()
+
+    def replace_shadow_replay_actions(self, rows: list[dict[str, object]]) -> None:
+        self.ensure_tables()
+        with self.connect() as connection:
+            connection.execute("DELETE FROM polymarket_shadow_actions WHERE action_type = 'shadow_replay'")
+            if rows:
+                connection.executemany(
+                    """
+                    INSERT INTO polymarket_shadow_actions (
+                        wallet_address,
+                        market_id,
+                        category,
+                        source_type,
+                        action_type,
+                        replay_key,
+                        raw_wallet_pnl,
+                        raw_notional_usd,
+                        shadow_pnl,
+                        shadow_edge,
+                        drawdown_pct,
+                        delayed_seconds,
+                        notes_json,
+                        status,
+                        opened_at,
+                        closed_at
+                    ) VALUES (
+                        :wallet_address,
+                        :market_id,
+                        :category,
+                        :source_type,
+                        'shadow_replay',
+                        :replay_key,
+                        :raw_wallet_pnl,
+                        :raw_notional_usd,
+                        :shadow_pnl,
+                        :shadow_edge,
+                        :drawdown_pct,
+                        :delayed_seconds,
+                        :notes_json,
+                        :status,
+                        :opened_at,
+                        :closed_at
+                    )
+                    """,
+                    rows,
+                )
             connection.commit()

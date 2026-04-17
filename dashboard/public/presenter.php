@@ -1706,6 +1706,11 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                     copy_ready_gate_reason,
                     shadow_eligible,
                     copy_ready_eligible,
+                    watchlist_priority_rank,
+                    watchlist_status,
+                    watchlist_mode,
+                    identity_resolution_status,
+                    priority_pinned,
                     refreshed_at
                 FROM polymarket_research_wallets
                 ORDER BY discovery_rank ASC, consistency_score DESC, trust_score DESC
@@ -1755,6 +1760,11 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                     'copy_ready_gate_reason' => (string) ($row['copy_ready_gate_reason'] ?? 'needs_shadow_history'),
                     'shadow_eligible' => !empty($row['shadow_eligible']),
                     'copy_ready_eligible' => !empty($row['copy_ready_eligible']),
+                    'watchlist_priority_rank' => (int) ($row['watchlist_priority_rank'] ?? 0),
+                    'watchlist_status' => (string) ($row['watchlist_status'] ?? ''),
+                    'watchlist_mode' => (string) ($row['watchlist_mode'] ?? ''),
+                    'identity_resolution_status' => (string) ($row['identity_resolution_status'] ?? 'untracked'),
+                    'priority_pinned' => !empty($row['priority_pinned']),
                 ],
                 $walletRows
             );
@@ -1870,6 +1880,13 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
             ];
 
             $recentShadowActions = [];
+            $shadowReplaySummary = [
+                'replayed_actions_created' => 0,
+                'wallets_with_replay_history' => 0,
+                'net_shadow_pnl' => 0.0,
+                'net_shadow_edge' => 0.0,
+                'eligible_without_trade_history' => 0,
+            ];
             if (dashboard_table_exists($pdo, 'polymarket_shadow_actions')) {
                 $recentShadowRows = dashboard_fetch_all(
                     $pdo,
@@ -1906,6 +1923,131 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                         'status' => (string) ($row['status'] ?? 'OPEN'),
                     ];
                 }
+
+                $shadowReplayRows = dashboard_fetch_all(
+                    $pdo,
+                    "
+                    SELECT
+                        wallet_address,
+                        shadow_pnl,
+                        shadow_edge
+                    FROM polymarket_shadow_actions
+                    WHERE action_type = 'shadow_replay'
+                    "
+                );
+                $walletReplayHistory = [];
+                $netReplayPnl = 0.0;
+                $netReplayEdge = 0.0;
+                foreach ($shadowReplayRows as $row) {
+                    $walletAddress = strtolower(trim((string) ($row['wallet_address'] ?? '')));
+                    if ($walletAddress !== '') {
+                        $walletReplayHistory[$walletAddress] = true;
+                    }
+                    $netReplayPnl += (float) ($row['shadow_pnl'] ?? 0.0);
+                    $netReplayEdge += (float) ($row['shadow_edge'] ?? 0.0);
+                }
+                $eligibleShadowAddresses = [];
+                foreach ($shadowWalletTable as $row) {
+                    $address = strtolower(trim((string) ($row['address'] ?? '')));
+                    if ($address !== '') {
+                        $eligibleShadowAddresses[$address] = true;
+                    }
+                }
+                $eligibleWithoutReplay = 0;
+                foreach (array_keys($eligibleShadowAddresses) as $address) {
+                    if (!isset($walletReplayHistory[$address])) {
+                        $eligibleWithoutReplay += 1;
+                    }
+                }
+                $shadowReplaySummary = [
+                    'replayed_actions_created' => count($shadowReplayRows),
+                    'wallets_with_replay_history' => count($walletReplayHistory),
+                    'net_shadow_pnl' => round($netReplayPnl, 4),
+                    'net_shadow_edge' => round($netReplayEdge, 4),
+                    'eligible_without_trade_history' => $eligibleWithoutReplay,
+                ];
+            }
+
+            $priorityWatchlistRows = [];
+            $priorityWatchlistSummary = [
+                'total_watchlist_rows' => 0,
+                'linked_rows' => 0,
+                'pending_resolution_rows' => 0,
+                'promoted_priority_wallets' => 0,
+            ];
+            $identityResolutionSummary = [
+                'pending_handle_only_entries' => 0,
+                'linked_entries' => 0,
+                'unresolved_but_ranked_entries' => 0,
+            ];
+            if (dashboard_table_exists($pdo, 'polymarket_research_watchlist')) {
+                $watchlistRows = dashboard_fetch_all(
+                    $pdo,
+                    "
+                    SELECT
+                        display_name,
+                        profile_ref,
+                        wallet_address,
+                        priority_rank,
+                        priority_mode,
+                        target_specialization,
+                        status
+                    FROM polymarket_research_watchlist
+                    ORDER BY priority_rank ASC, id ASC
+                    "
+                );
+                $linkedRows = 0;
+                $pendingRows = 0;
+                $unresolvedRankedRows = 0;
+                $promotedPriorityWallets = 0;
+                foreach ($watchlistRows as $row) {
+                    $walletAddress = strtolower(trim((string) ($row['wallet_address'] ?? '')));
+                    $linked = $walletAddress !== '';
+                    if ($linked) {
+                        $linkedRows += 1;
+                    } else {
+                        $pendingRows += 1;
+                        if ((int) ($row['priority_rank'] ?? 0) > 0) {
+                            $unresolvedRankedRows += 1;
+                        }
+                    }
+                    $linkedCandidate = null;
+                    if ($linked) {
+                        foreach ($candidates as $candidate) {
+                            if (strtolower((string) ($candidate['address'] ?? '')) === $walletAddress) {
+                                $linkedCandidate = $candidate;
+                                break;
+                            }
+                        }
+                    }
+                    $promotedToShadow = $linkedCandidate !== null
+                        && (string) ($linkedCandidate['shadow_gate_status'] ?? '') === 'promoted';
+                    if ($promotedToShadow) {
+                        $promotedPriorityWallets += 1;
+                    }
+                    $priorityWatchlistRows[] = [
+                        'display_name' => (string) ($row['display_name'] ?? ''),
+                        'profile_ref' => (string) ($row['profile_ref'] ?? ''),
+                        'wallet_address' => $walletAddress,
+                        'priority_rank' => (int) ($row['priority_rank'] ?? 0),
+                        'priority_mode' => (string) ($row['priority_mode'] ?? 'normal'),
+                        'target_specialization' => strtoupper((string) ($row['target_specialization'] ?? 'UNKNOWN')),
+                        'status' => (string) ($row['status'] ?? 'pending_resolution'),
+                        'identity_resolution_status' => $linked ? 'linked' : 'pending_resolution',
+                        'promoted_to_shadow' => $promotedToShadow,
+                    ];
+                }
+                $priorityWatchlistSummary = [
+                    'total_watchlist_rows' => count($watchlistRows),
+                    'linked_rows' => $linkedRows,
+                    'pending_resolution_rows' => $pendingRows,
+                    'promoted_priority_wallets' => $promotedPriorityWallets,
+                ];
+                $identityResolutionSummary = [
+                    'pending_handle_only_entries' => $pendingRows,
+                    'linked_entries' => $linkedRows,
+                    'unresolved_but_ranked_entries' => $unresolvedRankedRows,
+                ];
             }
 
             return [
@@ -1940,6 +2082,10 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                     'worst_drawdown_pct' => round(min(array_map(static fn (array $row): float => (float) ($row['worst_drawdown_pct'] ?? 0.0), $shadowWalletTable) ?: [0.0]), 4),
                     'shadow_ready' => count($copyReadyWallets) > 0,
                 ],
+                'priority_watchlist_summary' => $priorityWatchlistSummary,
+                'identity_resolution_summary' => $identityResolutionSummary,
+                'shadow_replay_summary' => $shadowReplaySummary,
+                'priority_watchlist_rows' => $priorityWatchlistRows,
                 'recent_shadow_actions' => $recentShadowActions,
                 'wallet_consistency_table' => array_slice($candidates, 0, 12),
                 'shadow_wallet_table' => $shadowWalletTable,
@@ -1957,6 +2103,10 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
             'copy_ready_wallet_summary' => [],
             'wallet_provenance_summary' => $emptyWalletProvenanceSummary,
             'shadow_edge_summary' => [],
+            'priority_watchlist_summary' => [],
+            'identity_resolution_summary' => [],
+            'shadow_replay_summary' => [],
+            'priority_watchlist_rows' => [],
             'recent_shadow_actions' => [],
             'wallet_consistency_table' => [],
             'shadow_wallet_table' => [],
@@ -2175,6 +2325,10 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
             'worst_drawdown_pct' => round(min(array_map(static fn (array $row): float => (float) ($row['worst_drawdown_pct'] ?? 0.0), $shadowWalletTable) ?: [0.0]), 4),
             'shadow_ready' => count($copyReadyWallets) > 0,
         ],
+        'priority_watchlist_summary' => [],
+        'identity_resolution_summary' => [],
+        'shadow_replay_summary' => [],
+        'priority_watchlist_rows' => [],
         'recent_shadow_actions' => $recentShadowActions,
         'wallet_consistency_table' => array_slice($shadowWalletTable, 0, 12),
         'shadow_wallet_table' => $shadowWalletTable,
@@ -2264,6 +2418,10 @@ function dashboard_build_dashboard_glossary(): array
             ['term' => 'Source labels', 'meaning' => 'Bu cüzdanin hangi listelerde gorundugu.'],
             ['term' => 'Shadow eligible', 'meaning' => 'Gecikmeli takibe alinmaya uygun.'],
             ['term' => 'Seed-only excluded', 'meaning' => 'Sadece tohum listede var, veri kaniti yetmiyor.'],
+            ['term' => 'Priority watchlist', 'meaning' => 'Elle oncelik verdigimiz uzman cüzdan listesi.'],
+            ['term' => 'Pending resolution', 'meaning' => 'Handle var, adres henuz baglanmadi.'],
+            ['term' => 'Fast-track shadow', 'meaning' => 'Normal sirayi beklemeden shadow takibe alinacak.'],
+            ['term' => 'Shadow replay', 'meaning' => 'Gecmis kapanmis islemlerden gecikmeli takip simulasyonu.'],
         ],
         'binance-technical' => [
             ['term' => 'Fresh 7g paper PnL', 'meaning' => 'Yeni Binance lane tarafindan son 7 günde acilan paper islemlerden gelen net sonuc.'],

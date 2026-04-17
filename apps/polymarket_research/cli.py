@@ -13,6 +13,9 @@ def main() -> int:
         "DISCOVERY_SOURCE_SUMMARY",
         "SHADOW_PROMOTION_SUMMARY",
         "WALLET_PROVENANCE_SUMMARY",
+        "PRIORITY_WATCHLIST_SUMMARY",
+        "IDENTITY_RESOLUTION_SUMMARY",
+        "SHADOW_REPLAY_SUMMARY",
     ]
     for name in sections:
         print(name)

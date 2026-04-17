@@ -508,7 +508,24 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
                     <div class="subcard-header"><h3 class="subcard-title">Cuzdan Provenance</h3><span class="badge info">Provenance</span></div>
                     <div class="metric-list" id="wallet-provenance-summary"></div>
                 </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Oncelikli Izleme Listesi</h3><span class="badge warn">Priority</span></div>
+                    <div class="metric-list" id="priority-watchlist-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Kimlik Cozumleme Durumu</h3><span class="badge info">Identity</span></div>
+                    <div class="metric-list" id="identity-resolution-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Shadow Replay Ozeti</h3><span class="badge info">Replay</span></div>
+                    <div class="metric-list" id="shadow-replay-summary"></div>
+                </div>
             </div>
+        </article>
+        <article class="panel panel-wide" data-tab="polymarket-research">
+            <div class="panel-header"><h2>Oncelikli Izleme Listesi</h2><span class="badge warn">Curated</span></div>
+            <p class="panel-copy">Burada elle oncelik verdigimiz uzman adaylari gorulur. Handle bagli ama adresi cozulmemis adaylar discovery ve shadow sayilarini bozmaz.</p>
+            <div id="priority-watchlist"></div>
         </article>
         <article class="panel panel-wide" data-tab="polymarket-research">
             <div class="panel-header"><h2>Cuzdan Tutarlilik Tablosu</h2><span class="badge info">Top Cohort</span></div>
@@ -1732,10 +1749,34 @@ function updatePanels(payload) {
         { label: 'Tek kaynakli wallet', value: formatNumber(walletProvenanceSummary.single_source_wallets, 0) },
         { label: 'Seed-only wallet', value: formatNumber(walletProvenanceSummary.seed_only_wallets, 0) }
     ]);
+    const priorityWatchlistSummary = payload.priority_watchlist_summary || {};
+    renderMetrics('priority-watchlist-summary', [
+        { label: 'Toplam watchlist', value: formatNumber(priorityWatchlistSummary.total_watchlist_rows, 0) },
+        { label: 'Linked satir', value: formatNumber(priorityWatchlistSummary.linked_rows, 0) },
+        { label: 'Pending resolution', value: formatNumber(priorityWatchlistSummary.pending_resolution_rows, 0) },
+        { label: 'Shadowa alinmis oncelikli', value: formatNumber(priorityWatchlistSummary.promoted_priority_wallets, 0) }
+    ]);
+    const identityResolutionSummary = payload.identity_resolution_summary || {};
+    renderMetrics('identity-resolution-summary', [
+        { label: 'Handle-only', value: formatNumber(identityResolutionSummary.pending_handle_only_entries, 0) },
+        { label: 'Linked', value: formatNumber(identityResolutionSummary.linked_entries, 0) },
+        { label: 'Cozulmemis ama sirali', value: formatNumber(identityResolutionSummary.unresolved_but_ranked_entries, 0) }
+    ]);
+    const shadowReplaySummary = payload.shadow_replay_summary || {};
+    renderMetrics('shadow-replay-summary', [
+        { label: 'Replay aksiyonu', value: formatNumber(shadowReplaySummary.replayed_actions_created, 0) },
+        { label: 'Replay gecmisi olan wallet', value: formatNumber(shadowReplaySummary.wallets_with_replay_history, 0) },
+        { label: 'Net replay PnL', value: formatNumber(shadowReplaySummary.net_shadow_pnl, 2) },
+        { label: 'Net replay edge', value: formatNumber(shadowReplaySummary.net_shadow_edge, 4) },
+        { label: 'Gecmisi olmayan eligible', value: formatNumber(shadowReplaySummary.eligible_without_trade_history, 0) }
+    ]);
     renderTable('wallet-consistency-table', [
         { key: 'address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.address || '', 20) },
+        { key: 'watchlist_priority_rank', label: 'Oncelik', render: (row) => escapeHtml(row.watchlist_priority_rank ? formatNumber(row.watchlist_priority_rank, 0) : '-') },
         { key: 'primary_source', label: 'Ana Kaynak', render: (row) => escapeHtml(row.primary_source || row.source_type || '') },
         { key: 'source_labels', label: 'Kaynak Etiketleri', render: (row) => escapeHtml(Array.isArray(row.source_labels) ? row.source_labels.join(', ') : '') },
+        { key: 'watchlist_status', label: 'Watchlist Durumu', render: (row) => escapeHtml(row.watchlist_status || '-') },
+        { key: 'identity_resolution_status', label: 'Kimlik Durumu', render: (row) => escapeHtml(row.identity_resolution_status || 'untracked') },
         { key: 'specialization', label: 'Uzmanlik', render: (row) => escapeHtml(row.specialization || 'UNKNOWN') },
         { key: 'consistency_score', label: 'Tutarlilik', render: (row) => escapeHtml(formatNumber(row.consistency_score, 3)) },
         { key: 'trust_score', label: 'Guven', render: (row) => escapeHtml(formatNumber(row.trust_score, 3)) },
@@ -1745,6 +1786,16 @@ function updatePanels(payload) {
         { key: 'shadow_gate_reason', label: 'Shadow Nedeni', render: (row) => escapeHtml(translateReason(row.shadow_gate_reason || 'none')) },
         { key: 'shadow_edge', label: 'Shadow edge', render: (row) => escapeHtml(formatNumber(row.shadow_edge, 3)) }
     ], payload.wallet_consistency_table || [], 'Henuz wallet consistency verisi yok.');
+    renderTable('priority-watchlist', [
+        { key: 'priority_rank', label: 'Oncelik', render: (row) => escapeHtml(formatNumber(row.priority_rank, 0)) },
+        { key: 'display_name', label: 'Isim', render: (row) => escapeHtml(row.display_name || '') },
+        { key: 'target_specialization', label: 'Hedef', render: (row) => escapeHtml(row.target_specialization || 'UNKNOWN') },
+        { key: 'priority_mode', label: 'Mod', render: (row) => escapeHtml(row.priority_mode || 'normal') },
+        { key: 'status', label: 'Watchlist', render: (row) => escapeHtml(row.status || 'pending_resolution') },
+        { key: 'identity_resolution_status', label: 'Kimlik', render: (row) => escapeHtml(row.identity_resolution_status || 'pending_resolution') },
+        { key: 'wallet_address', label: 'Adres', mono: true, render: (row) => row.wallet_address ? truncateHtml(row.wallet_address, 20) : '-' },
+        { key: 'promoted_to_shadow', label: 'Shadowa alindi mi', render: (row) => row.promoted_to_shadow ? 'evet' : 'hayir' }
+    ], payload.priority_watchlist_rows || [], 'Henuz oncelikli izleme kaydi yok.');
     renderTable('copy-ready-wallets', [
         { key: 'address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.address || '', 22) },
         { key: 'specialization', label: 'Uzmanlik', render: (row) => escapeHtml(row.specialization || 'UNKNOWN') },
