@@ -1,0 +1,12 @@
+[Unit]
+Description=Ghost Trader Polymarket Research Summary Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__WORKDIR__
+EnvironmentFile=__ENV_FILE__
+ExecStart=/bin/bash __WORKDIR__/scripts/refresh_polymarket_research.sh

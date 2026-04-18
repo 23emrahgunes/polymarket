@@ -7,6 +7,20 @@ require_once dirname(__DIR__) . '/lib/auth.php';
 dashboard_require_auth();
 
 $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
+$laneMode = dashboard_lane_mode();
+$researchOnly = $laneMode === 'polymarket_research';
+$heroTitle = $researchOnly
+    ? 'Polymarket Research paneli: aday cüzdan, shadow takip ve copy-ready kanıtı.'
+    : 'Canlı çalışma zamanı, mapping sağlığı ve strateji kanıtı tek ekranda.';
+$heroCopy = $researchOnly
+    ? 'Bu panel trade açmaz; istikrarlı cüzdanları bulur, kaynak dağılımını dengeler, shadow takip kanıtını toplar ve copy-ready kısa listeyi sade biçimde gösterir.'
+    : 'Çalışma zamanı sağlığı, çoklu venue durumu, karar denetim akışı, market eşleme kapsamı ve temkinli performans verdict’i için salt-okunur operasyon paneli.';
+$dashboardTabs = $researchOnly
+    ? ['polymarket-research', 'sozluk-aciklamalar']
+    : ['polymarket-research', 'binance-technical', 'sozluk-aciklamalar'];
+$dashboardTabLabels = $researchOnly
+    ? ['polymarket-research' => 'Polymarket Research', 'sozluk-aciklamalar' => 'Sozluk / Aciklamalar']
+    : ['polymarket-research' => 'Polymarket Research', 'binance-technical' => 'Binance Technical', 'sozluk-aciklamalar' => 'Sozluk / Aciklamalar'];
 ?>
 <!DOCTYPE html>
 <html lang="tr">
@@ -113,6 +127,10 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
             font-size: 0.9rem;
         }
         .is-hidden {
+            display: none !important;
+        }
+        body.lane-polymarket-research [data-tab-trigger="binance-technical"],
+        body.lane-polymarket-research [data-tab="binance-technical"] {
             display: none !important;
         }
         .hero-card {
@@ -429,7 +447,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
         }
     </style>
 </head>
-<body>
+<body class="<?= dashboard_html($researchOnly ? 'lane-polymarket-research' : 'lane-split') ?>">
 <div class="shell">
     <section class="hero-card">
         <div class="hero-top">
@@ -458,7 +476,9 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
     <section class="tabs-shell" id="dashboard-tabs">
         <div class="tabs-bar" role="tablist" aria-label="Dashboard sekmeleri">
             <button class="tab-button" type="button" data-tab-trigger="polymarket-research">Polymarket Research</button>
-            <button class="tab-button" type="button" data-tab-trigger="binance-technical">Binance Technical</button>
+            <?php if (!$researchOnly): ?>
+                <button class="tab-button" type="button" data-tab-trigger="binance-technical">Binance Technical</button>
+            <?php endif; ?>
             <button class="tab-button" type="button" data-tab-trigger="sozluk-aciklamalar">Sözlük / Açıklamalar</button>
         </div>
         <div class="tab-help-card">
@@ -541,56 +561,58 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
             <div id="recent-shadow-actions"></div>
         </article>
 
-        <div class="section-marker" data-tab="binance-technical"><span class="section-label">Binance Technical</span></div>
-        <article class="panel panel-wide" data-tab="binance-technical">
-            <div class="panel-header"><h2>Fresh 7g Paper PnL</h2><span class="badge warn">Main Metric</span></div>
-            <div class="panel-subgrid">
-                <div class="subcard">
-                    <div class="subcard-header"><h3 class="subcard-title">Fresh PnL Ozeti</h3><span class="badge info">7 Gun</span></div>
-                    <div class="metric-list" id="fresh-pnl-summary-7d"></div>
+        <?php if (!$researchOnly): ?>
+            <div class="section-marker" data-tab="binance-technical"><span class="section-label">Binance Technical</span></div>
+            <article class="panel panel-wide" data-tab="binance-technical">
+                <div class="panel-header"><h2>Fresh 7g Paper PnL</h2><span class="badge warn">Main Metric</span></div>
+                <div class="panel-subgrid">
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Fresh PnL Ozeti</h3><span class="badge info">7 Gun</span></div>
+                        <div class="metric-list" id="fresh-pnl-summary-7d"></div>
+                    </div>
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Fresh Teknik Ozet</h3><span class="badge info">Lane</span></div>
+                        <div class="metric-list" id="fresh-technical-summary"></div>
+                    </div>
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Fresh Teknik Red Nedenleri</h3><span class="badge warn">Blocker</span></div>
+                        <div id="lane-technical-reject-breakdown"></div>
+                    </div>
                 </div>
-                <div class="subcard">
-                    <div class="subcard-header"><h3 class="subcard-title">Fresh Teknik Ozet</h3><span class="badge info">Lane</span></div>
-                    <div class="metric-list" id="fresh-technical-summary"></div>
+            </article>
+            <article class="panel panel-wide" data-tab="binance-technical">
+                <div class="panel-header"><h2>Skor Kalite Ozeti</h2><span class="badge info">Technical</span></div>
+                <div class="panel-subgrid">
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Score Component Ozeti</h3><span class="badge info">Components</span></div>
+                        <div class="metric-list" id="lane-technical-score-components"></div>
+                    </div>
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Score Gap Ozeti</h3><span class="badge info">Gap</span></div>
+                        <div class="metric-list" id="lane-technical-score-gap"></div>
+                    </div>
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Score Blocker Dagilimi</h3><span class="badge warn">Score</span></div>
+                        <div id="lane-technical-score-blockers"></div>
+                    </div>
                 </div>
-                <div class="subcard">
-                    <div class="subcard-header"><h3 class="subcard-title">Fresh Teknik Red Nedenleri</h3><span class="badge warn">Blocker</span></div>
-                    <div id="lane-technical-reject-breakdown"></div>
+            </article>
+            <article class="panel panel-wide" data-tab="binance-technical">
+                <div class="panel-header"><h2>Pozisyon Baskisi ve Legacy Durum</h2><span class="badge warn">Capacity</span></div>
+                <div class="panel-subgrid">
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Position Pressure</h3><span class="badge warn">Risk</span></div>
+                        <div class="metric-list" id="lane-position-pressure-summary"></div>
+                    </div>
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Legacy Position Ozeti</h3><span class="badge info">Legacy</span></div>
+                        <div class="metric-list" id="legacy-position-summary"></div>
+                    </div>
                 </div>
-            </div>
-        </article>
-        <article class="panel panel-wide" data-tab="binance-technical">
-            <div class="panel-header"><h2>Skor Kalite Ozeti</h2><span class="badge info">Technical</span></div>
-            <div class="panel-subgrid">
-                <div class="subcard">
-                    <div class="subcard-header"><h3 class="subcard-title">Score Component Ozeti</h3><span class="badge info">Components</span></div>
-                    <div class="metric-list" id="lane-technical-score-components"></div>
-                </div>
-                <div class="subcard">
-                    <div class="subcard-header"><h3 class="subcard-title">Score Gap Ozeti</h3><span class="badge info">Gap</span></div>
-                    <div class="metric-list" id="lane-technical-score-gap"></div>
-                </div>
-                <div class="subcard">
-                    <div class="subcard-header"><h3 class="subcard-title">Score Blocker Dagilimi</h3><span class="badge warn">Score</span></div>
-                    <div id="lane-technical-score-blockers"></div>
-                </div>
-            </div>
-        </article>
-        <article class="panel panel-wide" data-tab="binance-technical">
-            <div class="panel-header"><h2>Pozisyon Baskisi ve Legacy Durum</h2><span class="badge warn">Capacity</span></div>
-            <div class="panel-subgrid">
-                <div class="subcard">
-                    <div class="subcard-header"><h3 class="subcard-title">Position Pressure</h3><span class="badge warn">Risk</span></div>
-                    <div class="metric-list" id="lane-position-pressure-summary"></div>
-                </div>
-                <div class="subcard">
-                    <div class="subcard-header"><h3 class="subcard-title">Legacy Position Ozeti</h3><span class="badge info">Legacy</span></div>
-                    <div class="metric-list" id="legacy-position-summary"></div>
-                </div>
-            </div>
-        </article>
-        <article class="panel panel-half" data-tab="binance-technical"><div class="panel-header"><h2>Acik Pozisyonlar</h2><span class="badge info">Venue</span></div><div id="open-positions"></div></article>
-        <article class="panel panel-half" data-tab="binance-technical"><div class="panel-header"><h2>Acik Emirler</h2><span class="badge info">Protection</span></div><div id="open-orders"></div></article>
+            </article>
+            <article class="panel panel-half" data-tab="binance-technical"><div class="panel-header"><h2>Acik Pozisyonlar</h2><span class="badge info">Venue</span></div><div id="open-positions"></div></article>
+            <article class="panel panel-half" data-tab="binance-technical"><div class="panel-header"><h2>Acik Emirler</h2><span class="badge info">Protection</span></div><div id="open-orders"></div></article>
+        <?php endif; ?>
 
         <div class="section-marker" data-tab="sozluk-aciklamalar"><span class="section-label">Sozluk ve Log</span></div>
         <article class="panel panel-wide" data-tab="sozluk-aciklamalar">
@@ -775,7 +797,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
 </div>
 <script>
 const refreshSeconds = <?= json_encode($refreshSeconds, JSON_UNESCAPED_SLASHES) ?>;
-const DASHBOARD_TABS = ['polymarket-research', 'binance-technical', 'sozluk-aciklamalar'];
+const DASHBOARD_TABS = <?= json_encode($dashboardTabs, JSON_UNESCAPED_SLASHES) ?>;
 let activeTab = 'polymarket-research';
 let latestPayload = null;
 
@@ -795,11 +817,7 @@ function renderTabHelp(payload) {
     const glossaryCopy = document.getElementById('lane-glossary-copy');
     if (!badge || !copy || !list) { return; }
 
-    const labels = {
-        'polymarket-research': 'Polymarket Research',
-        'binance-technical': 'Binance Technical',
-        'sozluk-aciklamalar': 'Sözlük / Açıklamalar'
-    };
+    const labels = <?= json_encode($dashboardTabLabels, JSON_UNESCAPED_SLASHES) ?>;
 
     badge.textContent = labels[activeTab] || 'Polymarket Research';
     copy.textContent = help[activeTab] || 'Bu sekme secili alanin ne ise yaradigini hizli ozetler.';
@@ -1912,3 +1930,4 @@ setInterval(refreshDashboard, refreshSeconds * 1000);
 </script>
 </body>
 </html>
+

@@ -76,6 +76,7 @@ function dashboard_config(): array
         'DASHBOARD_SWOT_PATH' => 'reports/performance/swot_report.json',
         'DASHBOARD_TARGET_SERVICE' => 'ghost-trader',
         'DASHBOARD_SERVICE_NAME' => 'ghost-trader-dashboard',
+        'DASHBOARD_LANE_MODE' => 'split',
     ];
 
     $config = $defaults;
@@ -133,6 +134,12 @@ function dashboard_service_name(string $raw): string
 {
     $sanitized = preg_replace('/[^A-Za-z0-9_.@-]/', '', $raw) ?? '';
     return $sanitized !== '' ? $sanitized : 'ghost-trader';
+}
+
+function dashboard_lane_mode(): string
+{
+    $mode = strtolower(trim((string) dashboard_env('DASHBOARD_LANE_MODE', 'split')));
+    return in_array($mode, ['split', 'polymarket_research'], true) ? $mode : 'split';
 }
 
 function dashboard_json_response(array $payload, int $statusCode = 200): never

@@ -561,8 +561,13 @@ function dashboard_build_payload(string $view = 'full'): array
         $collections = dashboard_fetch_runtime_collections($pdo);
     }
 
-    $summaryReport = dashboard_load_report('DASHBOARD_SUMMARY_PATH', 'reports/performance/summary.json', 'performance report', $warnings);
-    $swotReport = dashboard_load_report('DASHBOARD_SWOT_PATH', 'reports/performance/swot_report.json', 'SWOT report', $warnings);
+    $laneMode = dashboard_lane_mode();
+    $summaryReport = $laneMode === 'polymarket_research'
+        ? null
+        : dashboard_load_report('DASHBOARD_SUMMARY_PATH', 'reports/performance/summary.json', 'performance report', $warnings);
+    $swotReport = $laneMode === 'polymarket_research'
+        ? null
+        : dashboard_load_report('DASHBOARD_SWOT_PATH', 'reports/performance/swot_report.json', 'SWOT report', $warnings);
     $samplingSummary = $pdo !== null
         ? dashboard_sampling_summary_from_db($pdo)
         : [

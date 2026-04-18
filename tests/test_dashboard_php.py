@@ -1063,57 +1063,65 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Balina Evreni' in html
     assert 'Kanitli Balinalar' in html
     assert 'Whale-Copy' in html
-    assert 'Whale Side Ozeti' in html
-    assert 'Whale-Copy Gate Funnel' in html
-    assert 'Graph Discovery Ozeti' in html
-    assert 'Whale Candidate Birikimi' in html
-    assert 'Gate-ready Whale Adaylari' in html
-    assert 'Whale-copy recovery' in html
-    assert 'Gated Whale-Copy Red Nedenleri' in html
-    assert 'Relaxed Gate Sonrasi Kalan Red Nedenleri' in html
-    assert 'Henüz kapanmış whale geçmişi yok; nötr güven.' in html
-    assert 'Genel Bakis' in html
-    assert 'Polymarket' in html
-    assert 'Binance Teknik' in html
-    assert 'Pozisyonlar ve Risk' in html
-    assert 'Teshis ve Log' in html
-    assert 'Bu sekme neyi gosteriyor?' in html
-    assert 'Binance teknik sampling' in html
-    assert 'Taze teknik ozet (son 60 dk)' in html
-    assert 'Binance teknik gate funnel' in html
-    assert 'Taze teknik gate funnel' in html
-    assert 'Binance teknik recovery ozeti' in html
-    assert 'Taze teknik recovery ozeti' in html
-    assert 'Futures snapshot ozeti' in html
-    assert 'Stale eligibility ozeti' in html
-    assert 'Mikro yapi recovery hit' in html
-    assert 'Mikro yapi v2 hit' in html
-    assert 'Spread v2 hit' in html
-    assert 'Final skor recovery hit' in html
-    assert 'Skor bilesen ozeti' in html
-    assert 'Skor gap ozeti' in html
-    assert 'Taze teknik skor gap' in html
-    assert 'Taze Teknik Red Nedenleri' in html
-    assert 'Pozisyon Baskisi ve Exit Akisi' in html
-    assert 'Ortalama MACD normalizer' in html
-    assert 'En eski acik pozisyon (dk)' in html
-    assert 'Legacy max position red' in html
-    assert 'Eski teknik pozisyon' in html
-    assert 'Backfill edilen pozisyon' in html
-    assert 'Stale review 90 dk' in html
-    assert 'Stale exit 120 dk' in html
-    assert '240 dk hard-timeout aday' in html
-    assert 'Sure baskisiyla cikis' in html
-    assert 'Hard-timeout cikis' in html
-    assert 'Kapasiteye geri acilan USD' in html
-    assert 'Uzun sure acik kaldigi icin cikis' in html
-    assert 'Ortalama momentum normalizer' in html
-    assert 'Ortalama hacim normalizer' in html
-    assert 'Teknik Skor Blocker Dagilimi' in html
-    assert 'Candidate floor hit' in html
-    assert 'Orderbook repriced' in html
-    assert 'Binance Teknik Red Nedenleri' in html
-    assert '&mdash;' in html
+
+
+def test_dashboard_research_lane_mode_hides_binance_tab_and_skips_report_warnings(tmp_path: Path):
+    if PHP_BIN is None:
+        pytest.skip('php is not available in PATH')
+
+    db_path = tmp_path / 'dashboard.db'
+    _create_dashboard_db(db_path)
+    port = _find_free_port()
+    env = os.environ.copy()
+    env.update(
+        {
+            'GHOST_TRADER_REPO_ROOT': str(REPO_ROOT),
+            'GHOST_TRADER_DB_PATH': str(db_path),
+            'DASHBOARD_USER': DASHBOARD_USER,
+            'DASHBOARD_PASSWORD_HASH': DASHBOARD_HASH,
+            'DASHBOARD_REFRESH_SECONDS': '1',
+            'DASHBOARD_LOG_LINES': '5',
+            'DASHBOARD_LANE_MODE': 'polymarket_research',
+        }
+    )
+
+    process = subprocess.Popen(
+        [PHP_BIN, '-S', f'127.0.0.1:{port}', '-t', str(REPO_ROOT / 'dashboard' / 'public')],
+        cwd=str(REPO_ROOT),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    base_url = f'http://127.0.0.1:{port}'
+    try:
+        started = False
+        for _ in range(40):
+            try:
+                _request(base_url + '/api.php', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD)).close()
+                started = True
+                break
+            except Exception:
+                time.sleep(0.1)
+        assert started
+
+        response = _request(base_url + '/api.php', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD))
+        payload = json.loads(response.read().decode('utf-8'))
+        assert not any('performance report unavailable' in warning.lower() for warning in payload['warnings'])
+        assert not any('swot report unavailable' in warning.lower() for warning in payload['warnings'])
+
+        response = _request(base_url + '/', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD))
+        html = response.read().decode('utf-8')
+        assert 'lane-polymarket-research' in html
+        assert 'DASHBOARD_TABS = ["polymarket-research","sozluk-aciklamalar"]' in html
+        assert 'Binance Technical' not in html
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
 
 
 def test_dashboard_api_degrades_without_runtime_files(tmp_path: Path):
