@@ -23,6 +23,7 @@ def test_bootstrap_research_v2_script_exists_and_contains_expected_flow() -> Non
     assert "8082" in text
     assert 'git clone --branch "$RESEARCH_BRANCH" "$SOURCE_REPO_DIR" "$RESEARCH_REPO_DIR"' in text
     assert 'git -C "$RESEARCH_REPO_DIR" fetch "$SOURCE_REPO_DIR" "$RESEARCH_BRANCH"' in text
+    assert 'reset_managed_worktree_drift "$RESEARCH_REPO_DIR"' in text
 
 
 def test_research_v2_systemd_templates_exist() -> None:
@@ -45,3 +46,13 @@ def test_safe_dotenv_loader_is_used_by_research_scripts() -> None:
     assert "source \"$REPO_ROOT/.env\"" not in refresh_script
     assert "load_dotenv_file \"$ENV_FILE\"" in dashboard_script
     assert "source \"$ENV_FILE\"" not in dashboard_script
+
+
+def test_query_wrapper_scripts_add_repo_root_to_sys_path() -> None:
+    research_script = _read("scripts/query_polymarket_research.py")
+    binance_script = _read("scripts/query_binance_technical_lane.py")
+
+    assert "REPO_ROOT = Path(__file__).resolve().parents[1]" in research_script
+    assert "sys.path.insert(0, str(REPO_ROOT))" in research_script
+    assert "REPO_ROOT = Path(__file__).resolve().parents[1]" in binance_script
+    assert "sys.path.insert(0, str(REPO_ROOT))" in binance_script

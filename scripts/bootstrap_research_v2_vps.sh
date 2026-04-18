@@ -77,6 +77,21 @@ destination.write_text(text, encoding="utf-8")
 PY
 }
 
+reset_managed_worktree_drift() {
+    local repo_dir="$1"
+    local path="scripts/refresh_polymarket_research.sh"
+
+    [[ -d "$repo_dir/.git" ]] || return 0
+
+    if git -C "$repo_dir" diff --quiet -- "$path" 2>/dev/null; then
+        return 0
+    fi
+
+    echo "Resetting managed worktree drift for $path"
+    git -C "$repo_dir" restore --source=HEAD --worktree -- "$path" 2>/dev/null \
+        || git -C "$repo_dir" checkout -- "$path"
+}
+
 install_packages
 
 if [[ ! -d "$SOURCE_REPO_DIR/.git" ]]; then
@@ -86,6 +101,7 @@ if [[ ! -d "$SOURCE_REPO_DIR/.git" ]]; then
 fi
 
 if [[ -d "$RESEARCH_REPO_DIR/.git" ]]; then
+    reset_managed_worktree_drift "$RESEARCH_REPO_DIR"
     if git -C "$RESEARCH_REPO_DIR" fetch "$SOURCE_REPO_DIR" "$RESEARCH_BRANCH"; then
         git -C "$RESEARCH_REPO_DIR" checkout "$RESEARCH_BRANCH"
         git -C "$RESEARCH_REPO_DIR" merge --ff-only FETCH_HEAD
@@ -123,8 +139,6 @@ upsert_env .env POLYMARKET_RESEARCH_DISCOVERY_POOL 50
 upsert_env .env POLYMARKET_RESEARCH_SHADOW_POOL 20
 upsert_env .env POLYMARKET_RESEARCH_COPY_READY_POOL 5
 upsert_env .env POLYMARKET_RESEARCH_SHADOW_WINDOW_DAYS 14
-
-chmod +x scripts/start_dashboard.sh scripts/refresh_polymarket_research.sh
 
 if [[ -f "$LEGACY_DB_PATH" ]]; then
     python scripts/import_research_seed_data.py --source-db "$LEGACY_DB_PATH" --target-db "$RESEARCH_DB_PATH"
