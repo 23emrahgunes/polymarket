@@ -12,12 +12,17 @@ Bu yuzey legacy `/root/polymarket` runtime'ina dokunmadan ayri bir klasorde kuru
 Asagidaki degiskenler bootstrap oncesi export edilebilir:
 
 ```bash
+export SOURCE_REPO_DIR="/root/polymarket"
 export REPO_URL="https://github.com/23emrahgunes/polymarket.git"
-export REPO_REF="codex/clean-split-rebuild-v1"
+export RESEARCH_BRANCH="codex/clean-split-rebuild-v1"
 export LEGACY_DB_PATH="/root/polymarket/data/ghost_trader.db"
 ```
 
-Private repo kullaniyorsan `REPO_URL` icine PAT ile erisen URL ver.
+Varsayilan davranis local clone'dur: script, ayni VPS'teki mevcut `/root/polymarket` reposundan
+`/root/polymarket-research-v2` dizinini olusturur. Bu sayede private GitHub auth gerekmez.
+
+Sadece local repo yoksa veya baska kaynak kullanacaksan `REPO_URL` override et.
+Private repo icin o durumda PAT gerekir.
 
 ## Kurulum
 
@@ -39,7 +44,7 @@ bash scripts/bootstrap_research_v2_vps.sh
 
 Bootstrap su isleri yapar:
 
-1. `/root/polymarket-research-v2` altina repo klonlar veya gunceller
+1. Varsayilan olarak `/root/polymarket` reposundan `/root/polymarket-research-v2` altina local clone alir veya gunceller
 2. `.venv` olusturur ve dependency kurar
 3. `.env` icine research-v2 ayarlarini yazar
 4. legacy DB varsa research seed import yapar

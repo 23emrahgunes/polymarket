@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_REPO_DIR="${SOURCE_REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 RESEARCH_REPO_DIR="${RESEARCH_REPO_DIR:-/root/polymarket-research-v2}"
 RESEARCH_BRANCH="${RESEARCH_BRANCH:-codex/clean-split-rebuild-v1}"
 RESEARCH_DASHBOARD_PORT="${RESEARCH_DASHBOARD_PORT:-8082}"
@@ -77,12 +79,19 @@ PY
 
 install_packages
 
+if [[ ! -d "$SOURCE_REPO_DIR/.git" ]]; then
+    echo "SOURCE_REPO_DIR does not point to a git repo: $SOURCE_REPO_DIR" >&2
+    echo "Either run this script from inside /root/polymarket or export SOURCE_REPO_DIR=/root/polymarket." >&2
+    exit 1
+fi
+
 if [[ -d "$RESEARCH_REPO_DIR/.git" ]]; then
     git -C "$RESEARCH_REPO_DIR" fetch origin
     git -C "$RESEARCH_REPO_DIR" checkout "$RESEARCH_BRANCH"
     git -C "$RESEARCH_REPO_DIR" pull --ff-only origin "$RESEARCH_BRANCH"
 else
-    git clone --branch "$RESEARCH_BRANCH" "$REPO_URL" "$RESEARCH_REPO_DIR"
+    git clone --branch "$RESEARCH_BRANCH" "$SOURCE_REPO_DIR" "$RESEARCH_REPO_DIR" \
+        || git clone --branch "$RESEARCH_BRANCH" "$REPO_URL" "$RESEARCH_REPO_DIR"
 fi
 
 cd "$RESEARCH_REPO_DIR"
@@ -147,6 +156,7 @@ cat <<EOF
 
 Research v2 dashboard installed.
 Repo: $RESEARCH_REPO_DIR
+Source repo: $SOURCE_REPO_DIR
 Dashboard: http://$(hostname -I | awk '{print $1}'):${RESEARCH_DASHBOARD_PORT}
 DB: $RESEARCH_DB_PATH
 
