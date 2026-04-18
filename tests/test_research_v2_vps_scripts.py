@@ -22,6 +22,7 @@ def test_bootstrap_research_v2_script_exists_and_contains_expected_flow() -> Non
     assert "RESEARCH_DASHBOARD_PORT" in text
     assert "8082" in text
     assert 'git clone --branch "$RESEARCH_BRANCH" "$SOURCE_REPO_DIR" "$RESEARCH_REPO_DIR"' in text
+    assert 'git -C "$RESEARCH_REPO_DIR" fetch "$SOURCE_REPO_DIR" "$RESEARCH_BRANCH"' in text
 
 
 def test_research_v2_systemd_templates_exist() -> None:

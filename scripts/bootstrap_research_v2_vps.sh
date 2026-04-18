@@ -86,9 +86,14 @@ if [[ ! -d "$SOURCE_REPO_DIR/.git" ]]; then
 fi
 
 if [[ -d "$RESEARCH_REPO_DIR/.git" ]]; then
-    git -C "$RESEARCH_REPO_DIR" fetch origin
-    git -C "$RESEARCH_REPO_DIR" checkout "$RESEARCH_BRANCH"
-    git -C "$RESEARCH_REPO_DIR" pull --ff-only origin "$RESEARCH_BRANCH"
+    if git -C "$RESEARCH_REPO_DIR" fetch "$SOURCE_REPO_DIR" "$RESEARCH_BRANCH"; then
+        git -C "$RESEARCH_REPO_DIR" checkout "$RESEARCH_BRANCH"
+        git -C "$RESEARCH_REPO_DIR" merge --ff-only FETCH_HEAD
+    else
+        git -C "$RESEARCH_REPO_DIR" fetch origin
+        git -C "$RESEARCH_REPO_DIR" checkout "$RESEARCH_BRANCH"
+        git -C "$RESEARCH_REPO_DIR" pull --ff-only origin "$RESEARCH_BRANCH"
+    fi
 else
     git clone --branch "$RESEARCH_BRANCH" "$SOURCE_REPO_DIR" "$RESEARCH_REPO_DIR" \
         || git clone --branch "$RESEARCH_BRANCH" "$REPO_URL" "$RESEARCH_REPO_DIR"
