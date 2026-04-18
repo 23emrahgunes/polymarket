@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -579,6 +581,54 @@ def test_polymarket_research_cli_watchlist_commands(tmp_path: Path, capsys: pyte
     )
     invalid_result = capsys.readouterr()
     assert "0x-prefixed" in invalid_result.err
+
+
+def test_polymarket_research_wrapper_script_runs_via_subprocess(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket_research_wrapper.db"
+    _create_polymarket_research_db(db_path)
+    repo_root = Path(__file__).resolve().parents[1]
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "query_polymarket_research.py"),
+            "summary",
+            "--db-path",
+            str(db_path),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "DISCOVERY_SOURCE_SUMMARY" in completed.stdout
+    assert "POLYMARKET_RESEARCH_SUMMARY_JSON" in completed.stdout
+
+
+def test_binance_technical_wrapper_script_runs_via_subprocess(tmp_path: Path) -> None:
+    db_path = tmp_path / "binance_wrapper.db"
+    _create_binance_lane_db(db_path)
+    repo_root = Path(__file__).resolve().parents[1]
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "query_binance_technical_lane.py"),
+            "--db-path",
+            str(db_path),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "BINANCE_TECHNICAL_LANE_SUMMARY" in completed.stdout
+    assert "fresh_technical_summary" in completed.stdout
+    assert "fresh_pnl_summary_7d" in completed.stdout
 
 
 def test_binance_technical_service_builds_fresh_and_legacy_summaries(tmp_path: Path) -> None:

@@ -42,6 +42,22 @@ cd /root/polymarket
 bash scripts/bootstrap_research_v2_vps.sh
 ```
 
+Temiz ve tek-komutluk yeniden kurulum icin:
+
+```bash
+bash /root/polymarket/scripts/rebuild_research_v2_vps.sh
+```
+
+Bu helper:
+
+1. legacy `/root/polymarket` icine gecer
+2. research-v2 service/timer'i varsa durdurur
+3. `/root/polymarket-research-v2` dizinini sifirdan temizler
+4. bootstrap'i bastan calistirir
+
+Bu akisi, yanlislikla `/root/polymarket-research-v2` icinde kalinmis olsa bile absolute path ile
+calistirmak daha guvenlidir.
+
 Bootstrap su isleri yapar:
 
 1. Varsayilan olarak `/root/polymarket` reposundan `/root/polymarket-research-v2` altina local clone alir veya gunceller

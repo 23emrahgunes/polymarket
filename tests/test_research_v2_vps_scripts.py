@@ -26,6 +26,15 @@ def test_bootstrap_research_v2_script_exists_and_contains_expected_flow() -> Non
     assert 'reset_managed_worktree_drift "$RESEARCH_REPO_DIR"' in text
 
 
+def test_rebuild_research_v2_script_exists_and_uses_safe_absolute_bootstrap() -> None:
+    text = _read("scripts/rebuild_research_v2_vps.sh")
+    assert "#!/usr/bin/env bash" in text
+    assert 'cd "$SOURCE_REPO_DIR"' in text
+    assert 'rm -rf "$RESEARCH_REPO_DIR"' in text
+    assert 'exec bash "$SOURCE_REPO_DIR/scripts/bootstrap_research_v2_vps.sh"' in text
+    assert 'systemctl disable --now "${RESEARCH_DASHBOARD_SERVICE_NAME}.service"' in text
+
+
 def test_research_v2_systemd_templates_exist() -> None:
     dashboard_service = _read("deploy/systemd/ghost-trader-research-dashboard.service.template")
     refresh_service = _read("deploy/systemd/ghost-trader-research-refresh.service.template")

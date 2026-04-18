@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .config import BinanceTechnicalSettings
@@ -11,6 +11,7 @@ from .service import BinanceTechnicalService
 @dataclass(slots=True)
 class BinanceTechnicalRuntime:
     settings: BinanceTechnicalSettings
+    service: BinanceTechnicalService = field(init=False)
 
     def __post_init__(self) -> None:
         repository = BinanceTechnicalRepository(self.settings.db_path)
