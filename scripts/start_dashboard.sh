@@ -4,11 +4,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
 
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/load_dotenv.sh"
+
 if [[ -f "$ENV_FILE" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
+  load_dotenv_file "$ENV_FILE"
 fi
 
 HOST="${DASHBOARD_HOST:-0.0.0.0}"

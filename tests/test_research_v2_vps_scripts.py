@@ -33,3 +33,15 @@ def test_research_v2_systemd_templates_exist() -> None:
     assert "scripts/start_dashboard.sh" in dashboard_service
     assert "scripts/refresh_polymarket_research.sh" in refresh_service
     assert "OnUnitActiveSec=15min" in refresh_timer
+
+
+def test_safe_dotenv_loader_is_used_by_research_scripts() -> None:
+    loader = _read("scripts/lib/load_dotenv.sh")
+    refresh_script = _read("scripts/refresh_polymarket_research.sh")
+    dashboard_script = _read("scripts/start_dashboard.sh")
+
+    assert "load_dotenv_file()" in loader
+    assert "load_dotenv_file \"$REPO_ROOT/.env\"" in refresh_script
+    assert "source \"$REPO_ROOT/.env\"" not in refresh_script
+    assert "load_dotenv_file \"$ENV_FILE\"" in dashboard_script
+    assert "source \"$ENV_FILE\"" not in dashboard_script

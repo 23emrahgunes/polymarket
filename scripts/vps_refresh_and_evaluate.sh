@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/load_dotenv.sh"
+
 SERVICE_NAME="ghost-trader"
 TARGET_BRANCH=""
 QUICK_MODE=0
@@ -192,10 +195,7 @@ if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
   fail "Local git changes detected. Commit/stash them manually before running this script."
 fi
 
-set -a
-# shellcheck disable=SC1090
-source "$REPO_ROOT/.env"
-set +a
+load_dotenv_file "$REPO_ROOT/.env"
 DASHBOARD_SERVICE_NAME="${DASHBOARD_SERVICE_NAME:-${SERVICE_NAME}-dashboard}"
 DASHBOARD_URL="http://${DASHBOARD_HOST:-0.0.0.0}:${DASHBOARD_PORT:-8081}/"
 if service_exists "$DASHBOARD_SERVICE_NAME"; then

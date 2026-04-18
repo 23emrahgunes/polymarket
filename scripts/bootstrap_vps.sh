@@ -18,6 +18,9 @@ RUN_TESTS="${RUN_TESTS:-1}"
 RUN_DEBUG_VERIFY="${RUN_DEBUG_VERIFY:-1}"
 DASHBOARD_DEFAULT_HASH='$2y$10$ycVVdHE7aM4FCpXKhwIg2.lP64iQndfqYEI2uvcj7FQ.gXo9umPzy'
 
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/load_dotenv.sh"
+
 if [[ "$EUID" -eq 0 && -z "${SUDO_USER:-}" ]]; then
   echo "Run this script as the repo-owning user, not directly as root." >&2
   exit 1
@@ -78,10 +81,7 @@ ensure_env_file() {
 }
 
 load_env_settings() {
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
+  load_dotenv_file "$ENV_FILE"
 }
 
 create_virtualenv() {
