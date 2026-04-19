@@ -540,6 +540,14 @@ $dashboardTabLabels = $researchOnly
                     <div class="subcard-header"><h3 class="subcard-title">Shadow Replay Ozeti</h3><span class="badge info">Replay</span></div>
                     <div class="metric-list" id="shadow-replay-summary"></div>
                 </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Linked Wallet Kaniti</h3><span class="badge info">Evidence</span></div>
+                    <div class="metric-list" id="linked-wallet-evidence-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Shadow Evidence Backfill</h3><span class="badge info">Backfill</span></div>
+                    <div class="metric-list" id="shadow-evidence-backfill-summary"></div>
+                </div>
             </div>
         </article>
         <article class="panel panel-wide" data-tab="polymarket-research">
@@ -1027,6 +1035,11 @@ function translateReason(value) {
         needs_shadow_history: 'Yeterli shadow gecmisi yok',
         negative_shadow_edge: 'Shadow edge negatif',
         drawdown_too_deep: 'Drawdown fazla derin',
+        detailed_trade_history: 'Detayli gecmis islem kaniti var',
+        stats_only: 'Sadece toplu performans ozeti var',
+        no_historical_evidence: 'Gecmis islem kaniti yok',
+        pending_resolution: 'Kimlik henuz cozulmedi',
+        linked: 'Cuzdan adresi baglandi',
         none: 'yok'
     };
     return map[text] || String(value ?? 'yok');
@@ -1788,6 +1801,22 @@ function updatePanels(payload) {
         { label: 'Net replay edge', value: formatNumber(shadowReplaySummary.net_shadow_edge, 4) },
         { label: 'Gecmisi olmayan eligible', value: formatNumber(shadowReplaySummary.eligible_without_trade_history, 0) }
     ]);
+    const linkedWalletEvidenceSummary = payload.linked_wallet_evidence_summary || {};
+    renderMetrics('linked-wallet-evidence-summary', [
+        { label: 'Linked wallet', value: formatNumber(linkedWalletEvidenceSummary.linked_wallets_total, 0) },
+        { label: 'Detayli gecmis kaniti', value: formatNumber(linkedWalletEvidenceSummary.linked_with_trade_history, 0) },
+        { label: 'Sadece toplu ozet', value: formatNumber(linkedWalletEvidenceSummary.linked_stats_only, 0) },
+        { label: 'Kanit yok', value: formatNumber(linkedWalletEvidenceSummary.linked_without_trade_history, 0) },
+        { label: 'Shadowa terfi eden linked', value: formatNumber(linkedWalletEvidenceSummary.linked_promoted_to_shadow, 0) }
+    ]);
+    const shadowEvidenceBackfillSummary = payload.shadow_evidence_backfill_summary || {};
+    renderMetrics('shadow-evidence-backfill-summary', [
+        { label: 'Linked replay satiri', value: formatNumber(shadowEvidenceBackfillSummary.replay_rows_created, 0) },
+        { label: 'Replay gecmisi olan linked', value: formatNumber(shadowEvidenceBackfillSummary.wallets_with_replay_history, 0) },
+        { label: 'Replay gecmisi olmayan linked', value: formatNumber(shadowEvidenceBackfillSummary.wallets_without_replay_history, 0) },
+        { label: 'Net linked replay PnL', value: formatNumber(shadowEvidenceBackfillSummary.net_replay_shadow_pnl, 2) },
+        { label: 'Net linked replay edge', value: formatNumber(shadowEvidenceBackfillSummary.net_replay_shadow_edge, 4) }
+    ]);
     renderTable('wallet-consistency-table', [
         { key: 'address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.address || '', 20) },
         { key: 'watchlist_priority_rank', label: 'Oncelik', render: (row) => escapeHtml(row.watchlist_priority_rank ? formatNumber(row.watchlist_priority_rank, 0) : '-') },
@@ -1795,6 +1824,9 @@ function updatePanels(payload) {
         { key: 'source_labels', label: 'Kaynak Etiketleri', render: (row) => escapeHtml(Array.isArray(row.source_labels) ? row.source_labels.join(', ') : '') },
         { key: 'watchlist_status', label: 'Watchlist Durumu', render: (row) => escapeHtml(row.watchlist_status || '-') },
         { key: 'identity_resolution_status', label: 'Kimlik Durumu', render: (row) => escapeHtml(row.identity_resolution_status || 'untracked') },
+        { key: 'historical_trade_evidence_status', label: 'Kanit Durumu', render: (row) => escapeHtml(translateReason(row.historical_trade_evidence_status || 'no_historical_evidence')) },
+        { key: 'historical_trade_rows', label: 'Gecmis Islem', render: (row) => escapeHtml(formatNumber(row.historical_trade_rows, 0)) },
+        { key: 'shadow_seeded', label: 'Shadow Seed', render: (row) => row.shadow_seeded ? 'evet' : 'hayir' },
         { key: 'specialization', label: 'Uzmanlik', render: (row) => escapeHtml(row.specialization || 'UNKNOWN') },
         { key: 'consistency_score', label: 'Tutarlilik', render: (row) => escapeHtml(formatNumber(row.consistency_score, 3)) },
         { key: 'trust_score', label: 'Guven', render: (row) => escapeHtml(formatNumber(row.trust_score, 3)) },
@@ -1813,6 +1845,10 @@ function updatePanels(payload) {
         { key: 'status', label: 'Watchlist', render: (row) => escapeHtml(row.status || 'pending_resolution') },
         { key: 'identity_resolution_status', label: 'Kimlik', render: (row) => escapeHtml(row.identity_resolution_status || 'pending_resolution') },
         { key: 'wallet_address', label: 'Adres', mono: true, render: (row) => row.wallet_address ? truncateHtml(row.wallet_address, 20) : '-' },
+        { key: 'historical_trade_evidence_status', label: 'Kanit Durumu', render: (row) => escapeHtml(translateReason(row.historical_trade_evidence_status || (row.wallet_address ? 'no_historical_evidence' : 'pending_resolution'))) },
+        { key: 'historical_trade_rows', label: 'Gecmis Islem', render: (row) => escapeHtml(formatNumber(row.historical_trade_rows, 0)) },
+        { key: 'shadow_seeded', label: 'Shadow Seed', render: (row) => row.shadow_seeded ? 'evet' : 'hayir' },
+        { key: 'shadow_blocker_reason', label: 'Shadow Blokaji', render: (row) => escapeHtml(translateReason(row.shadow_blocker_reason || 'none')) },
         { key: 'promoted_to_shadow', label: 'Shadowa alindi mi', render: (row) => row.promoted_to_shadow ? 'evet' : 'hayir' }
     ], payload.priority_watchlist_rows || [], 'Henuz oncelikli izleme kaydi yok.');
     renderTable('copy-ready-wallets', [

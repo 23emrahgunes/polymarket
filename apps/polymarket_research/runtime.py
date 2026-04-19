@@ -14,7 +14,7 @@ class PolymarketResearchRuntime:
     service: PolymarketResearchService = field(init=False)
 
     def __post_init__(self) -> None:
-        repository = PolymarketResearchRepository(self.settings.db_path)
+        repository = PolymarketResearchRepository(self.settings.db_path, self.settings.source_db_path)
         self.service = PolymarketResearchService(self.settings, repository)
 
     def run_once(self) -> dict[str, Any]:

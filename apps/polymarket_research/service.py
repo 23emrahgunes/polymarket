@@ -31,6 +31,9 @@ MANUAL_PERSISTED_LABELS = {
     "persisted_confirmed",
     "persisted_manual",
 }
+EVIDENCE_DETAILED_TRADE_HISTORY = "detailed_trade_history"
+EVIDENCE_STATS_ONLY = "stats_only"
+EVIDENCE_NO_HISTORICAL = "no_historical_evidence"
 
 
 def _clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
@@ -241,6 +244,117 @@ class PolymarketResearchService:
         event_component = _clamp(event_count_24h / 10.0)
         return round(_clamp((active_component * 0.70) + (event_component * 0.30)), 4)
 
+    def _ensure_evidence_defaults(self, candidate: dict[str, Any]) -> None:
+        candidate.setdefault("historical_trade_evidence_status", EVIDENCE_NO_HISTORICAL)
+        candidate.setdefault("historical_trade_rows", 0)
+        candidate.setdefault("evidence_last_trade_at", "")
+        candidate.setdefault("shadow_seeded", 0)
+        candidate.setdefault("shadow_blocker_reason", "")
+
+    def _recompute_candidate_quality(self, candidate: dict[str, Any]) -> None:
+        trust_score = float(candidate.get("trust_score", 0.5) or 0.5)
+        discovery_score = float(candidate.get("discovery_score", 0.0) or 0.0)
+        active_days = int(candidate.get("active_days", 0) or 0)
+        closed_trades = int(candidate.get("closed_trade_count", 0) or 0)
+        realized_pnl = float(candidate.get("realized_pnl", 0.0) or 0.0)
+        crypto_ratio = float(candidate.get("crypto_participation_ratio", 0.0) or 0.0)
+        profit_consistency_score = float(candidate.get("profit_consistency_score", 0.0) or 0.0)
+        recency_score = self._compute_recency_score(str(candidate.get("last_seen_at", "") or ""))
+        frequency_score = self._compute_frequency_score(
+            active_days=active_days,
+            event_count_24h=int(candidate.get("event_count_24h", 0) or 0),
+        )
+        candidate["recency_score"] = round(recency_score, 4)
+        candidate["frequency_score"] = round(frequency_score, 4)
+        candidate["consistency_score"] = round(
+            (trust_score * 0.22)
+            + (discovery_score * 0.18)
+            + (_clamp(closed_trades / 25.0) * 0.16)
+            + (_clamp(active_days / 14.0) * 0.10)
+            + (_clamp(realized_pnl / 5000.0) * 0.10)
+            + (_clamp(crypto_ratio) * 0.08)
+            + (profit_consistency_score * 0.10)
+            + (recency_score * 0.04)
+            + (frequency_score * 0.02),
+            4,
+        )
+
+    def _apply_linked_wallet_evidence(
+        self,
+        candidates: list[dict[str, Any]],
+        watchlist_map: dict[str, dict[str, Any]],
+        source_trade_rows: list[Any],
+        source_stats_rows: list[Any],
+    ) -> None:
+        if not watchlist_map:
+            return
+
+        candidates_by_address = {str(candidate["address"]).lower(): candidate for candidate in candidates}
+        source_trade_rollup = self._build_trade_rollup(source_trade_rows)
+        source_trade_context = self._build_trade_context(source_trade_rows)
+        source_stats_by_address = {
+            str(row["address"] or "").lower().strip(): row
+            for row in source_stats_rows
+            if str(row["address"] or "").strip()
+        }
+
+        for wallet_address, watchlist in watchlist_map.items():
+            candidate = candidates_by_address.get(wallet_address)
+            if candidate is None:
+                continue
+            self._ensure_evidence_defaults(candidate)
+
+            target_specialization = str(watchlist.get("target_specialization") or "").upper()
+            rollup = source_trade_rollup.get(wallet_address)
+            if rollup is not None:
+                context = source_trade_context.get(wallet_address, {})
+                total_trade_rows = int(rollup.get("total_trade_rows", 0) or 0)
+                crypto_trade_rows = int(rollup.get("crypto_trade_rows", 0) or 0)
+                crypto_ratio = crypto_trade_rows / total_trade_rows if total_trade_rows > 0 else 0.0
+                candidate["active_days"] = int(rollup.get("active_days", 0) or 0)
+                candidate["closed_trade_count"] = int(rollup.get("closed_trade_count", 0) or 0)
+                candidate["realized_pnl"] = round(float(rollup.get("realized_pnl", 0.0) or 0.0), 4)
+                candidate["crypto_participation_ratio"] = round(crypto_ratio, 4)
+                candidate["specialization"] = str(rollup.get("specialization_hint") or "UNKNOWN").upper()
+                if target_specialization == "CRYPTO":
+                    candidate["specialization"] = "CRYPTO"
+                    candidate["crypto_participation_ratio"] = max(float(candidate["crypto_participation_ratio"]), crypto_ratio)
+                candidate["profit_consistency_score"] = round(float(context.get("profit_consistency_score", 0.0)), 4)
+                candidate["drawdown_estimate_pct"] = round(float(context.get("drawdown_estimate_pct", 0.0)), 4)
+                candidate["historical_trade_evidence_status"] = EVIDENCE_DETAILED_TRADE_HISTORY
+                candidate["historical_trade_rows"] = total_trade_rows
+                last_trade_at = max(
+                    (str(row["occurred_at"] or "") for row in source_trade_rows if str(row["address"] or "").lower().strip() == wallet_address),
+                    default="",
+                )
+                candidate["evidence_last_trade_at"] = last_trade_at
+                if last_trade_at:
+                    candidate["last_seen_at"] = last_trade_at
+            elif wallet_address in source_stats_by_address:
+                stats_row = source_stats_by_address[wallet_address]
+                candidate["trust_score"] = round(float(stats_row["trust_score"] or candidate.get("trust_score", 0.5)), 4)
+                candidate["closed_trade_count"] = max(
+                    int(candidate.get("closed_trade_count", 0) or 0),
+                    int(stats_row["closed_trade_count"] or 0),
+                )
+                candidate["realized_pnl"] = round(float(stats_row["realized_pnl"] or 0.0), 4)
+                candidate["event_count_24h"] = int(stats_row["event_count_24h"] or candidate.get("event_count_24h", 0) or 0)
+                candidate["last_event_amount"] = round(float(stats_row["last_event_amount"] or candidate.get("last_event_amount", 0.0) or 0.0), 4)
+                candidate["last_seen_at"] = str(stats_row["last_seen_at"] or candidate.get("last_seen_at", "") or "")
+                specialization_hint = str(stats_row["specialization_hint"] or candidate.get("specialization", "UNKNOWN")).upper()
+                candidate["specialization"] = "CRYPTO" if target_specialization == "CRYPTO" else specialization_hint
+                if candidate["specialization"] == "CRYPTO":
+                    candidate["crypto_participation_ratio"] = max(float(candidate.get("crypto_participation_ratio", 0.0) or 0.0), SHADOW_CRYPTO_RATIO_MIN)
+                candidate["historical_trade_evidence_status"] = EVIDENCE_STATS_ONLY
+                candidate["historical_trade_rows"] = int(stats_row["closed_trade_count"] or 0)
+                candidate["evidence_last_trade_at"] = str(stats_row["last_seen_at"] or "")
+            else:
+                candidate["historical_trade_evidence_status"] = EVIDENCE_NO_HISTORICAL
+                candidate["historical_trade_rows"] = 0
+                candidate["evidence_last_trade_at"] = ""
+
+            self._recompute_candidate_quality(candidate)
+
     def _decorate_candidate(
         self,
         row: Any,
@@ -326,6 +440,11 @@ class PolymarketResearchService:
             "watchlist_mode": "",
             "identity_resolution_status": "untracked",
             "priority_pinned": 0,
+            "historical_trade_evidence_status": EVIDENCE_NO_HISTORICAL,
+            "historical_trade_rows": 0,
+            "evidence_last_trade_at": "",
+            "shadow_seeded": 0,
+            "shadow_blocker_reason": "",
             "target_specialization": "",
             "discovery_rank": 0,
             "shadow_rank": 0,
@@ -422,6 +541,11 @@ class PolymarketResearchService:
                     "watchlist_mode": "",
                     "identity_resolution_status": "linked",
                     "priority_pinned": 0,
+                    "historical_trade_evidence_status": EVIDENCE_NO_HISTORICAL,
+                    "historical_trade_rows": 0,
+                    "evidence_last_trade_at": "",
+                    "shadow_seeded": 0,
+                    "shadow_blocker_reason": "",
                     "target_specialization": "",
                     "discovery_rank": 0,
                     "shadow_rank": 0,
@@ -708,6 +832,20 @@ class PolymarketResearchService:
                     "net_shadow_edge": 0.0,
                     "eligible_without_trade_history": 0,
                 },
+                "linked_wallet_evidence_summary": {
+                    "linked_wallets_total": len(linked_watchlist_addresses),
+                    "linked_with_trade_history": 0,
+                    "linked_stats_only": 0,
+                    "linked_without_trade_history": len(linked_watchlist_addresses),
+                    "linked_promoted_to_shadow": 0,
+                },
+                "shadow_evidence_backfill_summary": {
+                    "replay_rows_created": 0,
+                    "wallets_with_replay_history": 0,
+                    "wallets_without_replay_history": len(linked_watchlist_addresses),
+                    "net_replay_shadow_pnl": 0.0,
+                    "net_replay_shadow_edge": 0.0,
+                },
                 "priority_watchlist_rows": [],
                 "recent_shadow_actions": [],
                 "wallet_consistency_table": [],
@@ -726,6 +864,11 @@ class PolymarketResearchService:
             for row in raw_candidates
         ]
         candidates = self._merge_watchlist_metadata(candidates, watchlist_map, trade_rollup, trade_context)
+        source_trade_rows = self.repository.fetch_source_wallet_trade_rows(linked_watchlist_addresses)
+        source_stats_rows = self.repository.fetch_source_wallet_stats(linked_watchlist_addresses)
+        self._apply_linked_wallet_evidence(candidates, watchlist_map, source_trade_rows, source_stats_rows)
+        for candidate in candidates:
+            self._ensure_evidence_defaults(candidate)
         candidates.sort(key=_wallet_sort_key, reverse=True)
 
         discovery_wallets, discovery_source_summary = self._build_discovery_pool(candidates)
@@ -736,6 +879,7 @@ class PolymarketResearchService:
         for candidate in discovery_wallets:
             gate_reason = self._shadow_gate_reason(candidate)
             candidate["shadow_gate_reason"] = gate_reason
+            candidate["shadow_blocker_reason"] = gate_reason
             candidate["shadow_eligible"] = 1 if gate_reason == "eligible" else 0
             if gate_reason == "eligible":
                 shadow_eligible_wallets.append(candidate)
@@ -773,15 +917,29 @@ class PolymarketResearchService:
                 if candidate.get("priority_pinned") and candidate.get("watchlist_mode") == "fast_track_shadow"
             }
         )
+        linked_detailed_addresses = sorted(
+            {
+                candidate["address"].lower()
+                for candidate in discovery_wallets
+                if candidate.get("identity_resolution_status") == "linked"
+                and candidate.get("historical_trade_evidence_status") == EVIDENCE_DETAILED_TRADE_HISTORY
+            }
+        )
         replay_trade_rows = self.repository.fetch_replay_trade_rows(replay_addresses, self.settings.shadow_window_days)
+        source_replay_trade_rows = self.repository.fetch_source_replay_trade_rows(
+            linked_detailed_addresses,
+            self.settings.shadow_window_days,
+        )
         replay_rows = self._build_shadow_replay_rows(
-            replay_trade_rows,
+            replay_trade_rows + source_replay_trade_rows,
             {candidate["address"].lower(): str(candidate["primary_source"]) for candidate in discovery_wallets},
         )
         self.repository.replace_shadow_replay_actions(replay_rows)
+        replay_by_wallet = Counter(str(row["wallet_address"]).lower() for row in replay_rows)
 
         shadow_by_wallet = self._build_shadow_context()
         for candidate in discovery_wallets:
+            candidate["shadow_seeded"] = 1 if replay_by_wallet.get(candidate["address"].lower(), 0) > 0 else 0
             shadow_stats = shadow_by_wallet.get(candidate["address"].lower(), {})
             candidate["closed_shadow_trades"] = int(shadow_stats.get("closed_shadow_trades", 0))
             candidate["shadow_pnl"] = round(float(shadow_stats.get("shadow_pnl", 0.0)), 4)
@@ -889,6 +1047,11 @@ class PolymarketResearchService:
                     "watchlist_mode": candidate["watchlist_mode"],
                     "identity_resolution_status": candidate["identity_resolution_status"],
                     "priority_pinned": candidate["priority_pinned"],
+                    "historical_trade_evidence_status": candidate["historical_trade_evidence_status"],
+                    "historical_trade_rows": candidate["historical_trade_rows"],
+                    "evidence_last_trade_at": candidate["evidence_last_trade_at"],
+                    "shadow_seeded": candidate["shadow_seeded"],
+                    "shadow_blocker_reason": candidate["shadow_blocker_reason"],
                 }
             )
         self.repository.replace_wallet_snapshots(persisted_rows)
@@ -932,6 +1095,11 @@ class PolymarketResearchService:
                     "status": str(row["status"] or "pending_resolution"),
                     "identity_resolution_status": "linked" if wallet_address else "pending_resolution",
                     "promoted_to_shadow": bool(linked_candidate and linked_candidate["shadow_gate_status"] == "promoted"),
+                    "historical_trade_evidence_status": str(linked_candidate.get("historical_trade_evidence_status", EVIDENCE_NO_HISTORICAL)) if linked_candidate else "",
+                    "historical_trade_rows": int(linked_candidate.get("historical_trade_rows", 0)) if linked_candidate else 0,
+                    "evidence_last_trade_at": str(linked_candidate.get("evidence_last_trade_at", "")) if linked_candidate else "",
+                    "shadow_seeded": bool(linked_candidate and int(linked_candidate.get("shadow_seeded", 0) or 0) == 1),
+                    "shadow_blocker_reason": str(linked_candidate.get("shadow_blocker_reason", "")) if linked_candidate else "",
                 }
             )
 
@@ -951,13 +1119,36 @@ class PolymarketResearchService:
             ],
         }
 
-        replay_by_wallet = Counter(str(row["wallet_address"]).lower() for row in replay_rows)
         shadow_replay_summary = {
             "replayed_actions_created": len(replay_rows),
             "wallets_with_replay_history": len(replay_by_wallet),
             "net_shadow_pnl": round(sum(float(row["shadow_pnl"]) for row in replay_rows), 4),
             "net_shadow_edge": round(sum(float(row["shadow_edge"]) for row in replay_rows), 4),
             "eligible_without_trade_history": sum(1 for address in replay_addresses if replay_by_wallet.get(address, 0) == 0),
+        }
+
+        linked_candidates = [
+            candidate
+            for candidate in discovery_wallets
+            if candidate["address"].lower() in set(linked_watchlist_addresses)
+        ]
+        linked_wallet_evidence_summary = {
+            "linked_wallets_total": len(linked_watchlist_addresses),
+            "linked_with_trade_history": sum(1 for row in linked_candidates if row["historical_trade_evidence_status"] == EVIDENCE_DETAILED_TRADE_HISTORY),
+            "linked_stats_only": sum(1 for row in linked_candidates if row["historical_trade_evidence_status"] == EVIDENCE_STATS_ONLY),
+            "linked_without_trade_history": sum(1 for row in linked_candidates if row["historical_trade_evidence_status"] == EVIDENCE_NO_HISTORICAL)
+            + max(len(linked_watchlist_addresses) - len(linked_candidates), 0),
+            "linked_promoted_to_shadow": sum(1 for row in linked_candidates if row["shadow_gate_status"] == "promoted"),
+        }
+        linked_replay_rows = [
+            row for row in replay_rows if str(row["wallet_address"]).lower() in set(linked_watchlist_addresses)
+        ]
+        shadow_evidence_backfill_summary = {
+            "replay_rows_created": len(linked_replay_rows),
+            "wallets_with_replay_history": sum(1 for address in linked_watchlist_addresses if replay_by_wallet.get(address, 0) > 0),
+            "wallets_without_replay_history": sum(1 for address in linked_watchlist_addresses if replay_by_wallet.get(address, 0) == 0),
+            "net_replay_shadow_pnl": round(sum(float(row["shadow_pnl"]) for row in linked_replay_rows), 4),
+            "net_replay_shadow_edge": round(sum(float(row["shadow_edge"]) for row in linked_replay_rows), 4),
         }
 
         priority_watchlist_summary = {
@@ -1020,6 +1211,8 @@ class PolymarketResearchService:
             "priority_watchlist_summary": priority_watchlist_summary,
             "identity_resolution_summary": identity_resolution_summary,
             "shadow_replay_summary": shadow_replay_summary,
+            "linked_wallet_evidence_summary": linked_wallet_evidence_summary,
+            "shadow_evidence_backfill_summary": shadow_evidence_backfill_summary,
             "priority_watchlist_rows": priority_watchlist_rows,
             "recent_shadow_actions": recent_shadow_actions,
             "wallet_consistency_table": clean_discovery_rows,

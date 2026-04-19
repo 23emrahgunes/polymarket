@@ -19,8 +19,9 @@ def normalize_wallet_address(wallet_address: str) -> str:
 
 
 class PolymarketResearchRepository:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, source_db_path: str | None = None):
         self.db_path = db_path
+        self.source_db_path = str(source_db_path or "").strip()
 
     @staticmethod
     def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
@@ -50,6 +51,23 @@ class PolymarketResearchRepository:
             yield connection
         finally:
             connection.close()
+
+    @contextmanager
+    def connect_source(self) -> Iterator[sqlite3.Connection | None]:
+        if self.source_db_path == "" or not Path(self.source_db_path).exists():
+            yield None
+            return
+
+        connection = sqlite3.connect(self.source_db_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _normalized_addresses(addresses: list[str]) -> list[str]:
+        return [str(address).lower().strip() for address in addresses if str(address).strip()]
 
     def ensure_tables(self) -> None:
         with self.connect() as connection:
@@ -145,6 +163,11 @@ class PolymarketResearchRepository:
                     watchlist_mode TEXT NOT NULL DEFAULT '',
                     identity_resolution_status TEXT NOT NULL DEFAULT 'untracked',
                     priority_pinned INTEGER NOT NULL DEFAULT 0,
+                    historical_trade_evidence_status TEXT NOT NULL DEFAULT 'no_historical_evidence',
+                    historical_trade_rows INTEGER NOT NULL DEFAULT 0,
+                    evidence_last_trade_at TEXT,
+                    shadow_seeded INTEGER NOT NULL DEFAULT 0,
+                    shadow_blocker_reason TEXT NOT NULL DEFAULT '',
                     refreshed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -163,6 +186,11 @@ class PolymarketResearchRepository:
                 ("watchlist_mode", "TEXT NOT NULL DEFAULT ''"),
                 ("identity_resolution_status", "TEXT NOT NULL DEFAULT 'untracked'"),
                 ("priority_pinned", "INTEGER NOT NULL DEFAULT 0"),
+                ("historical_trade_evidence_status", "TEXT NOT NULL DEFAULT 'no_historical_evidence'"),
+                ("historical_trade_rows", "INTEGER NOT NULL DEFAULT 0"),
+                ("evidence_last_trade_at", "TEXT"),
+                ("shadow_seeded", "INTEGER NOT NULL DEFAULT 0"),
+                ("shadow_blocker_reason", "TEXT NOT NULL DEFAULT ''"),
             ]:
                 self._ensure_column(connection, "polymarket_research_wallets", column_name, column_def)
             connection.execute(
@@ -419,6 +447,172 @@ class PolymarketResearchRepository:
                 tuple(normalized_addresses) + (f"-{max(window_days, 1)} days",),
             )
             return cursor.fetchall()
+
+    def fetch_source_wallet_trade_rows(self, addresses: list[str]) -> list[sqlite3.Row]:
+        normalized_addresses = self._normalized_addresses(addresses)
+        if not normalized_addresses:
+            return []
+
+        with self.connect_source() as connection:
+            if connection is None or not self._table_exists(connection, "trades"):
+                return []
+
+            trade_columns = self._table_columns(connection, "trades")
+
+            def column_or_fallback(name: str, fallback: str) -> str:
+                return name if name in trade_columns else fallback
+
+            occurred_expr = f"COALESCE({column_or_fallback('closed_at', 'NULL')}, {column_or_fallback('timestamp', 'NULL')}, CURRENT_TIMESTAMP)"
+            category_expr = f"COALESCE({column_or_fallback('category', 'NULL')}, 'UNKNOWN')"
+            status_expr = f"COALESCE({column_or_fallback('status', 'NULL')}, '')"
+            pnl_expr = f"COALESCE({column_or_fallback('pnl', 'NULL')}, 0)"
+
+            placeholders = ", ".join("?" for _ in normalized_addresses)
+            cursor = connection.execute(
+                f"""
+                SELECT
+                    LOWER(COALESCE(whale_address, '')) AS address,
+                    {pnl_expr} AS pnl,
+                    {occurred_expr} AS occurred_at,
+                    {category_expr} AS category,
+                    {status_expr} AS status
+                FROM trades
+                WHERE LOWER(COALESCE(whale_address, '')) IN ({placeholders})
+                  AND {status_expr} LIKE 'CLOSED%'
+                ORDER BY {occurred_expr} ASC
+                """,
+                tuple(normalized_addresses),
+            )
+            return cursor.fetchall()
+
+    def fetch_source_replay_trade_rows(self, addresses: list[str], window_days: int) -> list[sqlite3.Row]:
+        normalized_addresses = self._normalized_addresses(addresses)
+        if not normalized_addresses:
+            return []
+
+        with self.connect_source() as connection:
+            if connection is None or not self._table_exists(connection, "trades"):
+                return []
+
+            trade_columns = self._table_columns(connection, "trades")
+
+            def column_or_fallback(name: str, fallback: str) -> str:
+                return name if name in trade_columns else fallback
+
+            id_expr = "(COALESCE(id, rowid) + 1000000000)" if "id" in trade_columns else "(rowid + 1000000000)"
+            venue_column = column_or_fallback("venue", "'polymarket'")
+            venue_expr = f"COALESCE({venue_column}, 'polymarket')"
+            market_expr = f"COALESCE({column_or_fallback('market_id', 'NULL')}, {column_or_fallback('symbol_or_market_id', 'NULL')}, 'unknown-market')"
+            size_expr = f"COALESCE({column_or_fallback('size', 'NULL')}, ABS(COALESCE({column_or_fallback('pnl', 'NULL')}, 0)), 0)"
+            occurred_expr = f"COALESCE({column_or_fallback('closed_at', 'NULL')}, {column_or_fallback('timestamp', 'NULL')}, CURRENT_TIMESTAMP)"
+            category_expr = f"COALESCE({column_or_fallback('category', 'NULL')}, 'UNKNOWN')"
+            status_expr = f"COALESCE({column_or_fallback('status', 'NULL')}, '')"
+            side_expr = f"COALESCE({column_or_fallback('side', 'NULL')}, '')"
+            source_signal_expr = f"COALESCE({column_or_fallback('source_signal', 'NULL')}, '')"
+            pnl_expr = f"COALESCE({column_or_fallback('pnl', 'NULL')}, 0)"
+
+            placeholders = ", ".join("?" for _ in normalized_addresses)
+            cursor = connection.execute(
+                f"""
+                SELECT
+                    {id_expr} AS id,
+                    LOWER(COALESCE(whale_address, '')) AS wallet_address,
+                    {venue_expr} AS venue,
+                    {market_expr} AS market_id,
+                    {category_expr} AS category,
+                    {status_expr} AS status,
+                    {pnl_expr} AS pnl,
+                    {size_expr} AS size,
+                    {occurred_expr} AS occurred_at,
+                    {side_expr} AS side,
+                    {source_signal_expr} AS source_signal
+                FROM trades
+                WHERE LOWER(COALESCE(whale_address, '')) IN ({placeholders})
+                  AND {status_expr} LIKE 'CLOSED%'
+                  AND {venue_expr} = 'polymarket'
+                  AND {occurred_expr} >= datetime('now', ?)
+                ORDER BY {occurred_expr} ASC, id ASC
+                """,
+                tuple(normalized_addresses) + (f"-{max(window_days, 1)} days",),
+            )
+            return cursor.fetchall()
+
+    def fetch_source_wallet_stats(self, addresses: list[str]) -> list[sqlite3.Row]:
+        normalized_addresses = self._normalized_addresses(addresses)
+        if not normalized_addresses:
+            return []
+
+        with self.connect_source() as connection:
+            if connection is None:
+                return []
+
+            placeholders = ", ".join("?" for _ in normalized_addresses)
+            has_whale_stats = self._table_exists(connection, "whale_stats")
+            has_whale_wallets = self._table_exists(connection, "whale_wallets")
+
+            if has_whale_stats:
+                stats_columns = self._table_columns(connection, "whale_stats")
+                wallet_columns = self._table_columns(connection, "whale_wallets") if has_whale_wallets else set()
+                wallet_join = (
+                    "LEFT JOIN whale_wallets ON LOWER(whale_wallets.address) = LOWER(whale_stats.address)"
+                    if has_whale_wallets
+                    else ""
+                )
+                trust_expr = "COALESCE(whale_stats.trust_score, 0.5)" if "trust_score" in stats_columns else "0.5"
+                total_expr = "COALESCE(whale_stats.total_trades, 0)" if "total_trades" in stats_columns else "0"
+                pnl_expr = "COALESCE(whale_stats.total_pnl, 0)" if "total_pnl" in stats_columns else "0"
+                source_expr = "COALESCE(whale_wallets.source_type, 'stats_only')" if "source_type" in wallet_columns else "'stats_only'"
+                event_expr = "COALESCE(whale_wallets.event_count_24h, 0)" if "event_count_24h" in wallet_columns else "0"
+                amount_expr = "COALESCE(whale_wallets.last_event_amount, 0)" if "last_event_amount" in wallet_columns else "0"
+                last_seen_expr = "COALESCE(whale_wallets.last_seen_at, '')" if "last_seen_at" in wallet_columns else "''"
+                category_expr = "COALESCE(whale_wallets.last_event_category, 'UNKNOWN')" if "last_event_category" in wallet_columns else "'UNKNOWN'"
+                cursor = connection.execute(
+                    f"""
+                    SELECT
+                        LOWER(whale_stats.address) AS address,
+                        {trust_expr} AS trust_score,
+                        {total_expr} AS closed_trade_count,
+                        {pnl_expr} AS realized_pnl,
+                        {source_expr} AS source_type,
+                        {event_expr} AS event_count_24h,
+                        {amount_expr} AS last_event_amount,
+                        {last_seen_expr} AS last_seen_at,
+                        {category_expr} AS specialization_hint
+                    FROM whale_stats
+                    {wallet_join}
+                    WHERE LOWER(whale_stats.address) IN ({placeholders})
+                    """,
+                    tuple(normalized_addresses),
+                )
+                return cursor.fetchall()
+
+            if has_whale_wallets:
+                wallet_columns = self._table_columns(connection, "whale_wallets")
+                source_expr = "COALESCE(source_type, 'whale_wallets')" if "source_type" in wallet_columns else "'whale_wallets'"
+                event_expr = "COALESCE(event_count_24h, 0)" if "event_count_24h" in wallet_columns else "0"
+                amount_expr = "COALESCE(last_event_amount, 0)" if "last_event_amount" in wallet_columns else "0"
+                last_seen_expr = "COALESCE(last_seen_at, '')" if "last_seen_at" in wallet_columns else "''"
+                category_expr = "COALESCE(last_event_category, 'UNKNOWN')" if "last_event_category" in wallet_columns else "'UNKNOWN'"
+                cursor = connection.execute(
+                    f"""
+                    SELECT
+                        LOWER(address) AS address,
+                        0.5 AS trust_score,
+                        0 AS closed_trade_count,
+                        0.0 AS realized_pnl,
+                        {source_expr} AS source_type,
+                        {event_expr} AS event_count_24h,
+                        {amount_expr} AS last_event_amount,
+                        {last_seen_expr} AS last_seen_at,
+                        {category_expr} AS specialization_hint
+                    FROM whale_wallets
+                    WHERE LOWER(address) IN ({placeholders})
+                    """,
+                    tuple(normalized_addresses),
+                )
+                return cursor.fetchall()
+
+            return []
 
     def fetch_shadow_action_rows(self, window_days: int) -> list[sqlite3.Row]:
         with self.connect() as connection:
@@ -703,6 +897,11 @@ class PolymarketResearchRepository:
                         watchlist_mode,
                         identity_resolution_status,
                         priority_pinned,
+                        historical_trade_evidence_status,
+                        historical_trade_rows,
+                        evidence_last_trade_at,
+                        shadow_seeded,
+                        shadow_blocker_reason,
                         refreshed_at
                     ) VALUES (
                         :address,
@@ -745,6 +944,11 @@ class PolymarketResearchRepository:
                         :watchlist_mode,
                         :identity_resolution_status,
                         :priority_pinned,
+                        :historical_trade_evidence_status,
+                        :historical_trade_rows,
+                        :evidence_last_trade_at,
+                        :shadow_seeded,
+                        :shadow_blocker_reason,
                         CURRENT_TIMESTAMP
                     )
                     """,
@@ -797,6 +1001,11 @@ class PolymarketResearchRepository:
                     watchlist_mode,
                     identity_resolution_status,
                     priority_pinned,
+                    historical_trade_evidence_status,
+                    historical_trade_rows,
+                    evidence_last_trade_at,
+                    shadow_seeded,
+                    shadow_blocker_reason,
                     refreshed_at
                 FROM polymarket_research_wallets
                 ORDER BY discovery_rank ASC, consistency_score DESC, trust_score DESC

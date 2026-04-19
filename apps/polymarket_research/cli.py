@@ -16,6 +16,8 @@ SUMMARY_SECTIONS = [
     "WALLET_PROVENANCE_SUMMARY",
     "PRIORITY_WATCHLIST_SUMMARY",
     "IDENTITY_RESOLUTION_SUMMARY",
+    "LINKED_WALLET_EVIDENCE_SUMMARY",
+    "SHADOW_EVIDENCE_BACKFILL_SUMMARY",
     "SHADOW_REPLAY_SUMMARY",
 ]
 
@@ -33,11 +35,14 @@ def _settings_from_args(args: argparse.Namespace) -> PolymarketResearchSettings:
     settings = PolymarketResearchSettings()
     if getattr(args, "db_path", None):
         settings.db_path = str(args.db_path)
+    if getattr(args, "source_db_path", None):
+        settings.source_db_path = str(args.source_db_path)
     return settings
 
 
 def _repository_from_args(args: argparse.Namespace) -> PolymarketResearchRepository:
-    return PolymarketResearchRepository(_settings_from_args(args).db_path)
+    settings = _settings_from_args(args)
+    return PolymarketResearchRepository(settings.db_path, settings.source_db_path)
 
 
 def _run_summary(args: argparse.Namespace) -> int:
@@ -85,6 +90,10 @@ def _add_db_path_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--db-path",
         help="Override SQLite DB path. Defaults to GHOST_TRADER_DB_PATH or data/ghost_trader.db.",
+    )
+    parser.add_argument(
+        "--source-db-path",
+        help="Override linked-wallet evidence source DB. Defaults to POLYMARKET_RESEARCH_SOURCE_DB_PATH.",
     )
 
 

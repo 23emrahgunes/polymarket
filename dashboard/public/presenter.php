@@ -1663,10 +1663,39 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
         'single_source_wallets' => 0,
         'seed_only_wallets' => 0,
     ];
+    $emptyLinkedWalletEvidenceSummary = [
+        'linked_wallets_total' => 0,
+        'linked_with_trade_history' => 0,
+        'linked_stats_only' => 0,
+        'linked_without_trade_history' => 0,
+        'linked_promoted_to_shadow' => 0,
+    ];
+    $emptyShadowEvidenceBackfillSummary = [
+        'replay_rows_created' => 0,
+        'wallets_with_replay_history' => 0,
+        'wallets_without_replay_history' => 0,
+        'net_replay_shadow_pnl' => 0.0,
+        'net_replay_shadow_edge' => 0.0,
+    ];
 
     if (dashboard_table_exists($pdo, 'polymarket_research_wallets')) {
         $persistedCount = (int) ((dashboard_fetch_one($pdo, 'SELECT COUNT(*) AS count FROM polymarket_research_wallets')['count'] ?? 0));
         if ($persistedCount > 0) {
+            $historicalEvidenceExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'historical_trade_evidence_status')
+                ? "historical_trade_evidence_status"
+                : "'no_historical_evidence' AS historical_trade_evidence_status";
+            $historicalRowsExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'historical_trade_rows')
+                ? "historical_trade_rows"
+                : "0 AS historical_trade_rows";
+            $evidenceLastTradeExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'evidence_last_trade_at')
+                ? "evidence_last_trade_at"
+                : "'' AS evidence_last_trade_at";
+            $shadowSeededExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'shadow_seeded')
+                ? "shadow_seeded"
+                : "0 AS shadow_seeded";
+            $shadowBlockerExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'shadow_blocker_reason')
+                ? "shadow_blocker_reason"
+                : "shadow_gate_reason AS shadow_blocker_reason";
             $walletRows = dashboard_fetch_all(
                 $pdo,
                 "
@@ -1711,6 +1740,11 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                     watchlist_mode,
                     identity_resolution_status,
                     priority_pinned,
+                    {$historicalEvidenceExpr},
+                    {$historicalRowsExpr},
+                    {$evidenceLastTradeExpr},
+                    {$shadowSeededExpr},
+                    {$shadowBlockerExpr},
                     refreshed_at
                 FROM polymarket_research_wallets
                 ORDER BY discovery_rank ASC, consistency_score DESC, trust_score DESC
@@ -1765,6 +1799,11 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                     'watchlist_mode' => (string) ($row['watchlist_mode'] ?? ''),
                     'identity_resolution_status' => (string) ($row['identity_resolution_status'] ?? 'untracked'),
                     'priority_pinned' => !empty($row['priority_pinned']),
+                    'historical_trade_evidence_status' => (string) ($row['historical_trade_evidence_status'] ?? 'no_historical_evidence'),
+                    'historical_trade_rows' => (int) ($row['historical_trade_rows'] ?? 0),
+                    'evidence_last_trade_at' => (string) ($row['evidence_last_trade_at'] ?? ''),
+                    'shadow_seeded' => !empty($row['shadow_seeded']),
+                    'shadow_blocker_reason' => (string) ($row['shadow_blocker_reason'] ?? $row['shadow_gate_reason'] ?? ''),
                 ],
                 $walletRows
             );
@@ -1880,6 +1919,7 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
             ];
 
             $recentShadowActions = [];
+            $shadowReplayRows = [];
             $shadowReplaySummary = [
                 'replayed_actions_created' => 0,
                 'wallets_with_replay_history' => 0,
@@ -1980,6 +2020,8 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                 'linked_entries' => 0,
                 'unresolved_but_ranked_entries' => 0,
             ];
+            $linkedWalletEvidenceSummary = $emptyLinkedWalletEvidenceSummary;
+            $shadowEvidenceBackfillSummary = $emptyShadowEvidenceBackfillSummary;
             if (dashboard_table_exists($pdo, 'polymarket_research_watchlist')) {
                 $watchlistRows = dashboard_fetch_all(
                     $pdo,
@@ -2000,11 +2042,17 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                 $pendingRows = 0;
                 $unresolvedRankedRows = 0;
                 $promotedPriorityWallets = 0;
+                $linkedWithTradeHistory = 0;
+                $linkedStatsOnly = 0;
+                $linkedWithoutTradeHistory = 0;
+                $linkedPromotedToShadow = 0;
+                $linkedWalletAddresses = [];
                 foreach ($watchlistRows as $row) {
                     $walletAddress = strtolower(trim((string) ($row['wallet_address'] ?? '')));
                     $linked = $walletAddress !== '';
                     if ($linked) {
                         $linkedRows += 1;
+                        $linkedWalletAddresses[$walletAddress] = true;
                     } else {
                         $pendingRows += 1;
                         if ((int) ($row['priority_rank'] ?? 0) > 0) {
@@ -2024,6 +2072,19 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                         && (string) ($linkedCandidate['shadow_gate_status'] ?? '') === 'promoted';
                     if ($promotedToShadow) {
                         $promotedPriorityWallets += 1;
+                        $linkedPromotedToShadow += 1;
+                    }
+                    $evidenceStatus = $linkedCandidate !== null
+                        ? (string) ($linkedCandidate['historical_trade_evidence_status'] ?? 'no_historical_evidence')
+                        : ($linked ? 'no_historical_evidence' : '');
+                    if ($linked) {
+                        if ($evidenceStatus === 'detailed_trade_history') {
+                            $linkedWithTradeHistory += 1;
+                        } elseif ($evidenceStatus === 'stats_only') {
+                            $linkedStatsOnly += 1;
+                        } else {
+                            $linkedWithoutTradeHistory += 1;
+                        }
                     }
                     $priorityWatchlistRows[] = [
                         'display_name' => (string) ($row['display_name'] ?? ''),
@@ -2035,6 +2096,11 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                         'status' => (string) ($row['status'] ?? 'pending_resolution'),
                         'identity_resolution_status' => $linked ? 'linked' : 'pending_resolution',
                         'promoted_to_shadow' => $promotedToShadow,
+                        'historical_trade_evidence_status' => $evidenceStatus,
+                        'historical_trade_rows' => $linkedCandidate !== null ? (int) ($linkedCandidate['historical_trade_rows'] ?? 0) : 0,
+                        'evidence_last_trade_at' => $linkedCandidate !== null ? (string) ($linkedCandidate['evidence_last_trade_at'] ?? '') : '',
+                        'shadow_seeded' => $linkedCandidate !== null && !empty($linkedCandidate['shadow_seeded']),
+                        'shadow_blocker_reason' => $linkedCandidate !== null ? (string) ($linkedCandidate['shadow_blocker_reason'] ?? $linkedCandidate['shadow_gate_reason'] ?? '') : '',
                     ];
                 }
                 $priorityWatchlistSummary = [
@@ -2047,6 +2113,30 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                     'pending_handle_only_entries' => $pendingRows,
                     'linked_entries' => $linkedRows,
                     'unresolved_but_ranked_entries' => $unresolvedRankedRows,
+                ];
+                $linkedWalletEvidenceSummary = [
+                    'linked_wallets_total' => $linkedRows,
+                    'linked_with_trade_history' => $linkedWithTradeHistory,
+                    'linked_stats_only' => $linkedStatsOnly,
+                    'linked_without_trade_history' => $linkedWithoutTradeHistory,
+                    'linked_promoted_to_shadow' => $linkedPromotedToShadow,
+                ];
+
+                $linkedReplayRows = [];
+                $linkedReplayWallets = [];
+                foreach ($shadowReplayRows as $row) {
+                    $walletAddress = strtolower(trim((string) ($row['wallet_address'] ?? '')));
+                    if ($walletAddress !== '' && isset($linkedWalletAddresses[$walletAddress])) {
+                        $linkedReplayRows[] = $row;
+                        $linkedReplayWallets[$walletAddress] = true;
+                    }
+                }
+                $shadowEvidenceBackfillSummary = [
+                    'replay_rows_created' => count($linkedReplayRows),
+                    'wallets_with_replay_history' => count($linkedReplayWallets),
+                    'wallets_without_replay_history' => max($linkedRows - count($linkedReplayWallets), 0),
+                    'net_replay_shadow_pnl' => round(array_sum(array_map(static fn (array $row): float => (float) ($row['shadow_pnl'] ?? 0.0), $linkedReplayRows)), 4),
+                    'net_replay_shadow_edge' => round(array_sum(array_map(static fn (array $row): float => (float) ($row['shadow_edge'] ?? 0.0), $linkedReplayRows)), 4),
                 ];
             }
 
@@ -2085,6 +2175,8 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                 'priority_watchlist_summary' => $priorityWatchlistSummary,
                 'identity_resolution_summary' => $identityResolutionSummary,
                 'shadow_replay_summary' => $shadowReplaySummary,
+                'linked_wallet_evidence_summary' => $linkedWalletEvidenceSummary,
+                'shadow_evidence_backfill_summary' => $shadowEvidenceBackfillSummary,
                 'priority_watchlist_rows' => $priorityWatchlistRows,
                 'recent_shadow_actions' => $recentShadowActions,
                 'wallet_consistency_table' => array_slice($candidates, 0, 12),
@@ -2106,6 +2198,8 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
             'priority_watchlist_summary' => [],
             'identity_resolution_summary' => [],
             'shadow_replay_summary' => [],
+            'linked_wallet_evidence_summary' => $emptyLinkedWalletEvidenceSummary,
+            'shadow_evidence_backfill_summary' => $emptyShadowEvidenceBackfillSummary,
             'priority_watchlist_rows' => [],
             'recent_shadow_actions' => [],
             'wallet_consistency_table' => [],
@@ -2328,6 +2422,8 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
         'priority_watchlist_summary' => [],
         'identity_resolution_summary' => [],
         'shadow_replay_summary' => [],
+        'linked_wallet_evidence_summary' => $emptyLinkedWalletEvidenceSummary,
+        'shadow_evidence_backfill_summary' => $emptyShadowEvidenceBackfillSummary,
         'priority_watchlist_rows' => [],
         'recent_shadow_actions' => $recentShadowActions,
         'wallet_consistency_table' => array_slice($shadowWalletTable, 0, 12),
@@ -2423,6 +2519,10 @@ function dashboard_build_dashboard_glossary(): array
             ['term' => 'Manual link', 'meaning' => 'Dogruladigimiz cuzdan adresini watchlist kaydina elle baglama.'],
             ['term' => 'Fast-track shadow', 'meaning' => 'Normal sirayi beklemeden shadow takibe alinacak.'],
             ['term' => 'Shadow replay', 'meaning' => 'Gecmis kapanmis islemlerden gecikmeli takip simulasyonu.'],
+            ['term' => 'Historical trade evidence', 'meaning' => 'Bu cuzdan icin gecmis kapanmis islem kaniti var mi.'],
+            ['term' => 'Stats only', 'meaning' => 'Detay islem listesi yok; sadece toplu performans ozeti var.'],
+            ['term' => 'Shadow seeded', 'meaning' => 'Bu cuzdan icin shadow simulasyon gecmisi olusturuldu.'],
+            ['term' => 'Linked but unproven', 'meaning' => 'Cuzdan baglandi ama henuz yeterli gecmis kanit yok.'],
         ],
         'binance-technical' => [
             ['term' => 'Fresh 7g paper PnL', 'meaning' => 'Yeni Binance lane tarafindan son 7 günde acilan paper islemlerden gelen net sonuc.'],

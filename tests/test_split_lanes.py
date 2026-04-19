@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -128,6 +129,105 @@ def _create_polymarket_research_db(db_path: Path) -> None:
             ("0xeee", "polymarket", "Ethereum Up or Down - Apr 13", "CLOSED", 90.0, 85.0, "2026-04-13 06:00:00", "2026-04-13 06:00:00", "CRYPTO", "manual_replay", "BUY"),
             ("0xeee", "polymarket", "Bitcoin Up or Down - Apr 11", "CLOSED", 60.0, 65.0, "2026-04-11 06:00:00", "2026-04-11 06:00:00", "CRYPTO", "manual_replay", "BUY"),
         ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def _create_polymarket_source_evidence_db(
+    db_path: Path,
+    *,
+    detailed_address: str,
+    stats_address: str,
+) -> None:
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            whale_address TEXT,
+            venue TEXT,
+            market_id TEXT,
+            status TEXT,
+            pnl REAL,
+            size REAL,
+            closed_at TEXT,
+            timestamp TEXT,
+            category TEXT,
+            source_signal TEXT,
+            side TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE whale_wallets (
+            address TEXT PRIMARY KEY,
+            source_type TEXT,
+            discovery_score REAL,
+            event_count_24h INTEGER,
+            last_event_amount REAL,
+            last_event_category TEXT,
+            last_seen_at TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE whale_stats (
+            address TEXT PRIMARY KEY,
+            trust_score REAL,
+            total_trades INTEGER,
+            total_pnl REAL
+        )
+        """
+    )
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    trade_rows = []
+    for index, (pnl, size) in enumerate(
+        [(1200.0, 550.0), (900.0, 420.0), (800.0, 360.0), (650.0, 330.0), (500.0, 280.0)],
+        start=1,
+    ):
+        occurred_at = (now - timedelta(days=index)).strftime("%Y-%m-%d %H:%M:%S")
+        trade_rows.append(
+            (
+                detailed_address,
+                "polymarket",
+                f"Bitcoin Up or Down - source replay {index}",
+                "CLOSED",
+                pnl,
+                size,
+                occurred_at,
+                occurred_at,
+                "CRYPTO",
+                "manual_source_replay",
+                "BUY",
+            )
+        )
+    cur.executemany(
+        """
+        INSERT INTO trades (
+            whale_address, venue, market_id, status, pnl, size, closed_at,
+            timestamp, category, source_signal, side
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        trade_rows,
+    )
+    stats_last_seen = (now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute(
+        """
+        INSERT INTO whale_wallets (
+            address, source_type, discovery_score, event_count_24h,
+            last_event_amount, last_event_category, last_seen_at, enabled
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (stats_address, "manual_seed", 0.77, 6, 2400.0, "CRYPTO", stats_last_seen, 1),
+    )
+    cur.execute(
+        "INSERT INTO whale_stats (address, trust_score, total_trades, total_pnl) VALUES (?, ?, ?, ?)",
+        (stats_address, 0.71, 8, 2100.0),
     )
     conn.commit()
     conn.close()
@@ -583,6 +683,111 @@ def test_polymarket_research_cli_watchlist_commands(tmp_path: Path, capsys: pyte
     assert "0x-prefixed" in invalid_result.err
 
 
+def test_polymarket_linked_wallet_evidence_backfill_and_replay_seed(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket_research.db"
+    source_db_path = tmp_path / "legacy_source.db"
+    _create_polymarket_research_db(db_path)
+
+    detailed_address = "0x1111111111111111111111111111111111111111"
+    stats_address = "0x2222222222222222222222222222222222222222"
+    no_evidence_address = "0x3333333333333333333333333333333333333333"
+    _create_polymarket_source_evidence_db(
+        source_db_path,
+        detailed_address=detailed_address,
+        stats_address=stats_address,
+    )
+
+    repository = PolymarketResearchRepository(str(db_path), str(source_db_path))
+    repository.ensure_tables()
+    repository.link_watchlist_wallet(
+        row_id=1,
+        wallet_address=detailed_address,
+        notes="verified detailed history",
+    )
+    stats_row = repository.add_watchlist_row(
+        display_name="stats-only-specialist",
+        profile_ref="https://polymarket.com/tr/@stats-only-specialist",
+        priority_rank=2,
+        priority_mode="fast_track_shadow",
+        target_specialization="CRYPTO",
+        notes="stats-only proof case",
+    )
+    repository.link_watchlist_wallet(
+        row_id=int(stats_row["id"]),
+        wallet_address=stats_address,
+        notes="verified stats only",
+    )
+    empty_row = repository.add_watchlist_row(
+        display_name="no-evidence-specialist",
+        profile_ref="https://polymarket.com/tr/@no-evidence-specialist",
+        priority_rank=3,
+        priority_mode="fast_track_shadow",
+        target_specialization="CRYPTO",
+        notes="no historical source evidence",
+    )
+    repository.link_watchlist_wallet(
+        row_id=int(empty_row["id"]),
+        wallet_address=no_evidence_address,
+        notes="verified address only",
+    )
+
+    service = PolymarketResearchService(
+        PolymarketResearchSettings(
+            db_path=str(db_path),
+            source_db_path=str(source_db_path),
+            discovery_pool_size=50,
+            shadow_pool_size=20,
+            copy_ready_size=5,
+            shadow_window_days=14,
+        ),
+        repository,
+    )
+    summary = service.build_summary()
+
+    watchlist_by_address = {
+        row["wallet_address"]: row
+        for row in summary["priority_watchlist_rows"]
+        if row["wallet_address"]
+    }
+    persisted_by_address = {
+        str(row["address"]): row for row in repository.fetch_persisted_wallet_snapshots()
+    }
+
+    assert summary["linked_wallet_evidence_summary"]["linked_wallets_total"] == 3
+    assert summary["linked_wallet_evidence_summary"]["linked_with_trade_history"] == 1
+    assert summary["linked_wallet_evidence_summary"]["linked_stats_only"] == 1
+    assert summary["linked_wallet_evidence_summary"]["linked_without_trade_history"] == 1
+    assert summary["linked_wallet_evidence_summary"]["linked_promoted_to_shadow"] >= 1
+
+    assert summary["shadow_evidence_backfill_summary"]["replay_rows_created"] == 5
+    assert summary["shadow_evidence_backfill_summary"]["wallets_with_replay_history"] == 1
+    assert summary["shadow_evidence_backfill_summary"]["wallets_without_replay_history"] == 2
+    assert summary["shadow_evidence_backfill_summary"]["net_replay_shadow_pnl"] > 0
+    assert summary["shadow_evidence_backfill_summary"]["net_replay_shadow_edge"] > 0
+
+    detailed_row = watchlist_by_address[detailed_address]
+    assert detailed_row["historical_trade_evidence_status"] == "detailed_trade_history"
+    assert detailed_row["historical_trade_rows"] == 5
+    assert detailed_row["shadow_seeded"] is True
+    assert detailed_row["promoted_to_shadow"] is True
+    assert detailed_row["shadow_blocker_reason"] == "eligible"
+
+    stats_only_row = watchlist_by_address[stats_address]
+    assert stats_only_row["historical_trade_evidence_status"] == "stats_only"
+    assert stats_only_row["historical_trade_rows"] == 8
+    assert stats_only_row["shadow_seeded"] is False
+
+    no_evidence_row = watchlist_by_address[no_evidence_address]
+    assert no_evidence_row["historical_trade_evidence_status"] == "no_historical_evidence"
+    assert no_evidence_row["historical_trade_rows"] == 0
+    assert no_evidence_row["shadow_seeded"] is False
+
+    assert persisted_by_address[detailed_address]["historical_trade_evidence_status"] == "detailed_trade_history"
+    assert persisted_by_address[detailed_address]["historical_trade_rows"] == 5
+    assert persisted_by_address[detailed_address]["shadow_seeded"] == 1
+    assert persisted_by_address[detailed_address]["shadow_blocker_reason"] == "eligible"
+
+
 def test_polymarket_research_wrapper_script_runs_via_subprocess(tmp_path: Path) -> None:
     db_path = tmp_path / "polymarket_research_wrapper.db"
     _create_polymarket_research_db(db_path)
@@ -604,6 +809,8 @@ def test_polymarket_research_wrapper_script_runs_via_subprocess(tmp_path: Path) 
 
     assert completed.returncode == 0, completed.stderr
     assert "DISCOVERY_SOURCE_SUMMARY" in completed.stdout
+    assert "LINKED_WALLET_EVIDENCE_SUMMARY" in completed.stdout
+    assert "SHADOW_EVIDENCE_BACKFILL_SUMMARY" in completed.stdout
     assert "POLYMARKET_RESEARCH_SUMMARY_JSON" in completed.stdout
 
 
