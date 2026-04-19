@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from apps.binance_technical.config import BinanceTechnicalSettings
+from apps.binance_technical.provider import MarketFrame, MarketSnapshot
 from apps.binance_technical.repository import BinanceTechnicalRepository
+from apps.binance_technical.runtime import BinanceTechnicalRuntime
 from apps.binance_technical.service import BinanceTechnicalService
+from apps.binance_technical.signal_engine import TechnicalSignal
 from apps.polymarket_research.cli import main as polymarket_research_cli_main
 from apps.polymarket_research.config import PolymarketResearchSettings
 from apps.polymarket_research.repository import PolymarketResearchRepository
@@ -865,3 +870,242 @@ def test_binance_technical_service_builds_fresh_and_legacy_summaries(tmp_path: P
     assert summary["legacy_position_summary"]["legacy_open_positions"] == 1
     assert summary["legacy_position_summary"]["strict_fresh_positions"] == 1
     assert "ETH/USDT" in summary["legacy_position_summary"]["legacy_symbols"]
+
+
+class _FakeMarketDataProvider:
+    def __init__(self, frames: dict[tuple[str, str], MarketFrame]) -> None:
+        self._frames = frames
+
+    def fetch_market_frame(self, symbol: str, venue: str, timeframe: str, ohlcv_limit: int) -> MarketFrame:
+        return self._frames[(venue, symbol.upper())]
+
+
+class _FakeSignalEngine:
+    def __init__(self, signals: dict[tuple[str, str], TechnicalSignal]) -> None:
+        self._signals = signals
+
+    def score(
+        self,
+        *,
+        symbol: str,
+        closes: list[float],
+        volumes: list[float],
+        snapshot: MarketSnapshot,
+        min_score: float,
+        timeframe: str,
+        paper_recovery: bool = False,
+        force_sample_enabled: bool = False,
+        force_min_score: float = 0.5,
+    ) -> TechnicalSignal:
+        return self._signals[(snapshot.venue, symbol.upper())]
+
+
+def _market_frame(symbol: str, venue: str, *, spread_pct: float = 0.002, mark_price: float = 100.0) -> MarketFrame:
+    best_bid = mark_price * (1.0 - (spread_pct / 2.0))
+    best_ask = mark_price * (1.0 + (spread_pct / 2.0))
+    return MarketFrame(
+        symbol=symbol.upper(),
+        venue=venue,
+        timeframe="5m",
+        closes=[float(100 + step) for step in range(80)],
+        volumes=[1_000_000.0 + float(step * 5_000) for step in range(80)],
+        snapshot=MarketSnapshot(
+            symbol=f"{symbol.upper()}/USDT:USDT" if venue == "binance_futures" else f"{symbol.upper()}/USDT",
+            venue=venue,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            last_price=mark_price,
+            mark_price=mark_price,
+            mid_price=mark_price,
+            spread_pct=spread_pct,
+            volume_24h=5_000_000.0,
+            snapshot_quality="trusted_ticker_book",
+            bid_source="ticker.bid",
+            ask_source="ticker.ask",
+            spread_source="ticker_book",
+            orderbook_fallback_used=False,
+            orderbook_repriced=False,
+            raw_ticker_bid=best_bid,
+            raw_ticker_ask=best_ask,
+            raw_info_bid=None,
+            raw_info_ask=None,
+            mark_mid_gap_pct=0.0,
+            last_mid_gap_pct=0.0,
+            is_valid=True,
+            invalid_reason=None,
+        ),
+    )
+
+
+def _technical_signal(
+    *,
+    symbol: str,
+    direction: str,
+    should_trade: bool,
+    score: float,
+    threshold: float,
+    reasons: list[str] | None = None,
+    inputs: dict[str, Any] | None = None,
+) -> TechnicalSignal:
+    return TechnicalSignal(
+        symbol=symbol.upper(),
+        score=score,
+        threshold=threshold,
+        should_trade=should_trade,
+        direction=direction,
+        reasons=list(reasons or []),
+        inputs=dict(inputs or {}),
+    )
+
+
+def test_binance_runtime_run_once_creates_decision_execute_and_position(tmp_path: Path) -> None:
+    db_path = tmp_path / "binance_runtime_entry.db"
+    repository = BinanceTechnicalRepository(str(db_path))
+    settings = BinanceTechnicalSettings(
+        db_path=str(db_path),
+        symbols=["BTC"],
+        futures_enabled=True,
+        spot_enabled=False,
+    )
+    frames = {
+        ("binance_futures", "BTC"): _market_frame("BTC", "binance_futures", mark_price=100.0),
+    }
+    signals = {
+        ("binance_futures", "BTC"): _technical_signal(
+            symbol="BTC",
+            direction="LONG",
+            should_trade=True,
+            score=0.78,
+            threshold=0.54,
+            inputs={"score_blocker_labels": [], "snapshot_quality": "trusted_ticker_book"},
+        ),
+    }
+    runtime = BinanceTechnicalRuntime(
+        settings,
+        repository=repository,
+        provider=_FakeMarketDataProvider(frames),
+        signal_engine=_FakeSignalEngine(signals),
+    )
+
+    summary = runtime.run_once()
+
+    open_positions = repository.fetch_open_positions_for_venues(("binance_futures",))
+    open_orders = repository.fetch_open_orders("binance_futures", "BTC/USDT:USDT")
+    decisions = repository.fetch_technical_decision_rows(7)
+    runtime_snapshot = repository.fetch_runtime_status_snapshot()
+
+    assert summary["fresh_technical_summary"]["fresh_execute_count"] == 1
+    assert len(open_positions) == 1
+    assert len(open_orders) == 2
+    assert [row["action"] for row in decisions] == ["execute", "decision"]
+    execute_inputs = json.loads(decisions[0]["inputs_json"] or "{}")
+    assert execute_inputs["symbol"] == "BTC"
+    assert execute_inputs["signal_direction"] == "LONG"
+    assert execute_inputs["technical_symbol_scope"] == ["BTC"]
+    assert runtime_snapshot["binance_technical_active_symbol_count"] == 1
+    assert runtime_snapshot["technical_open_positions_total"] == 1
+
+
+def test_binance_runtime_rejects_spot_short_with_explicit_reason(tmp_path: Path) -> None:
+    db_path = tmp_path / "binance_runtime_spot_short.db"
+    repository = BinanceTechnicalRepository(str(db_path))
+    settings = BinanceTechnicalSettings(
+        db_path=str(db_path),
+        symbols=["SOL"],
+        futures_enabled=False,
+        spot_enabled=True,
+    )
+    frames = {
+        ("binance_spot", "SOL"): _market_frame("SOL", "binance_spot", mark_price=80.0),
+    }
+    signals = {
+        ("binance_spot", "SOL"): _technical_signal(
+            symbol="SOL",
+            direction="SHORT",
+            should_trade=True,
+            score=0.74,
+            threshold=0.54,
+        ),
+    }
+    runtime = BinanceTechnicalRuntime(
+        settings,
+        repository=repository,
+        provider=_FakeMarketDataProvider(frames),
+        signal_engine=_FakeSignalEngine(signals),
+    )
+
+    runtime.run_once()
+
+    decisions = repository.fetch_technical_decision_rows(7)
+    assert len(decisions) == 1
+    assert decisions[0]["action"] == "reject"
+    assert "spot_short_not_supported" in str(decisions[0]["reason"])
+
+
+def test_binance_runtime_sizes_down_when_remaining_capacity_is_limited(tmp_path: Path) -> None:
+    db_path = tmp_path / "binance_runtime_capacity.db"
+    repository = BinanceTechnicalRepository(str(db_path))
+    settings = BinanceTechnicalSettings(
+        db_path=str(db_path),
+        symbols=["ETH", "BTC"],
+        futures_enabled=True,
+        spot_enabled=False,
+        max_position_usd=120.0,
+        max_order_usd=100.0,
+        min_trade_size_usd=25.0,
+    )
+    repository.ensure_tables()
+    repository.ensure_runtime_rows(settings.enabled_venues)
+    repository.create_entry(
+        venue="binance_futures",
+        symbol_or_market_id="ETH/USDT:USDT",
+        execution_mode="paper",
+        instrument_type="futures",
+        direction="LONG",
+        entry_price=100.0,
+        trade_size_usd=80.0,
+        leverage=2.0,
+        confidence=0.66,
+        strategy_profile="binance_technical_sampling",
+        sample_kind="live_paper",
+        source_signal="binance_technical_momentum",
+        signal_family="binance_technical_momentum",
+        take_profit_price=106.0,
+        stop_loss_price=97.0,
+    )
+    frames = {
+        ("binance_futures", "ETH"): _market_frame("ETH", "binance_futures", mark_price=101.0),
+        ("binance_futures", "BTC"): _market_frame("BTC", "binance_futures", mark_price=100.0),
+    }
+    signals = {
+        ("binance_futures", "ETH"): _technical_signal(
+            symbol="ETH",
+            direction="LONG",
+            should_trade=True,
+            score=0.72,
+            threshold=0.54,
+        ),
+        ("binance_futures", "BTC"): _technical_signal(
+            symbol="BTC",
+            direction="LONG",
+            should_trade=True,
+            score=0.76,
+            threshold=0.54,
+        ),
+    }
+    runtime = BinanceTechnicalRuntime(
+        settings,
+        repository=repository,
+        provider=_FakeMarketDataProvider(frames),
+        signal_engine=_FakeSignalEngine(signals),
+    )
+
+    runtime.run_once()
+
+    rows = repository.fetch_technical_decision_rows(7)
+    decision_rows = [row for row in rows if row["action"] == "decision" and row["market_id"] == "BTC/USDT:USDT"]
+    assert len(decision_rows) == 1
+    decision_inputs = json.loads(decision_rows[0]["inputs_json"] or "{}")
+    assert decision_inputs["position_capacity_sized_down"] is True
+    assert decision_inputs["remaining_position_capacity_usd"] == pytest.approx(39.2)
+    assert decision_inputs["effective_trade_size"] == pytest.approx(39.2)

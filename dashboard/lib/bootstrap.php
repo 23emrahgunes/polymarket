@@ -139,7 +139,7 @@ function dashboard_service_name(string $raw): string
 function dashboard_lane_mode(): string
 {
     $mode = strtolower(trim((string) dashboard_env('DASHBOARD_LANE_MODE', 'split')));
-    return in_array($mode, ['split', 'polymarket_research'], true) ? $mode : 'split';
+    return in_array($mode, ['split', 'polymarket_research', 'binance_technical'], true) ? $mode : 'split';
 }
 
 function dashboard_json_response(array $payload, int $statusCode = 200): never

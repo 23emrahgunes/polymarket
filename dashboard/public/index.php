@@ -9,6 +9,7 @@ dashboard_require_auth();
 $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
 $laneMode = dashboard_lane_mode();
 $researchOnly = $laneMode === 'polymarket_research';
+$binanceOnly = $laneMode === 'binance_technical';
 $heroTitle = $researchOnly
     ? 'Polymarket Research paneli: aday cüzdan, shadow takip ve copy-ready kanıtı.'
     : 'Canlı çalışma zamanı, mapping sağlığı ve strateji kanıtı tek ekranda.';
@@ -21,6 +22,20 @@ $dashboardTabs = $researchOnly
 $dashboardTabLabels = $researchOnly
     ? ['polymarket-research' => 'Polymarket Research', 'sozluk-aciklamalar' => 'Sozluk / Aciklamalar']
     : ['polymarket-research' => 'Polymarket Research', 'binance-technical' => 'Binance Technical', 'sozluk-aciklamalar' => 'Sozluk / Aciklamalar'];
+
+if ($binanceOnly) {
+    $heroTitle = 'Binance Technical paneli: fresh paper PnL, skor kalitesi ve pozisyon baskisi.';
+    $heroCopy = 'Bu panel yalnizca Binance technical lane icin taze paper performansini, spread/source-quality teshisini, pozisyon baskisini ve exit akislarini sade bicimde gosterir.';
+    $dashboardTabs = ['binance-technical', 'sozluk-aciklamalar'];
+    $dashboardTabLabels = [
+        'binance-technical' => 'Binance Technical',
+        'sozluk-aciklamalar' => 'Sozluk / Aciklamalar',
+    ];
+}
+
+$laneBodyClass = $researchOnly
+    ? 'lane-polymarket-research'
+    : ($binanceOnly ? 'lane-binance-technical' : 'lane-split');
 ?>
 <!DOCTYPE html>
 <html lang="tr">
@@ -131,6 +146,10 @@ $dashboardTabLabels = $researchOnly
         }
         body.lane-polymarket-research [data-tab-trigger="binance-technical"],
         body.lane-polymarket-research [data-tab="binance-technical"] {
+            display: none !important;
+        }
+        body.lane-binance-technical [data-tab-trigger="polymarket-research"],
+        body.lane-binance-technical [data-tab="polymarket-research"] {
             display: none !important;
         }
         .hero-card {
@@ -447,7 +466,7 @@ $dashboardTabLabels = $researchOnly
         }
     </style>
 </head>
-<body class="<?= dashboard_html($researchOnly ? 'lane-polymarket-research' : 'lane-split') ?>">
+<body class="<?= dashboard_html($laneBodyClass) ?>">
 <div class="shell">
     <section class="hero-card">
         <div class="hero-top">
