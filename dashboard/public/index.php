@@ -1101,6 +1101,17 @@ function translateReason(value) {
     return map[text] || String(value ?? 'yok');
 }
 
+function translateCohortSource(value) {
+    const text = String(value ?? '').trim();
+    const map = {
+        shadow_proven: 'Shadow-proven',
+        manual_fast_track: 'Manual fast-track',
+        none: 'yok',
+        '': 'yok'
+    };
+    return map[text] || text || 'yok';
+}
+
 function badgeClass(label) {
     const text = String(label ?? '').toUpperCase();
     if (text.includes('RUN') || text.includes('ACTIVE') || text === 'GO') { return 'ok'; }
@@ -1928,16 +1939,24 @@ function updatePanels(payload) {
     const copyExecution = payload.copy_execution_summary || {};
     renderMetrics('copy-execution-summary', [
         { label: 'Copy-ready wallet', value: formatNumber(copyExecution.copy_ready_wallets, 0) },
+        { label: 'Shadow-proven wallet', value: formatNumber(copyExecution.shadow_proven_wallets, 0) },
+        { label: 'Manual fast-track wallet', value: formatNumber(copyExecution.manual_fast_track_wallets, 0) },
+        { label: 'Toplam eligible wallet', value: formatNumber(copyExecution.eligible_copy_wallets_total, 0) },
         { label: 'Open aksiyon', value: formatNumber(copyExecution.open_actions, 0) },
         { label: 'Close aksiyon', value: formatNumber(copyExecution.close_actions, 0) },
         { label: 'Replay closed', value: formatNumber(copyExecution.replay_closed_actions, 0) },
         { label: 'Reject aksiyon', value: formatNumber(copyExecution.reject_actions, 0) },
         { label: 'Aktif follower pozisyon', value: formatNumber(copyExecution.active_copy_positions, 0) },
+        { label: 'Aktif standard cohort', value: formatNumber(copyExecution.active_shadow_proven_positions, 0) },
+        { label: 'Aktif fast-track cohort', value: formatNumber(copyExecution.active_manual_fast_track_positions, 0) },
         { label: 'Realized PnL wallet', value: formatNumber(copyExecution.wallets_with_realized_pnl, 0) }
     ]);
     const copyDrift = payload.shadow_vs_copy_drift_summary || {};
     renderMetrics('shadow-vs-copy-drift-summary', [
         { label: 'Copy-ready wallet', value: formatNumber(copyDrift.copy_ready_wallets, 0) },
+        { label: 'Shadow-proven wallet', value: formatNumber(copyDrift.shadow_proven_wallets, 0) },
+        { label: 'Manual fast-track wallet', value: formatNumber(copyDrift.manual_fast_track_wallets, 0) },
+        { label: 'Toplam eligible wallet', value: formatNumber(copyDrift.eligible_copy_wallets_total, 0) },
         { label: 'Shadow closed trade', value: formatNumber(copyDrift.shadow_closed_trades, 0) },
         { label: 'Shadow net edge', value: formatNumber(copyDrift.shadow_net_edge, 4) },
         { label: 'Source realized PnL', value: formatNumber(copyDrift.source_realized_pnl, 2) },
@@ -1946,6 +1965,7 @@ function updatePanels(payload) {
     ]);
     renderTable('active-copy-positions', [
         { key: 'wallet_address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.wallet_address || '', 20) },
+        { key: 'cohort_source', label: 'Cohort', render: (row) => escapeHtml(translateCohortSource(row.cohort_source || 'none')) },
         { key: 'market_id', label: 'Market', mono: true, render: (row) => truncateHtml(row.market_id || '', 24) },
         { key: 'category', label: 'Kategori', render: (row) => escapeHtml(translateCategory(row.category || 'UNKNOWN')) },
         { key: 'side', label: 'Yon', render: (row) => escapeHtml(row.side || '') },
@@ -1960,6 +1980,7 @@ function updatePanels(payload) {
     ], payload.copy_reject_breakdown || [], 'Henuz copy red nedeni yok.');
     renderTable('wallet-follower-pnl-summary', [
         { key: 'wallet_address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.wallet_address || '', 22) },
+        { key: 'cohort_source', label: 'Cohort', render: (row) => escapeHtml(translateCohortSource(row.cohort_source || 'none')) },
         { key: 'closed_actions', label: 'Kapali aksiyon', render: (row) => escapeHtml(formatNumber(row.closed_actions, 0)) },
         { key: 'follower_realized_pnl', label: 'Follower PnL', render: (row) => escapeHtml(formatNumber(row.follower_realized_pnl, 2)) },
         { key: 'source_realized_pnl', label: 'Kaynak PnL', render: (row) => escapeHtml(formatNumber(row.source_realized_pnl, 2)) },
@@ -1970,6 +1991,7 @@ function updatePanels(payload) {
     renderTable('recent-copy-actions', [
         { key: 'executed_at', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.executed_at || '') },
         { key: 'wallet_address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.wallet_address || '', 20) },
+        { key: 'cohort_source', label: 'Cohort', render: (row) => escapeHtml(translateCohortSource(row.cohort_source || 'none')) },
         { key: 'action_type', label: 'Aksiyon', render: (row) => escapeHtml(row.action_type || '') },
         { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'none')) },
         { key: 'market_id', label: 'Market', mono: true, render: (row) => truncateHtml(row.market_id || '', 24) },
@@ -1981,15 +2003,21 @@ function updatePanels(payload) {
 
     const binanceLane = payload.fresh_technical_summary || {};
     const freshPnl = payload.fresh_pnl_summary_7d || {};
+    const freshPnlVenues = freshPnl.venues || {};
+    const futuresPnl = freshPnlVenues.binance_futures || {};
+    const spotPnl = freshPnlVenues.binance_spot || {};
     const technicalScore = payload.technical_score_summary || {};
     const positionPressure = payload.position_pressure_summary || {};
     const legacyPosition = payload.legacy_position_summary || {};
     renderMetrics('fresh-pnl-summary-7d', [
         { label: 'Pencere', value: `${formatNumber(freshPnl.fresh_window_days || 7, 0)} gun` },
-        { label: 'Net PnL', value: formatNumber(freshPnl.net_pnl, 2) },
-        { label: 'Gross win', value: formatNumber(freshPnl.gross_wins, 2) },
-        { label: 'Gross loss', value: formatNumber(freshPnl.gross_losses, 2) },
-        { label: 'Win rate', value: freshPnl.win_rate === null || freshPnl.win_rate === undefined ? 'yok' : `${formatNumber(freshPnl.win_rate, 1)}%` },
+        { label: 'Birlesik net PnL', value: formatNumber(freshPnl.net_pnl, 2) },
+        { label: 'Futures net PnL', value: formatNumber(futuresPnl.net_pnl, 2) },
+        { label: 'Spot net PnL', value: formatNumber(spotPnl.net_pnl, 2) },
+        { label: 'Futures execute', value: formatNumber(futuresPnl.execute_count, 0) },
+        { label: 'Spot execute', value: formatNumber(spotPnl.execute_count, 0) },
+        { label: 'Futures win rate', value: futuresPnl.win_rate === null || futuresPnl.win_rate === undefined ? 'yok' : `${formatNumber(futuresPnl.win_rate, 1)}%` },
+        { label: 'Spot win rate', value: spotPnl.win_rate === null || spotPnl.win_rate === undefined ? 'yok' : `${formatNumber(spotPnl.win_rate, 1)}%` },
         { label: 'Kapanmis trade', value: formatNumber(freshPnl.fresh_closed_trades, 0) }
     ]);
     renderMetrics('fresh-technical-summary', [

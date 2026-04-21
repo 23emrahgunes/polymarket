@@ -597,18 +597,29 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['wallet_consistency_table'][0]['shadow_blocker_reason'] == 'eligible'
     assert payload['copy_ready_wallets'][0]['address'] == '0xaaa'
     assert payload['copy_execution_summary']['copy_ready_wallets'] == 1
+    assert payload['copy_execution_summary']['shadow_proven_wallets'] == 1
+    assert payload['copy_execution_summary']['manual_fast_track_wallets'] == 0
+    assert payload['copy_execution_summary']['eligible_copy_wallets_total'] == 1
     assert payload['copy_execution_summary']['open_actions'] == 1
     assert payload['copy_execution_summary']['replay_closed_actions'] == 1
     assert payload['copy_execution_summary']['reject_actions'] == 1
     assert payload['copy_execution_summary']['active_copy_positions'] == 1
+    assert payload['copy_execution_summary']['active_shadow_proven_positions'] == 1
+    assert payload['copy_execution_summary']['active_manual_fast_track_positions'] == 0
     assert payload['copy_execution_summary']['wallets_with_realized_pnl'] == 1
     assert payload['copy_reject_breakdown'][0]['reason'] == 'duplicate_market_exposure'
     assert payload['active_copy_positions'][0]['market_id'] == 'market-copy-1'
+    assert payload['active_copy_positions'][0]['cohort_source'] == 'shadow_proven'
     assert payload['wallet_follower_pnl_summary'][0]['wallet_address'] == '0xaaa'
+    assert payload['wallet_follower_pnl_summary'][0]['cohort_source'] == 'shadow_proven'
     assert payload['wallet_follower_pnl_summary'][0]['follower_realized_pnl'] == 7.5
     assert payload['shadow_vs_copy_drift_summary']['copy_ready_wallets'] == 1
+    assert payload['shadow_vs_copy_drift_summary']['shadow_proven_wallets'] == 1
+    assert payload['shadow_vs_copy_drift_summary']['manual_fast_track_wallets'] == 0
+    assert payload['shadow_vs_copy_drift_summary']['eligible_copy_wallets_total'] == 1
     assert payload['shadow_vs_copy_drift_summary']['copy_realized_pnl'] == 7.5
     assert payload['recent_copy_actions'][0]['reason'] == 'duplicate_market_exposure'
+    assert payload['recent_copy_actions'][0]['cohort_source'] == 'shadow_proven'
     assert payload['priority_watchlist_rows'][0]['display_name'] == 'ohanism'
     assert payload['priority_watchlist_rows'][0]['profile_ref'] == 'https://polymarket.com/tr/@ohanism'
     assert payload['priority_watchlist_rows'][0]['identity_resolution_status'] == 'pending_resolution'
@@ -620,6 +631,11 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['priority_watchlist_rows'][1]['shadow_blocker_reason'] == 'eligible'
     assert payload['fresh_technical_summary']['fresh_window_days'] == 7
     assert payload['fresh_pnl_summary_7d']['fresh_window_days'] == 7
+    assert payload['fresh_pnl_summary_7d']['fresh_trade_count'] == 0
+    assert payload['fresh_pnl_summary_7d']['fresh_closed_trades'] == 0
+    assert payload['fresh_pnl_summary_7d']['net_pnl'] == 0.0
+    assert payload['fresh_pnl_summary_7d']['venues']['binance_futures']['execute_count'] == 0
+    assert payload['fresh_pnl_summary_7d']['venues']['binance_spot']['execute_count'] == 0
     assert payload['position_pressure_summary']['open_positions'] == 1
     assert 'open_binance_paper_positions' in payload['legacy_position_summary']['legacy_shape']
     assert payload['legacy_position_summary']['legacy_open_positions'] == []
@@ -869,6 +885,49 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
             ),
         ],
     )
+    cur.executemany(
+        'INSERT INTO trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+            (
+                301,
+                'binance_futures',
+                'futures',
+                'SOL/USDT:USDT',
+                'LONG',
+                40.0,
+                100.0,
+                0.71,
+                'binance_technical_momentum',
+                'CRYPTO',
+                'binance_technical_sampling',
+                'live_paper',
+                0,
+                'CLOSED_WIN',
+                45.5,
+                None,
+                t103,
+            ),
+            (
+                302,
+                'binance_spot',
+                'spot',
+                'BTC/USDT',
+                'LONG',
+                25.0,
+                100.0,
+                0.62,
+                'binance_technical_momentum',
+                'CRYPTO',
+                'binance_technical_sampling',
+                'live_paper',
+                0,
+                'CLOSED_LOSS',
+                -10.0,
+                None,
+                t102,
+            ),
+        ],
+    )
     conn.commit()
     conn.close()
 
@@ -912,6 +971,7 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
                 "    'component_summary' => dashboard_build_binance_technical_score_component_summary_from_rows($rows),",
                 "    'gap_summary' => dashboard_build_binance_technical_score_gap_summary_from_rows($rows),",
                 "    'fresh_gap_summary' => dashboard_build_binance_technical_score_gap_summary_from_rows($freshRows),",
+                "    'fresh_pnl' => dashboard_build_binance_fresh_pnl_summary($pdo),",
                 "    'stale_eligibility_summary' => dashboard_build_binance_technical_stale_eligibility_summary($runtimeSummary),",
                 "    'position_pressure_summary' => dashboard_build_binance_technical_position_pressure_summary($pdo, $runtimeSummary, $rows),",
                 "    'score_blocker_breakdown' => dashboard_build_binance_technical_score_blocker_breakdown_from_rows($rows),",
@@ -1003,6 +1063,13 @@ def test_dashboard_api_returns_binance_technical_sections(dashboard_server: Dash
         'deep_below_threshold_count': 0,
     }
     assert payload['fresh_gap_summary'] == payload['gap_summary']
+    assert payload['fresh_pnl']['fresh_trade_count'] == 2
+    assert payload['fresh_pnl']['fresh_closed_trades'] == 2
+    assert payload['fresh_pnl']['net_pnl'] == pytest.approx(35.5)
+    assert payload['fresh_pnl']['venues']['binance_futures']['net_pnl'] == pytest.approx(45.5)
+    assert payload['fresh_pnl']['venues']['binance_futures']['execute_count'] == 1
+    assert payload['fresh_pnl']['venues']['binance_spot']['net_pnl'] == pytest.approx(-10.0)
+    assert payload['fresh_pnl']['venues']['binance_spot']['execute_count'] == 0
     assert payload['stale_eligibility_summary'] == {
         'stale_review_runs': 0,
         'open_positions_seen_by_stale_review': 0,

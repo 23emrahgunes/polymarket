@@ -977,9 +977,18 @@ def test_binance_technical_service_builds_fresh_and_legacy_summaries(tmp_path: P
     assert summary["fresh_technical_summary"]["fresh_trade_count"] == 2
     assert summary["fresh_technical_summary"]["fresh_closed_trades"] == 2
     assert summary["fresh_technical_summary"]["fresh_execute_count"] == 1
+    assert summary["fresh_technical_summary"]["enabled_venues"] == ["binance_futures", "binance_spot"]
+    assert summary["fresh_technical_summary"]["execute_count_by_venue"]["binance_futures"] == 1
+    assert summary["fresh_technical_summary"]["execute_count_by_venue"]["binance_spot"] == 0
     assert summary["fresh_pnl_summary_7d"]["fresh_window_days"] == 7
+    assert summary["fresh_pnl_summary_7d"]["fresh_trade_count"] == 2
+    assert summary["fresh_pnl_summary_7d"]["fresh_closed_trades"] == 2
     assert summary["fresh_pnl_summary_7d"]["net_pnl"] == 35.5
     assert summary["fresh_pnl_summary_7d"]["win_rate"] == 50.0
+    assert summary["fresh_pnl_summary_7d"]["venues"]["binance_futures"]["net_pnl"] == 45.5
+    assert summary["fresh_pnl_summary_7d"]["venues"]["binance_futures"]["execute_count"] == 1
+    assert summary["fresh_pnl_summary_7d"]["venues"]["binance_spot"]["net_pnl"] == -10.0
+    assert summary["fresh_pnl_summary_7d"]["venues"]["binance_spot"]["execute_count"] == 0
     assert summary["technical_score_summary"]["decision_rows"] == 2
     assert summary["technical_reject_breakdown"][0]["reason"] == "score_below_threshold"
     assert summary["position_pressure_summary"]["open_positions"] == 2
@@ -1160,13 +1169,101 @@ def test_binance_runtime_rejects_spot_short_with_explicit_reason(tmp_path: Path)
     assert "spot_short_not_supported" in str(decisions[0]["reason"])
 
 
-def test_binance_settings_default_to_futures_only(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_binance_runtime_executes_futures_short(tmp_path: Path) -> None:
+    db_path = tmp_path / "binance_runtime_futures_short.db"
+    repository = BinanceTechnicalRepository(str(db_path))
+    settings = BinanceTechnicalSettings(
+        db_path=str(db_path),
+        symbols=["ETH"],
+        futures_enabled=True,
+        spot_enabled=False,
+    )
+    frames = {
+        ("binance_futures", "ETH"): _market_frame("ETH", "binance_futures", mark_price=2000.0),
+    }
+    signals = {
+        ("binance_futures", "ETH"): _technical_signal(
+            symbol="ETH",
+            direction="SHORT",
+            should_trade=True,
+            score=0.77,
+            threshold=0.54,
+            inputs={"score_blocker_labels": [], "snapshot_quality": "trusted_ticker_book"},
+        ),
+    }
+    runtime = BinanceTechnicalRuntime(
+        settings,
+        repository=repository,
+        provider=_FakeMarketDataProvider(frames),
+        signal_engine=_FakeSignalEngine(signals),
+    )
+
+    summary = runtime.run_once()
+
+    open_positions = repository.fetch_open_positions_for_venues(("binance_futures",))
+    decisions = repository.fetch_technical_decision_rows(7)
+
+    assert summary["fresh_technical_summary"]["fresh_execute_count"] == 1
+    assert len(open_positions) == 1
+    assert str(open_positions[0]["side"]) == "SHORT"
+    assert [row["action"] for row in decisions] == ["execute", "decision"]
+    execute_inputs = json.loads(decisions[0]["inputs_json"] or "{}")
+    assert execute_inputs["symbol"] == "ETH"
+    assert execute_inputs["signal_direction"] == "SHORT"
+
+
+def test_binance_runtime_executes_spot_long(tmp_path: Path) -> None:
+    db_path = tmp_path / "binance_runtime_spot_long.db"
+    repository = BinanceTechnicalRepository(str(db_path))
+    settings = BinanceTechnicalSettings(
+        db_path=str(db_path),
+        symbols=["SOL"],
+        futures_enabled=False,
+        spot_enabled=True,
+    )
+    frames = {
+        ("binance_spot", "SOL"): _market_frame("SOL", "binance_spot", mark_price=120.0),
+    }
+    signals = {
+        ("binance_spot", "SOL"): _technical_signal(
+            symbol="SOL",
+            direction="LONG",
+            should_trade=True,
+            score=0.75,
+            threshold=0.54,
+            inputs={"score_blocker_labels": [], "snapshot_quality": "trusted_ticker_book"},
+        ),
+    }
+    runtime = BinanceTechnicalRuntime(
+        settings,
+        repository=repository,
+        provider=_FakeMarketDataProvider(frames),
+        signal_engine=_FakeSignalEngine(signals),
+    )
+
+    summary = runtime.run_once()
+
+    open_positions = repository.fetch_open_positions_for_venues(("binance_spot",))
+    open_orders = repository.fetch_open_orders("binance_spot", "SOL/USDT")
+    decisions = repository.fetch_technical_decision_rows(7)
+
+    assert summary["fresh_technical_summary"]["fresh_execute_count"] == 1
+    assert len(open_positions) == 1
+    assert str(open_positions[0]["side"]) == "LONG"
+    assert len(open_orders) == 2
+    assert [row["action"] for row in decisions] == ["execute", "decision"]
+    execute_inputs = json.loads(decisions[0]["inputs_json"] or "{}")
+    assert execute_inputs["symbol"] == "SOL"
+    assert execute_inputs["signal_direction"] == "LONG"
+
+
+def test_binance_settings_enable_futures_and_spot_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("BINANCE_FUTURES_ENABLED", raising=False)
     monkeypatch.delenv("BINANCE_SPOT_ENABLED", raising=False)
     settings = BinanceTechnicalSettings()
     assert settings.futures_enabled is True
-    assert settings.spot_enabled is False
-    assert settings.enabled_venues == ["binance_futures"]
+    assert settings.spot_enabled is True
+    assert settings.enabled_venues == ["binance_futures", "binance_spot"]
 
 
 def test_binance_runtime_sizes_down_when_remaining_capacity_is_limited(tmp_path: Path) -> None:

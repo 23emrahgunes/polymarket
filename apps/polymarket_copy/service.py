@@ -37,6 +37,29 @@ def _normalize_side(side: str) -> str:
     return normalized or "BUY"
 
 
+def _wallet_limits(settings: PolymarketCopySettings, wallet: dict[str, Any]) -> dict[str, float | int | str]:
+    cohort_source = str(wallet.get("cohort_source") or "shadow_proven")
+    max_trade_size = float(settings.max_trade_size_usd)
+    wallet_risk_limit = float(settings.wallet_risk_limit_usd)
+    market_risk_limit = float(settings.market_risk_limit_usd)
+    max_concurrent_positions = 999999
+    if cohort_source == "manual_fast_track":
+        max_trade_size = min(
+            max_trade_size,
+            max(float(settings.min_trade_size_usd), round(float(settings.max_trade_size_usd) * 0.5, 4)),
+        )
+        wallet_risk_limit = min(wallet_risk_limit, round(max_trade_size * 2.0, 4))
+        market_risk_limit = min(market_risk_limit, round(max_trade_size * 3.0, 4))
+        max_concurrent_positions = 1
+    return {
+        "cohort_source": cohort_source,
+        "max_trade_size_usd": round(max_trade_size, 4),
+        "wallet_risk_limit_usd": round(wallet_risk_limit, 4),
+        "market_risk_limit_usd": round(market_risk_limit, 4),
+        "max_concurrent_positions": max_concurrent_positions,
+    }
+
+
 @dataclass(slots=True)
 class PolymarketCopyService:
     settings: PolymarketCopySettings
@@ -44,8 +67,12 @@ class PolymarketCopyService:
 
     def sync_copy_actions(self) -> dict[str, int]:
         self.repository.ensure_tables()
-        copy_ready_wallets = self.repository.fetch_copy_ready_wallets(limit=self.settings.copy_ready_limit)
-        wallet_addresses = [str(row["address"] or "").lower() for row in copy_ready_wallets]
+        eligible_wallet_rows = self.repository.fetch_copy_ready_wallets(limit=self.settings.copy_ready_limit)
+        copy_ready_wallets = [dict(row) for row in eligible_wallet_rows]
+        wallet_lookup = {
+            str(row.get("address") or "").lower(): row for row in copy_ready_wallets if str(row.get("address") or "").strip()
+        }
+        wallet_addresses = list(wallet_lookup.keys())
         source_rows = self.repository.fetch_source_trade_rows(wallet_addresses, self.settings.lookback_days)
 
         counters = {
@@ -55,12 +82,18 @@ class PolymarketCopyService:
             "close_actions": 0,
             "replay_closed_actions": 0,
             "reject_actions": 0,
+            "manual_fast_track_wallets": sum(1 for row in copy_ready_wallets if row.get("cohort_source") == "manual_fast_track"),
+            "shadow_proven_wallets": sum(1 for row in copy_ready_wallets if row.get("cohort_source") == "shadow_proven"),
         }
 
         now = datetime.now(timezone.utc)
         for row in source_rows:
             source_key = str(row["source_trade_key"])
             wallet_address = str(row["wallet_address"])
+            wallet = wallet_lookup.get(wallet_address)
+            if wallet is None:
+                continue
+            wallet_limits = _wallet_limits(self.settings, wallet)
             market_id = str(row["market_id"] or "")
             if market_id == "":
                 continue
@@ -75,6 +108,10 @@ class PolymarketCopyService:
                 "category": category,
                 "source_signal": row.get("source_signal", ""),
                 "source_status": source_status,
+                "cohort_source": wallet_limits["cohort_source"],
+                "copy_admission_source": wallet_limits["cohort_source"],
+                "historical_trade_evidence_status": wallet.get("historical_trade_evidence_status", ""),
+                "watchlist_mode": wallet.get("watchlist_mode", ""),
             }
 
             is_closed = source_status.startswith("CLOSED")
@@ -118,7 +155,7 @@ class PolymarketCopyService:
                 if self.repository.source_trade_action_exists(source_key, "replay_closed"):
                     continue
                 follower_notional = round(
-                    min(source_notional, self.settings.max_trade_size_usd),
+                    min(source_notional, float(wallet_limits["max_trade_size_usd"])),
                     4,
                 )
                 if follower_notional < self.settings.min_trade_size_usd:
@@ -195,7 +232,7 @@ class PolymarketCopyService:
                     continue
 
             follower_notional = round(
-                min(source_notional, self.settings.max_trade_size_usd),
+                min(source_notional, float(wallet_limits["max_trade_size_usd"])),
                 4,
             )
             if follower_notional < self.settings.min_trade_size_usd:
@@ -242,7 +279,29 @@ class PolymarketCopyService:
                 counters["reject_actions"] += 1
                 continue
 
-            if self.repository.fetch_open_wallet_notional(wallet_address) + follower_notional > self.settings.wallet_risk_limit_usd:
+            if self.repository.fetch_open_wallet_position_count(wallet_address) >= int(wallet_limits["max_concurrent_positions"]):
+                self.repository.insert_copy_action(
+                    source_trade_key=source_key,
+                    wallet_address=wallet_address,
+                    market_id=market_id,
+                    category=category,
+                    action_type="reject",
+                    reason="manual_fast_track_open_position_cap_exceeded",
+                    source_status=source_status,
+                    side=normalized_side,
+                    source_notional_usd=source_notional,
+                    follower_notional_usd=follower_notional,
+                    source_pnl=source_pnl,
+                    follower_pnl=0.0,
+                    delayed_seconds=delayed_seconds,
+                    source_opened_at=source_opened_at,
+                    source_closed_at=source_closed_at,
+                    notes=notes,
+                )
+                counters["reject_actions"] += 1
+                continue
+
+            if self.repository.fetch_open_wallet_notional(wallet_address) + follower_notional > float(wallet_limits["wallet_risk_limit_usd"]):
                 self.repository.insert_copy_action(
                     source_trade_key=source_key,
                     wallet_address=wallet_address,
@@ -264,7 +323,7 @@ class PolymarketCopyService:
                 counters["reject_actions"] += 1
                 continue
 
-            if self.repository.fetch_open_market_notional(market_id) + follower_notional > self.settings.market_risk_limit_usd:
+            if self.repository.fetch_open_market_notional(market_id) + follower_notional > float(wallet_limits["market_risk_limit_usd"]):
                 self.repository.insert_copy_action(
                     source_trade_key=source_key,
                     wallet_address=wallet_address,
@@ -339,6 +398,22 @@ class PolymarketCopyService:
         close_actions = sum(1 for row in actions if row["action_type"] == "close")
         replay_closed_actions = sum(1 for row in actions if row["action_type"] == "replay_closed")
         reject_actions = sum(1 for row in actions if row["action_type"] == "reject")
+        shadow_proven_wallets = sum(1 for row in copy_ready_wallets if row.get("cohort_source") == "shadow_proven")
+        manual_fast_track_wallets = sum(1 for row in copy_ready_wallets if row.get("cohort_source") == "manual_fast_track")
+
+        def _action_cohort(row: dict[str, Any]) -> str:
+            raw_notes = str(row.get("notes_json") or "")
+            if raw_notes:
+                try:
+                    decoded = json.loads(raw_notes)
+                    if isinstance(decoded, dict):
+                        cohort = str(decoded.get("cohort_source") or "")
+                        if cohort:
+                            return cohort
+                except (TypeError, ValueError):
+                    pass
+            wallet = next((item for item in copy_ready_wallets if str(item.get("address") or "").lower() == str(row.get("wallet_address") or "").lower()), None)
+            return str((wallet or {}).get("cohort_source") or "shadow_proven")
 
         copy_realized_pnl = round(
             sum(float(row["follower_pnl"] or 0.0) for row in actions if row["action_type"] in {"close", "replay_closed"}),
@@ -356,11 +431,25 @@ class PolymarketCopyService:
 
         wallet_summary_rows = []
         for row in wallet_rows:
+            matching_actions = [
+                action
+                for action in actions
+                if str(action["wallet_address"] or "").lower() == str(row["wallet_address"] or "").lower()
+            ]
+            cohort_source = _action_cohort(matching_actions[0]) if matching_actions else next(
+                (
+                    str(wallet.get("cohort_source") or "")
+                    for wallet in copy_ready_wallets
+                    if str(wallet.get("address") or "").lower() == str(row["wallet_address"] or "").lower()
+                ),
+                "",
+            )
             follower_realized = round(float(row["follower_realized_pnl"] or 0.0), 4)
             source_realized = round(float(row["source_realized_pnl"] or 0.0), 4)
             wallet_summary_rows.append(
                 {
                     "wallet_address": str(row["wallet_address"] or ""),
+                    "cohort_source": cohort_source or "shadow_proven",
                     "closed_actions": int(row["closed_actions"] or 0),
                     "follower_realized_pnl": follower_realized,
                     "source_realized_pnl": source_realized,
@@ -396,6 +485,7 @@ class PolymarketCopyService:
                     "delayed_seconds": int(row["delayed_seconds"] or 0),
                     "source_opened_at": str(row["source_opened_at"] or ""),
                     "source_closed_at": str(row["source_closed_at"] or ""),
+                    "cohort_source": str(notes.get("cohort_source") or ""),
                     "notes": notes,
                 }
             )
@@ -411,19 +501,40 @@ class PolymarketCopyService:
                 "opened_at": str(row["opened_at"] or ""),
                 "source_opened_at": str(row["source_opened_at"] or ""),
                 "status": str(row["status"] or ""),
+                "cohort_source": (
+                    (
+                        json.loads(str(row.get("notes_json") or "{}")).get("cohort_source", "")
+                        if str(row.get("notes_json") or "")
+                        else ""
+                    ) or next(
+                        (
+                            str(wallet.get("cohort_source") or "")
+                            for wallet in copy_ready_wallets
+                            if str(wallet.get("address") or "").lower() == str(row["wallet_address"] or "").lower()
+                        ),
+                        "shadow_proven",
+                    )
+                ),
             }
             for row in active_positions
         ]
+        active_shadow_positions = sum(1 for row in active_copy_positions if row["cohort_source"] == "shadow_proven")
+        active_manual_fast_track_positions = sum(1 for row in active_copy_positions if row["cohort_source"] == "manual_fast_track")
 
         return {
             "copy_execution_summary": {
-                "copy_ready_wallets": len(copy_ready_wallets),
+                "copy_ready_wallets": shadow_proven_wallets,
+                "shadow_proven_wallets": shadow_proven_wallets,
+                "manual_fast_track_wallets": manual_fast_track_wallets,
+                "eligible_copy_wallets_total": len(copy_ready_wallets),
                 "copy_window_days": self.settings.lookback_days,
                 "open_actions": open_actions,
                 "close_actions": close_actions,
                 "replay_closed_actions": replay_closed_actions,
                 "reject_actions": reject_actions,
                 "active_copy_positions": len(active_positions),
+                "active_shadow_proven_positions": active_shadow_positions,
+                "active_manual_fast_track_positions": active_manual_fast_track_positions,
                 "wallets_with_realized_pnl": sum(1 for row in wallet_summary_rows if row["closed_actions"] > 0),
             },
             "copy_reject_breakdown": [
@@ -433,7 +544,10 @@ class PolymarketCopyService:
             "active_copy_positions": active_copy_positions,
             "wallet_follower_pnl_summary": wallet_summary_rows,
             "shadow_vs_copy_drift_summary": {
-                "copy_ready_wallets": len(copy_ready_wallets),
+                "copy_ready_wallets": shadow_proven_wallets,
+                "shadow_proven_wallets": shadow_proven_wallets,
+                "manual_fast_track_wallets": manual_fast_track_wallets,
+                "eligible_copy_wallets_total": len(copy_ready_wallets),
                 "shadow_closed_trades": shadow_closed,
                 "shadow_net_edge": copy_ready_shadow_edge,
                 "source_realized_pnl": source_realized_pnl,

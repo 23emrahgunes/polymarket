@@ -28,6 +28,7 @@ class BinanceTechnicalService:
         trades = self.repository.fetch_fresh_trade_rows(self.settings.fresh_window_days)
         decisions = self.repository.fetch_technical_decision_rows(self.settings.fresh_window_days)
         open_positions = self.repository.fetch_open_positions()
+        venues = ("binance_futures", "binance_spot")
 
         closed_trades = [row for row in trades if str(row["status"] or "").upper().startswith("CLOSED")]
         total_pnl = round(sum(float(row["pnl"] or 0.0) for row in closed_trades), 4)
@@ -44,8 +45,12 @@ class BinanceTechnicalService:
         reject_breakdown: dict[str, int] = {}
         avg_scores: list[float] = []
         avg_thresholds: list[float] = []
+        execute_count_by_venue = {venue: 0 for venue in venues}
         for row in decisions:
             action = str(row["action"] or "").lower()
+            venue = str(row["venue"] or "")
+            if action == "execute" and venue in execute_count_by_venue:
+                execute_count_by_venue[venue] += 1
             if action == "reject":
                 for part in [piece.strip() for piece in str(row["reason"] or "").split(",") if piece.strip()]:
                     reject_breakdown[part] = reject_breakdown.get(part, 0) + 1
@@ -60,6 +65,21 @@ class BinanceTechnicalService:
             {"reason": reason, "count": count}
             for reason, count in sorted(reject_breakdown.items(), key=lambda item: (-item[1], item[0]))
         ]
+
+        venue_summaries: dict[str, dict[str, Any]] = {}
+        for venue in venues:
+            venue_trades = [row for row in trades if str(row["venue"] or "") == venue]
+            venue_closed = [row for row in closed_trades if str(row["venue"] or "") == venue]
+            venue_wins = sum(1 for row in venue_closed if float(row["pnl"] or 0.0) > 0)
+            venue_summaries[venue] = {
+                "fresh_trade_count": len(venue_trades),
+                "fresh_closed_trades": len(venue_closed),
+                "net_pnl": round(sum(float(row["pnl"] or 0.0) for row in venue_closed), 4),
+                "gross_wins": round(sum(max(float(row["pnl"] or 0.0), 0.0) for row in venue_closed), 4),
+                "gross_losses": round(sum(min(float(row["pnl"] or 0.0), 0.0) for row in venue_closed), 4),
+                "win_rate": round((venue_wins / len(venue_closed)) * 100.0, 1) if venue_closed else None,
+                "execute_count": execute_count_by_venue.get(venue, 0),
+            }
 
         oldest_open_minutes = 0.0
         if open_positions:
@@ -84,14 +104,19 @@ class BinanceTechnicalService:
                 "fresh_open_trades": len(trades) - len(closed_trades),
                 "wins": wins,
                 "losses": losses,
-                "fresh_execute_count": sum(1 for row in decisions if str(row["action"] or "").lower() == "execute"),
+                "fresh_execute_count": sum(execute_count_by_venue.values()),
+                "enabled_venues": self.settings.enabled_venues,
+                "execute_count_by_venue": execute_count_by_venue,
             },
             "fresh_pnl_summary_7d": {
                 "fresh_window_days": self.settings.fresh_window_days,
+                "fresh_trade_count": len(trades),
+                "fresh_closed_trades": len(closed_trades),
                 "net_pnl": total_pnl,
                 "gross_wins": round(sum(max(float(row["pnl"] or 0.0), 0.0) for row in closed_trades), 4),
                 "gross_losses": round(sum(min(float(row["pnl"] or 0.0), 0.0) for row in closed_trades), 4),
                 "win_rate": round((wins / len(closed_trades)) * 100.0, 1) if closed_trades else None,
+                "venues": venue_summaries,
             },
             "technical_score_summary": {
                 "decision_rows": len(decisions),

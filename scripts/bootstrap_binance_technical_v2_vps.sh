@@ -143,7 +143,7 @@ upsert_env .env BINANCE_TECHNICAL_FORCE_SAMPLE true
 upsert_env .env BINANCE_TECHNICAL_FRESH_ONLY true
 upsert_env .env BINANCE_TECHNICAL_SYMBOLS BTC,ETH,SOL
 upsert_env .env BINANCE_FUTURES_ENABLED true
-upsert_env .env BINANCE_SPOT_ENABLED false
+upsert_env .env BINANCE_SPOT_ENABLED true
 
 python scripts/query_binance_technical_lane.py summary --db-path "$BINANCE_DB_PATH" >/dev/null
 bash scripts/refresh_binance_technical.sh

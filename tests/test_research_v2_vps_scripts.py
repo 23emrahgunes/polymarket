@@ -42,7 +42,7 @@ def test_bootstrap_binance_v2_script_exists_and_contains_expected_flow() -> None
     assert "DASHBOARD_LANE_MODE binance_technical" in text
     assert "refresh_binance_technical.sh" in text
     assert "query_binance_technical_lane.py summary" in text
-    assert "BINANCE_SPOT_ENABLED false" in text
+    assert "BINANCE_SPOT_ENABLED true" in text
     assert "BINANCE_DASHBOARD_PORT" in text
     assert "8083" in text
     assert 'git clone --branch "$BINANCE_BRANCH" "$SOURCE_REPO_DIR" "$BINANCE_REPO_DIR"' in text

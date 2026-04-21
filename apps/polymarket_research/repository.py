@@ -243,21 +243,29 @@ class PolymarketResearchRepository:
 
             has_whale_stats = self._table_exists(connection, "whale_stats")
             has_trades = self._table_exists(connection, "trades")
-            trade_closed_expr = "COALESCE(closed_at, timestamp)"
 
             trade_cte = ""
             trade_join = ""
             if has_trades:
+                trade_columns = self._table_columns(connection, "trades")
+
+                def column_or_fallback(name: str, fallback: str) -> str:
+                    return name if name in trade_columns else fallback
+
+                trade_closed_expr = f"COALESCE({column_or_fallback('closed_at', 'NULL')}, {column_or_fallback('timestamp', 'NULL')}, CURRENT_TIMESTAMP)"
+                trade_status_expr = f"COALESCE({column_or_fallback('status', 'NULL')}, '')"
+                trade_pnl_expr = f"COALESCE({column_or_fallback('pnl', 'NULL')}, 0)"
+                trade_category_expr = f"COALESCE({column_or_fallback('category', 'NULL')}, 'UNKNOWN')"
                 trade_cte = f"""
                 WITH trade_stats AS (
                     SELECT
                         LOWER(COALESCE(whale_address, '')) AS address,
-                        COUNT(CASE WHEN status LIKE 'CLOSED%' THEN 1 END) AS closed_trades,
-                        ROUND(COALESCE(SUM(COALESCE(pnl, 0)), 0), 4) AS realized_pnl,
+                        COUNT(CASE WHEN {trade_status_expr} LIKE 'CLOSED%' THEN 1 END) AS closed_trades,
+                        ROUND(COALESCE(SUM({trade_pnl_expr}), 0), 4) AS realized_pnl,
                         COUNT(DISTINCT substr({trade_closed_expr}, 1, 10)) AS active_days,
                         COUNT(*) AS total_trade_rows,
-                        SUM(CASE WHEN UPPER(COALESCE(category, '')) = 'CRYPTO' THEN 1 ELSE 0 END) AS crypto_trade_rows,
-                        MAX(COALESCE(category, '')) AS specialization_hint
+                        SUM(CASE WHEN UPPER({trade_category_expr}) = 'CRYPTO' THEN 1 ELSE 0 END) AS crypto_trade_rows,
+                        MAX({trade_category_expr}) AS specialization_hint
                     FROM trades
                     WHERE TRIM(COALESCE(whale_address, '')) != ''
                     GROUP BY LOWER(COALESCE(whale_address, ''))
@@ -377,19 +385,29 @@ class PolymarketResearchRepository:
             if not normalized_addresses:
                 return []
 
+            trade_columns = self._table_columns(connection, "trades")
+
+            def column_or_fallback(name: str, fallback: str) -> str:
+                return name if name in trade_columns else fallback
+
+            occurred_expr = f"COALESCE({column_or_fallback('closed_at', 'NULL')}, {column_or_fallback('timestamp', 'NULL')}, CURRENT_TIMESTAMP)"
+            category_expr = f"COALESCE({column_or_fallback('category', 'NULL')}, 'UNKNOWN')"
+            status_expr = f"COALESCE({column_or_fallback('status', 'NULL')}, '')"
+            pnl_expr = f"COALESCE({column_or_fallback('pnl', 'NULL')}, 0)"
+
             placeholders = ", ".join("?" for _ in normalized_addresses)
             cursor = connection.execute(
                 f"""
                 SELECT
                     LOWER(COALESCE(whale_address, '')) AS address,
-                    COALESCE(pnl, 0) AS pnl,
-                    COALESCE(closed_at, timestamp) AS occurred_at,
-                    COALESCE(category, 'UNKNOWN') AS category,
-                    COALESCE(status, '') AS status
+                    {pnl_expr} AS pnl,
+                    {occurred_expr} AS occurred_at,
+                    {category_expr} AS category,
+                    {status_expr} AS status
                 FROM trades
                 WHERE LOWER(COALESCE(whale_address, '')) IN ({placeholders})
-                  AND status LIKE 'CLOSED%'
-                ORDER BY COALESCE(closed_at, timestamp) ASC, id ASC
+                  AND {status_expr} LIKE 'CLOSED%'
+                ORDER BY {occurred_expr} ASC, id ASC
                 """,
                 tuple(normalized_addresses),
             )

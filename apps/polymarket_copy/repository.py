@@ -123,19 +123,69 @@ class PolymarketCopyRepository:
         with self.connect() as connection:
             if not _table_exists(connection, "polymarket_research_wallets"):
                 return []
-            sql = """
+            wallet_columns = _column_names(connection, "polymarket_research_wallets")
+            copy_ready_expr = _value_expr(wallet_columns, "copy_ready_gate_status", "'blocked'")
+            watchlist_mode_expr = _value_expr(wallet_columns, "watchlist_mode", "''")
+            watchlist_status_expr = _value_expr(wallet_columns, "watchlist_status", "''")
+            identity_status_expr = _value_expr(wallet_columns, "identity_resolution_status", "''")
+            evidence_expr = _value_expr(
+                wallet_columns,
+                "historical_trade_evidence_status",
+                "'no_historical_evidence'",
+            )
+            target_specialization_expr = _value_expr(wallet_columns, "target_specialization", "''")
+            primary_source_expr = _value_expr(wallet_columns, "primary_source", "''")
+            shadow_edge_expr = _value_expr(wallet_columns, "shadow_edge", "0")
+            closed_shadow_expr = _value_expr(wallet_columns, "closed_shadow_trades", "0")
+            copy_ready_rank_expr = _value_expr(wallet_columns, "copy_ready_rank", "999999")
+            watchlist_rank_expr = _value_expr(wallet_columns, "watchlist_priority_rank", "999999")
+            trust_score_expr = _value_expr(wallet_columns, "trust_score", "0")
+            specialization_expr = _value_expr(wallet_columns, "specialization", "''")
+            manual_fast_track_condition = f"""
+                COALESCE({primary_source_expr}, '') = 'manual_persisted'
+                AND COALESCE({watchlist_mode_expr}, '') = 'fast_track_shadow'
+                AND COALESCE({watchlist_status_expr}, '') = 'linked'
+                AND COALESCE({identity_status_expr}, '') = 'linked'
+                AND COALESCE({evidence_expr}, 'no_historical_evidence') IN ('detailed_trade_history', 'stats_only')
+                AND (
+                    COALESCE({specialization_expr}, '') = 'CRYPTO'
+                    OR COALESCE({target_specialization_expr}, '') = 'CRYPTO'
+                )
+            """
+            sql = f"""
                 SELECT
                     address,
-                    specialization,
-                    trust_score,
-                    shadow_edge,
-                    closed_shadow_trades,
-                    copy_ready_rank,
-                    watchlist_priority_rank,
-                    primary_source
+                    COALESCE({specialization_expr}, '') AS specialization,
+                    COALESCE({trust_score_expr}, 0) AS trust_score,
+                    COALESCE({shadow_edge_expr}, 0) AS shadow_edge,
+                    COALESCE({closed_shadow_expr}, 0) AS closed_shadow_trades,
+                    COALESCE({copy_ready_rank_expr}, 999999) AS copy_ready_rank,
+                    COALESCE({watchlist_rank_expr}, 999999) AS watchlist_priority_rank,
+                    COALESCE({primary_source_expr}, '') AS primary_source,
+                    COALESCE({watchlist_mode_expr}, '') AS watchlist_mode,
+                    COALESCE({watchlist_status_expr}, '') AS watchlist_status,
+                    COALESCE({identity_status_expr}, '') AS identity_resolution_status,
+                    COALESCE({evidence_expr}, 'no_historical_evidence') AS historical_trade_evidence_status,
+                    CASE
+                        WHEN COALESCE({copy_ready_expr}, 'blocked') = 'promoted' THEN 'shadow_proven'
+                        WHEN {manual_fast_track_condition} THEN 'manual_fast_track'
+                        ELSE ''
+                    END AS cohort_source
                 FROM polymarket_research_wallets
-                WHERE copy_ready_gate_status = 'promoted'
-                ORDER BY copy_ready_rank ASC, shadow_edge DESC, trust_score DESC, address ASC
+                WHERE COALESCE({copy_ready_expr}, 'blocked') = 'promoted'
+                   OR ({manual_fast_track_condition})
+                ORDER BY
+                    CASE
+                        WHEN COALESCE({copy_ready_expr}, 'blocked') = 'promoted' THEN 0
+                        ELSE 1
+                    END ASC,
+                    CASE
+                        WHEN COALESCE({copy_ready_expr}, 'blocked') = 'promoted' THEN COALESCE({copy_ready_rank_expr}, 999999)
+                        ELSE COALESCE({watchlist_rank_expr}, 999999)
+                    END ASC,
+                    COALESCE({shadow_edge_expr}, 0) DESC,
+                    COALESCE({trust_score_expr}, 0) DESC,
+                    address ASC
             """
             params: list[Any] = []
             if limit is not None:
@@ -349,6 +399,19 @@ class PolymarketCopyRepository:
                 (wallet_address.lower(),),
             ).fetchone()
             return float((row["total"] if row is not None else 0.0) or 0.0)
+
+    def fetch_open_wallet_position_count(self, wallet_address: str) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM polymarket_copy_positions
+                WHERE wallet_address = ?
+                  AND status = 'OPEN'
+                """,
+                (wallet_address.lower(),),
+            ).fetchone()
+            return int((row["total"] if row is not None else 0) or 0)
 
     def fetch_open_market_notional(self, market_id: str) -> float:
         with self.connect() as connection:
