@@ -42,18 +42,26 @@ function dashboard_open_db(array &$warnings): ?PDO
 
 function dashboard_fetch_all(PDO $pdo, string $sql, array $params = []): array
 {
-    $statement = $pdo->prepare($sql);
-    $statement->execute($params);
-    $rows = $statement->fetchAll();
-    return is_array($rows) ? $rows : [];
+    try {
+        $statement = $pdo->prepare($sql);
+        $statement->execute($params);
+        $rows = $statement->fetchAll();
+        return is_array($rows) ? $rows : [];
+    } catch (Throwable $exception) {
+        return [];
+    }
 }
 
 function dashboard_fetch_one(PDO $pdo, string $sql, array $params = []): ?array
 {
-    $statement = $pdo->prepare($sql);
-    $statement->execute($params);
-    $row = $statement->fetch();
-    return is_array($row) ? $row : null;
+    try {
+        $statement = $pdo->prepare($sql);
+        $statement->execute($params);
+        $row = $statement->fetch();
+        return is_array($row) ? $row : null;
+    } catch (Throwable $exception) {
+        return null;
+    }
 }
 
 function dashboard_decision_scan_limit(): int

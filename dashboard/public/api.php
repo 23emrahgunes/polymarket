@@ -37,7 +37,25 @@ if ($cacheSeconds > 0 && !isset($_GET['nocache'])) {
     }
 }
 
-$payload = dashboard_augment_payload(dashboard_build_payload($view));
+try {
+    $payload = dashboard_augment_payload(dashboard_build_payload($view));
+} catch (Throwable $exception) {
+    $payload = [
+        'generated_at' => gmdate('c'),
+        'service' => [
+            'name' => dashboard_service_name(),
+            'active' => false,
+            'status_text' => 'dashboard payload unavailable',
+            'last_error' => $exception->getMessage(),
+        ],
+        'runtime_summary' => [],
+        'warnings' => [
+            dashboard_translate_warning('dashboard payload failed: ' . $exception->getMessage()),
+        ],
+        'dashboard_tab_help' => dashboard_build_dashboard_tab_help(),
+        'dashboard_glossary' => dashboard_build_dashboard_glossary(),
+    ];
+}
 $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 if ($json === false) {
     dashboard_json_response($payload);
