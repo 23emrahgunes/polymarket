@@ -8,6 +8,7 @@ BINANCE_REPO_DIR="${BINANCE_REPO_DIR:-/root/binance-technical-v2}"
 RESEARCH_DASHBOARD_SERVICE_NAME="${RESEARCH_DASHBOARD_SERVICE_NAME:-ghost-trader-research-dashboard}"
 RESEARCH_REFRESH_SERVICE_NAME="${RESEARCH_REFRESH_SERVICE_NAME:-ghost-trader-research-refresh}"
 RESEARCH_REFRESH_TIMER_NAME="${RESEARCH_REFRESH_TIMER_NAME:-ghost-trader-research-refresh.timer}"
+POLYMARKET_COPY_SERVICE_NAME="${POLYMARKET_COPY_SERVICE_NAME:-ghost-trader-polymarket-copy}"
 BINANCE_RUNTIME_SERVICE_NAME="${BINANCE_RUNTIME_SERVICE_NAME:-ghost-trader-binance-technical}"
 BINANCE_DASHBOARD_SERVICE_NAME="${BINANCE_DASHBOARD_SERVICE_NAME:-ghost-trader-binance-dashboard}"
 
@@ -28,6 +29,7 @@ cd "$SOURCE_REPO_DIR"
 systemctl disable --now "${RESEARCH_DASHBOARD_SERVICE_NAME}.service" >/dev/null 2>&1 || true
 systemctl disable --now "$RESEARCH_REFRESH_TIMER_NAME" >/dev/null 2>&1 || true
 systemctl disable --now "${RESEARCH_REFRESH_SERVICE_NAME}.service" >/dev/null 2>&1 || true
+systemctl disable --now "${POLYMARKET_COPY_SERVICE_NAME}.service" >/dev/null 2>&1 || true
 systemctl disable --now "${BINANCE_RUNTIME_SERVICE_NAME}.service" >/dev/null 2>&1 || true
 systemctl disable --now "${BINANCE_DASHBOARD_SERVICE_NAME}.service" >/dev/null 2>&1 || true
 

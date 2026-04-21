@@ -17,11 +17,11 @@ $heroCopy = $researchOnly
     ? 'Bu panel trade açmaz; istikrarlı cüzdanları bulur, kaynak dağılımını dengeler, shadow takip kanıtını toplar ve copy-ready kısa listeyi sade biçimde gösterir.'
     : 'Çalışma zamanı sağlığı, çoklu venue durumu, karar denetim akışı, market eşleme kapsamı ve temkinli performans verdict’i için salt-okunur operasyon paneli.';
 $dashboardTabs = $researchOnly
-    ? ['polymarket-research', 'sozluk-aciklamalar']
-    : ['polymarket-research', 'binance-technical', 'sozluk-aciklamalar'];
+    ? ['polymarket-research', 'polymarket-copy', 'sozluk-aciklamalar']
+    : ['polymarket-research', 'polymarket-copy', 'binance-technical', 'sozluk-aciklamalar'];
 $dashboardTabLabels = $researchOnly
-    ? ['polymarket-research' => 'Polymarket Research', 'sozluk-aciklamalar' => 'Sozluk / Aciklamalar']
-    : ['polymarket-research' => 'Polymarket Research', 'binance-technical' => 'Binance Technical', 'sozluk-aciklamalar' => 'Sozluk / Aciklamalar'];
+    ? ['polymarket-research' => 'Polymarket Research', 'polymarket-copy' => 'Polymarket Copy', 'sozluk-aciklamalar' => 'Sozluk / Aciklamalar']
+    : ['polymarket-research' => 'Polymarket Research', 'polymarket-copy' => 'Polymarket Copy', 'binance-technical' => 'Binance Technical', 'sozluk-aciklamalar' => 'Sozluk / Aciklamalar'];
 
 if ($binanceOnly) {
     $heroTitle = 'Binance Technical paneli: fresh paper PnL, skor kalitesi ve pozisyon baskisi.';
@@ -149,7 +149,9 @@ $laneBodyClass = $researchOnly
             display: none !important;
         }
         body.lane-binance-technical [data-tab-trigger="polymarket-research"],
-        body.lane-binance-technical [data-tab="polymarket-research"] {
+        body.lane-binance-technical [data-tab="polymarket-research"],
+        body.lane-binance-technical [data-tab-trigger="polymarket-copy"],
+        body.lane-binance-technical [data-tab="polymarket-copy"] {
             display: none !important;
         }
         .hero-card {
@@ -449,9 +451,9 @@ $laneBodyClass = $researchOnly
         #market-alias-counts, #whale-wallet-counts, #unsupported-side-summary { max-height: 180px; overflow: auto; }
         #top-market-aliases, #top-whales, #trusted-whale-summary { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
-        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #binance-technical-summary, #binance-technical-fresh-summary, #binance-technical-gate-funnel, #binance-technical-fresh-gate-funnel, #binance-technical-recovery-summary, #binance-technical-fresh-recovery-summary, #binance-technical-score-component-summary, #binance-technical-score-gap-summary, #binance-technical-fresh-score-gap-summary, #binance-technical-stale-eligibility-summary, #binance-technical-legacy-position-shape-summary, #binance-technical-position-pressure-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
+        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #copy-execution-summary, #shadow-vs-copy-drift-summary, #active-copy-positions, #wallet-follower-pnl-summary, #recent-copy-actions, #binance-technical-summary, #binance-technical-fresh-summary, #binance-technical-gate-funnel, #binance-technical-fresh-gate-funnel, #binance-technical-recovery-summary, #binance-technical-fresh-recovery-summary, #binance-technical-score-component-summary, #binance-technical-score-gap-summary, #binance-technical-fresh-score-gap-summary, #binance-technical-stale-eligibility-summary, #binance-technical-legacy-position-shape-summary, #binance-technical-position-pressure-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
         #recent-gate-ready-candidates { max-height: 260px; overflow: auto; }
-        #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown, #binance-technical-reject-breakdown, #binance-technical-fresh-reject-breakdown, #binance-technical-score-blocker-breakdown { max-height: 220px; overflow: auto; }
+        #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown, #copy-reject-breakdown, #binance-technical-reject-breakdown, #binance-technical-fresh-reject-breakdown, #binance-technical-score-blocker-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
         #recent-decisions table { min-width: 1040px; table-layout: auto; }
         #top-whales table, #trusted-whale-summary table { min-width: 900px; table-layout: auto; }
@@ -495,6 +497,9 @@ $laneBodyClass = $researchOnly
     <section class="tabs-shell" id="dashboard-tabs">
         <div class="tabs-bar" role="tablist" aria-label="Dashboard sekmeleri">
             <button class="tab-button" type="button" data-tab-trigger="polymarket-research">Polymarket Research</button>
+            <?php if (!$binanceOnly): ?>
+                <button class="tab-button" type="button" data-tab-trigger="polymarket-copy">Polymarket Copy</button>
+            <?php endif; ?>
             <?php if (!$researchOnly): ?>
                 <button class="tab-button" type="button" data-tab-trigger="binance-technical">Binance Technical</button>
             <?php endif; ?>
@@ -586,6 +591,38 @@ $laneBodyClass = $researchOnly
         <article class="panel panel-wide" data-tab="polymarket-research">
             <div class="panel-header"><h2>Son Shadow Aksiyonlari</h2><span class="badge info">Recent</span></div>
             <div id="recent-shadow-actions"></div>
+        </article>
+
+        <div class="section-marker" data-tab="polymarket-copy"><span class="section-label">Polymarket Copy</span></div>
+        <article class="panel panel-wide" data-tab="polymarket-copy">
+            <div class="panel-header"><h2>Paper Copy Ozeti</h2><span class="badge warn">Paper Only</span></div>
+            <p class="panel-copy">Bu sekme sadece copy-ready cüzdanlardan gelen paper follower aksiyonlarini gosterir. Copy-ready olmayan discovery veya shadow cüzdanlar burada islem actirmaz.</p>
+            <div class="panel-subgrid">
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Copy Execution Ozeti</h3><span class="badge info">Runtime</span></div>
+                    <div class="metric-list" id="copy-execution-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Shadow vs Copy Drift</h3><span class="badge info">Drift</span></div>
+                    <div class="metric-list" id="shadow-vs-copy-drift-summary"></div>
+                </div>
+            </div>
+        </article>
+        <article class="panel panel-half" data-tab="polymarket-copy">
+            <div class="panel-header"><h2>Aktif Paper Copy Pozisyonlari</h2><span class="badge info">Follower</span></div>
+            <div id="active-copy-positions"></div>
+        </article>
+        <article class="panel panel-half" data-tab="polymarket-copy">
+            <div class="panel-header"><h2>Copy Red Nedenleri</h2><span class="badge warn">Guard</span></div>
+            <div id="copy-reject-breakdown"></div>
+        </article>
+        <article class="panel panel-wide" data-tab="polymarket-copy">
+            <div class="panel-header"><h2>Wallet Follower PnL</h2><span class="badge info">Paper PnL</span></div>
+            <div id="wallet-follower-pnl-summary"></div>
+        </article>
+        <article class="panel panel-wide" data-tab="polymarket-copy">
+            <div class="panel-header"><h2>Son Copy Aksiyonlari</h2><span class="badge info">Recent</span></div>
+            <div id="recent-copy-actions"></div>
         </article>
 
         <?php if (!$researchOnly): ?>
@@ -1887,6 +1924,60 @@ function updatePanels(payload) {
         { key: 'shadow_pnl', label: 'Shadow PnL', render: (row) => escapeHtml(formatNumber(row.shadow_pnl, 2)) },
         { key: 'status', label: 'Durum', render: (row) => escapeHtml(row.status || 'OPEN') }
     ], payload.recent_shadow_actions || [], 'Henuz shadow aksiyonu yok.');
+
+    const copyExecution = payload.copy_execution_summary || {};
+    renderMetrics('copy-execution-summary', [
+        { label: 'Copy-ready wallet', value: formatNumber(copyExecution.copy_ready_wallets, 0) },
+        { label: 'Open aksiyon', value: formatNumber(copyExecution.open_actions, 0) },
+        { label: 'Close aksiyon', value: formatNumber(copyExecution.close_actions, 0) },
+        { label: 'Replay closed', value: formatNumber(copyExecution.replay_closed_actions, 0) },
+        { label: 'Reject aksiyon', value: formatNumber(copyExecution.reject_actions, 0) },
+        { label: 'Aktif follower pozisyon', value: formatNumber(copyExecution.active_copy_positions, 0) },
+        { label: 'Realized PnL wallet', value: formatNumber(copyExecution.wallets_with_realized_pnl, 0) }
+    ]);
+    const copyDrift = payload.shadow_vs_copy_drift_summary || {};
+    renderMetrics('shadow-vs-copy-drift-summary', [
+        { label: 'Copy-ready wallet', value: formatNumber(copyDrift.copy_ready_wallets, 0) },
+        { label: 'Shadow closed trade', value: formatNumber(copyDrift.shadow_closed_trades, 0) },
+        { label: 'Shadow net edge', value: formatNumber(copyDrift.shadow_net_edge, 4) },
+        { label: 'Source realized PnL', value: formatNumber(copyDrift.source_realized_pnl, 2) },
+        { label: 'Copy realized PnL', value: formatNumber(copyDrift.copy_realized_pnl, 2) },
+        { label: 'Copy-source fark', value: formatNumber(copyDrift.copy_vs_source_pnl_gap, 2) }
+    ]);
+    renderTable('active-copy-positions', [
+        { key: 'wallet_address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.wallet_address || '', 20) },
+        { key: 'market_id', label: 'Market', mono: true, render: (row) => truncateHtml(row.market_id || '', 24) },
+        { key: 'category', label: 'Kategori', render: (row) => escapeHtml(translateCategory(row.category || 'UNKNOWN')) },
+        { key: 'side', label: 'Yon', render: (row) => escapeHtml(row.side || '') },
+        { key: 'follower_notional_usd', label: 'Follower USD', render: (row) => escapeHtml(formatNumber(row.follower_notional_usd, 2)) },
+        { key: 'source_notional_usd', label: 'Kaynak USD', render: (row) => escapeHtml(formatNumber(row.source_notional_usd, 2)) },
+        { key: 'opened_at', label: 'Acilis', mono: true, render: (row) => escapeHtml(row.opened_at || '') },
+        { key: 'status', label: 'Durum', render: (row) => escapeHtml(row.status || 'OPEN') }
+    ], payload.active_copy_positions || [], 'Henuz aktif paper copy pozisyonu yok.');
+    renderTable('copy-reject-breakdown', [
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'unknown')) },
+        { key: 'count', label: 'Adet', render: (row) => escapeHtml(formatNumber(row.count, 0)) }
+    ], payload.copy_reject_breakdown || [], 'Henuz copy red nedeni yok.');
+    renderTable('wallet-follower-pnl-summary', [
+        { key: 'wallet_address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.wallet_address || '', 22) },
+        { key: 'closed_actions', label: 'Kapali aksiyon', render: (row) => escapeHtml(formatNumber(row.closed_actions, 0)) },
+        { key: 'follower_realized_pnl', label: 'Follower PnL', render: (row) => escapeHtml(formatNumber(row.follower_realized_pnl, 2)) },
+        { key: 'source_realized_pnl', label: 'Kaynak PnL', render: (row) => escapeHtml(formatNumber(row.source_realized_pnl, 2)) },
+        { key: 'pnl_drift', label: 'Drift', render: (row) => escapeHtml(formatNumber(row.pnl_drift, 2)) },
+        { key: 'opened_notional_usd', label: 'Open notional', render: (row) => escapeHtml(formatNumber(row.opened_notional_usd, 2)) },
+        { key: 'last_action_at', label: 'Son aksiyon', mono: true, render: (row) => escapeHtml(row.last_action_at || '') }
+    ], payload.wallet_follower_pnl_summary || [], 'Henuz follower PnL verisi yok.');
+    renderTable('recent-copy-actions', [
+        { key: 'executed_at', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.executed_at || '') },
+        { key: 'wallet_address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.wallet_address || '', 20) },
+        { key: 'action_type', label: 'Aksiyon', render: (row) => escapeHtml(row.action_type || '') },
+        { key: 'reason', label: 'Neden', render: (row) => escapeHtml(translateReason(row.reason || 'none')) },
+        { key: 'market_id', label: 'Market', mono: true, render: (row) => truncateHtml(row.market_id || '', 24) },
+        { key: 'side', label: 'Yon', render: (row) => escapeHtml(row.side || '') },
+        { key: 'source_status', label: 'Kaynak Durum', render: (row) => escapeHtml(row.source_status || '') },
+        { key: 'follower_notional_usd', label: 'Follower USD', render: (row) => escapeHtml(formatNumber(row.follower_notional_usd, 2)) },
+        { key: 'follower_pnl', label: 'Follower PnL', render: (row) => escapeHtml(formatNumber(row.follower_pnl, 2)) }
+    ], payload.recent_copy_actions || [], 'Henuz copy aksiyonu yok.');
 
     const binanceLane = payload.fresh_technical_summary || {};
     const freshPnl = payload.fresh_pnl_summary_7d || {};

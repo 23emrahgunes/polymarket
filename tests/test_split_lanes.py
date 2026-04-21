@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from apps.binance_technical.cli import main as binance_technical_cli_main
 from apps.binance_technical.config import BinanceTechnicalSettings
 from apps.binance_technical.provider import MarketFrame, MarketSnapshot
 from apps.binance_technical.repository import BinanceTechnicalRepository
@@ -20,6 +21,9 @@ from apps.polymarket_research.cli import main as polymarket_research_cli_main
 from apps.polymarket_research.config import PolymarketResearchSettings
 from apps.polymarket_research.repository import PolymarketResearchRepository
 from apps.polymarket_research.service import PolymarketResearchService
+from apps.polymarket_copy.cli import main as polymarket_copy_cli_main
+from apps.polymarket_copy.config import PolymarketCopySettings
+from apps.polymarket_copy.runtime import PolymarketCopyRuntime
 
 
 def _create_polymarket_research_db(db_path: Path) -> None:
@@ -571,6 +575,110 @@ def test_polymarket_research_service_builds_shadow_funnel(tmp_path: Path) -> Non
     assert persisted_by_address["0xeee"]["cohort"] == "copy_ready"
 
 
+def test_polymarket_copy_lane_opens_replays_and_reports(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "polymarket_research.db"
+    _create_polymarket_research_db(db_path)
+
+    research_repository = PolymarketResearchRepository(str(db_path))
+    research_summary = PolymarketResearchService(
+        PolymarketResearchSettings(
+            db_path=str(db_path),
+            source_db_path=str(db_path),
+            discovery_pool_size=50,
+            shadow_pool_size=20,
+            copy_ready_size=5,
+            shadow_window_days=14,
+        ),
+        research_repository,
+    ).build_summary()
+    assert research_summary["copy_ready_wallet_summary"]["copy_ready_wallets"] >= 1
+
+    now_text = datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO trades (
+                whale_address, venue, market_id, status, pnl, size,
+                closed_at, timestamp, category, source_signal, side
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "0xaaa",
+                "polymarket",
+                "Bitcoin Up or Down - live source",
+                "OPEN",
+                0.0,
+                140.0,
+                now_text,
+                now_text,
+                "CRYPTO",
+                "manual_live_source",
+                "BUY",
+            ),
+        )
+        connection.commit()
+
+    copy_settings = PolymarketCopySettings(
+        db_path=str(db_path),
+        source_db_path=str(db_path),
+        lookback_days=14,
+        follower_delay_seconds=0,
+        min_trade_size_usd=25.0,
+        max_trade_size_usd=50.0,
+        wallet_risk_limit_usd=150.0,
+        market_risk_limit_usd=150.0,
+        copy_ready_limit=5,
+    )
+    summary = PolymarketCopyRuntime(copy_settings).run_once()
+
+    assert summary["copy_execution_summary"]["copy_ready_wallets"] >= 1
+    assert summary["copy_execution_summary"]["replay_closed_actions"] >= 1
+    assert summary["copy_execution_summary"]["open_actions"] >= 1
+    assert summary["copy_execution_summary"]["active_copy_positions"] >= 1
+    assert summary["wallet_follower_pnl_summary"]
+    assert summary["shadow_vs_copy_drift_summary"]["copy_ready_wallets"] >= 1
+
+    assert (
+        polymarket_copy_cli_main(
+            [
+                "--db-path",
+                str(db_path),
+                "--source-db-path",
+                str(db_path),
+                "summary",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "POLYMARKET_COPY_LANE_SUMMARY" in output
+    assert "copy_execution_summary" in output
+
+
+def test_polymarket_copy_cli_accepts_db_path_after_subcommand(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "polymarket_copy_cli.db"
+    assert (
+        polymarket_copy_cli_main(
+            [
+                "summary",
+                "--db-path",
+                str(db_path),
+                "--source-db-path",
+                str(db_path),
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "POLYMARKET_COPY_LANE_SUMMARY" in output
+
+
 def test_polymarket_watchlist_manual_linking_guards(tmp_path: Path) -> None:
     db_path = tmp_path / "polymarket_research.db"
     _create_polymarket_research_db(db_path)
@@ -843,6 +951,16 @@ def test_binance_technical_wrapper_script_runs_via_subprocess(tmp_path: Path) ->
     assert "fresh_pnl_summary_7d" in completed.stdout
 
 
+def test_binance_cli_accepts_db_path_after_subcommand(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "binance_cli.db"
+    assert binance_technical_cli_main(["summary", "--db-path", str(db_path)]) == 0
+    output = capsys.readouterr().out
+    assert "BINANCE_TECHNICAL_LANE_SUMMARY" in output
+
+
 def test_binance_technical_service_builds_fresh_and_legacy_summaries(tmp_path: Path) -> None:
     db_path = tmp_path / "binance_lane.db"
     _create_binance_lane_db(db_path)
@@ -1040,6 +1158,15 @@ def test_binance_runtime_rejects_spot_short_with_explicit_reason(tmp_path: Path)
     assert len(decisions) == 1
     assert decisions[0]["action"] == "reject"
     assert "spot_short_not_supported" in str(decisions[0]["reason"])
+
+
+def test_binance_settings_default_to_futures_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BINANCE_FUTURES_ENABLED", raising=False)
+    monkeypatch.delenv("BINANCE_SPOT_ENABLED", raising=False)
+    settings = BinanceTechnicalSettings()
+    assert settings.futures_enabled is True
+    assert settings.spot_enabled is False
+    assert settings.enabled_venues == ["binance_futures"]
 
 
 def test_binance_runtime_sizes_down_when_remaining_capacity_is_limited(tmp_path: Path) -> None:

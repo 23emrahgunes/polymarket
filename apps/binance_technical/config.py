@@ -53,7 +53,7 @@ class BinanceTechnicalSettings:
     force_min_score: float = field(default_factory=lambda: _env_float("BINANCE_TECHNICAL_FORCE_MIN_SCORE", 0.50))
     force_cooldown_minutes: float = field(default_factory=lambda: _env_float("BINANCE_TECHNICAL_FORCE_COOLDOWN_MINUTES", 30.0))
     futures_enabled: bool = field(default_factory=lambda: _env_bool("BINANCE_FUTURES_ENABLED", True))
-    spot_enabled: bool = field(default_factory=lambda: _env_bool("BINANCE_SPOT_ENABLED", True))
+    spot_enabled: bool = field(default_factory=lambda: _env_bool("BINANCE_SPOT_ENABLED", False))
     max_open_positions: int = field(default_factory=lambda: _env_int("BINANCE_TECHNICAL_MAX_OPEN_POSITIONS", 5))
     max_position_usd: float = field(default_factory=lambda: _env_float("BINANCE_TECHNICAL_MAX_POSITION_USD", 450.0))
     max_order_usd: float = field(default_factory=lambda: _env_float("BINANCE_TECHNICAL_MAX_ORDER_USD", 100.0))

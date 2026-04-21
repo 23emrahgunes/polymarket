@@ -33,6 +33,7 @@ Recommended smoke checks:
   systemctl status ghost-trader-research-dashboard --no-pager
   systemctl status ghost-trader-research-refresh --no-pager
   systemctl status ghost-trader-research-refresh.timer --no-pager
+  systemctl status ghost-trader-polymarket-copy --no-pager
   systemctl status ghost-trader-binance-technical --no-pager
   systemctl status ghost-trader-binance-dashboard --no-pager
 EOF

@@ -11,6 +11,7 @@ LEGACY_DB_PATH="${LEGACY_DB_PATH:-/root/polymarket/data/ghost_trader.db}"
 RESEARCH_DASHBOARD_SERVICE_NAME="${RESEARCH_DASHBOARD_SERVICE_NAME:-ghost-trader-research-dashboard}"
 RESEARCH_REFRESH_SERVICE_NAME="${RESEARCH_REFRESH_SERVICE_NAME:-ghost-trader-research-refresh}"
 RESEARCH_REFRESH_TIMER_NAME="${RESEARCH_REFRESH_TIMER_NAME:-ghost-trader-research-refresh.timer}"
+POLYMARKET_COPY_SERVICE_NAME="${POLYMARKET_COPY_SERVICE_NAME:-ghost-trader-polymarket-copy}"
 REPO_URL="${REPO_URL:-https://github.com/23emrahgunes/polymarket.git}"
 DASHBOARD_HASH="${DASHBOARD_PASSWORD_HASH:-\$2y\$10\$ycVVdHE7aM4FCpXKhwIg2.lP64iQndfqYEI2uvcj7FQ.gXo9umPzy}"
 
@@ -79,17 +80,23 @@ PY
 
 reset_managed_worktree_drift() {
     local repo_dir="$1"
-    local path="scripts/refresh_polymarket_research.sh"
+    local managed_paths=(
+        "scripts/refresh_polymarket_research.sh"
+        "scripts/refresh_polymarket_copy.sh"
+        "scripts/start_polymarket_copy.sh"
+    )
 
     [[ -d "$repo_dir/.git" ]] || return 0
 
-    if git -C "$repo_dir" diff --quiet -- "$path" 2>/dev/null; then
-        return 0
-    fi
+    for path in "${managed_paths[@]}"; do
+        if git -C "$repo_dir" diff --quiet -- "$path" 2>/dev/null; then
+            continue
+        fi
 
-    echo "Resetting managed worktree drift for $path"
-    git -C "$repo_dir" restore --source=HEAD --worktree -- "$path" 2>/dev/null \
-        || git -C "$repo_dir" checkout -- "$path"
+        echo "Resetting managed worktree drift for $path"
+        git -C "$repo_dir" restore --source=HEAD --worktree -- "$path" 2>/dev/null \
+            || git -C "$repo_dir" checkout -- "$path"
+    done
 }
 
 install_packages
@@ -140,12 +147,22 @@ upsert_env .env POLYMARKET_RESEARCH_DISCOVERY_POOL 50
 upsert_env .env POLYMARKET_RESEARCH_SHADOW_POOL 20
 upsert_env .env POLYMARKET_RESEARCH_COPY_READY_POOL 5
 upsert_env .env POLYMARKET_RESEARCH_SHADOW_WINDOW_DAYS 14
+upsert_env .env POLYMARKET_COPY_DB_PATH "$RESEARCH_DB_PATH"
+upsert_env .env POLYMARKET_COPY_SOURCE_DB_PATH "$LEGACY_DB_PATH"
+upsert_env .env POLYMARKET_COPY_READY_LIMIT 5
+upsert_env .env POLYMARKET_COPY_LOOKBACK_DAYS 14
+upsert_env .env POLYMARKET_COPY_DELAY_SECONDS 90
+upsert_env .env POLYMARKET_COPY_MIN_TRADE_SIZE_USD 25
+upsert_env .env POLYMARKET_COPY_MAX_TRADE_SIZE_USD 50
+upsert_env .env POLYMARKET_COPY_WALLET_RISK_LIMIT_USD 100
+upsert_env .env POLYMARKET_COPY_MARKET_RISK_LIMIT_USD 150
 
 if [[ -f "$LEGACY_DB_PATH" ]]; then
     python scripts/import_research_seed_data.py --source-db "$LEGACY_DB_PATH" --target-db "$RESEARCH_DB_PATH"
 fi
 
 bash scripts/refresh_polymarket_research.sh
+bash scripts/refresh_polymarket_copy.sh
 
 render_template \
     deploy/systemd/ghost-trader-research-dashboard.service.template \
@@ -168,9 +185,18 @@ render_template \
     "/etc/systemd/system/${RESEARCH_REFRESH_TIMER_NAME}" \
     "__REFRESH_SERVICE__=$RESEARCH_REFRESH_SERVICE_NAME"
 
+render_template \
+    deploy/systemd/ghost-trader-polymarket-copy.service.template \
+    "/etc/systemd/system/${POLYMARKET_COPY_SERVICE_NAME}.service" \
+    "__WORKDIR__=$RESEARCH_REPO_DIR" \
+    "__ENV_FILE__=$RESEARCH_REPO_DIR/.env" \
+    "__USER__=root" \
+    "__GROUP__=root"
+
 systemctl daemon-reload
 systemctl enable --now "${RESEARCH_DASHBOARD_SERVICE_NAME}.service"
 systemctl enable --now "$RESEARCH_REFRESH_TIMER_NAME"
+systemctl enable --now "${POLYMARKET_COPY_SERVICE_NAME}.service"
 
 cat <<EOF
 
@@ -184,6 +210,9 @@ Useful commands:
   systemctl status ${RESEARCH_DASHBOARD_SERVICE_NAME} --no-pager
   systemctl status ${RESEARCH_REFRESH_SERVICE_NAME} --no-pager
   systemctl status ${RESEARCH_REFRESH_TIMER_NAME} --no-pager
+  systemctl status ${POLYMARKET_COPY_SERVICE_NAME} --no-pager
   cd $RESEARCH_REPO_DIR && bash scripts/refresh_polymarket_research.sh
+  cd $RESEARCH_REPO_DIR && bash scripts/refresh_polymarket_copy.sh
   cd $RESEARCH_REPO_DIR && python scripts/query_polymarket_research.py summary --db-path $RESEARCH_DB_PATH
+  cd $RESEARCH_REPO_DIR && python scripts/query_polymarket_copy_lane.py summary --db-path $RESEARCH_DB_PATH --source-db-path $LEGACY_DB_PATH
 EOF

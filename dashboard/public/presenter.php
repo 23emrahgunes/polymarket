@@ -2432,6 +2432,233 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
     ];
 }
 
+function dashboard_empty_polymarket_copy_summary(): array
+{
+    return [
+        'copy_execution_summary' => [
+            'copy_ready_wallets' => 0,
+            'copy_window_days' => 14,
+            'open_actions' => 0,
+            'close_actions' => 0,
+            'replay_closed_actions' => 0,
+            'reject_actions' => 0,
+            'active_copy_positions' => 0,
+            'wallets_with_realized_pnl' => 0,
+        ],
+        'copy_reject_breakdown' => [],
+        'active_copy_positions' => [],
+        'wallet_follower_pnl_summary' => [],
+        'shadow_vs_copy_drift_summary' => [
+            'copy_ready_wallets' => 0,
+            'shadow_closed_trades' => 0,
+            'shadow_net_edge' => 0.0,
+            'source_realized_pnl' => 0.0,
+            'copy_realized_pnl' => 0.0,
+            'copy_vs_source_pnl_gap' => 0.0,
+        ],
+        'recent_copy_actions' => [],
+    ];
+}
+
+function dashboard_build_polymarket_copy_summary(PDO $pdo): array
+{
+    $summary = dashboard_empty_polymarket_copy_summary();
+
+    if (dashboard_table_exists($pdo, 'polymarket_research_wallets')) {
+        $copyReadyWhere = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'copy_ready_gate_status')
+            ? "copy_ready_gate_status = 'promoted'"
+            : "cohort = 'copy_ready'";
+        $copyReady = dashboard_fetch_one(
+            $pdo,
+            "
+            SELECT
+                COUNT(*) AS copy_ready_wallets,
+                COALESCE(SUM(COALESCE(closed_shadow_trades, 0)), 0) AS shadow_closed_trades,
+                COALESCE(SUM(COALESCE(shadow_edge, 0)), 0) AS shadow_net_edge
+            FROM polymarket_research_wallets
+            WHERE {$copyReadyWhere}
+            "
+        );
+        $summary['copy_execution_summary']['copy_ready_wallets'] = (int) ($copyReady['copy_ready_wallets'] ?? 0);
+        $summary['shadow_vs_copy_drift_summary']['copy_ready_wallets'] = (int) ($copyReady['copy_ready_wallets'] ?? 0);
+        $summary['shadow_vs_copy_drift_summary']['shadow_closed_trades'] = (int) ($copyReady['shadow_closed_trades'] ?? 0);
+        $summary['shadow_vs_copy_drift_summary']['shadow_net_edge'] = round((float) ($copyReady['shadow_net_edge'] ?? 0.0), 4);
+    }
+
+    if (!dashboard_table_exists($pdo, 'polymarket_copy_actions')) {
+        return $summary;
+    }
+
+    $actionCounts = dashboard_fetch_all(
+        $pdo,
+        "SELECT action_type, COUNT(*) AS count FROM polymarket_copy_actions GROUP BY action_type"
+    );
+    foreach ($actionCounts as $row) {
+        $actionType = (string) ($row['action_type'] ?? '');
+        $count = (int) ($row['count'] ?? 0);
+        if ($actionType === 'open') {
+            $summary['copy_execution_summary']['open_actions'] = $count;
+        } elseif ($actionType === 'close') {
+            $summary['copy_execution_summary']['close_actions'] = $count;
+        } elseif ($actionType === 'replay_closed') {
+            $summary['copy_execution_summary']['replay_closed_actions'] = $count;
+        } elseif ($actionType === 'reject') {
+            $summary['copy_execution_summary']['reject_actions'] = $count;
+        }
+    }
+
+    $rejectRows = dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT reason, COUNT(*) AS count
+        FROM polymarket_copy_actions
+        WHERE action_type = 'reject'
+        GROUP BY reason
+        ORDER BY count DESC, reason ASC
+        "
+    );
+    $summary['copy_reject_breakdown'] = array_map(
+        static fn (array $row): array => [
+            'reason' => (string) ($row['reason'] ?? 'unknown'),
+            'count' => (int) ($row['count'] ?? 0),
+        ],
+        $rejectRows
+    );
+
+    $pnlRows = dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT
+            wallet_address,
+            COUNT(CASE WHEN action_type IN ('close', 'replay_closed') THEN 1 END) AS closed_actions,
+            ROUND(COALESCE(SUM(CASE WHEN action_type IN ('close', 'replay_closed') THEN COALESCE(follower_pnl, 0) ELSE 0 END), 0), 4) AS follower_realized_pnl,
+            ROUND(COALESCE(SUM(CASE WHEN action_type IN ('close', 'replay_closed') THEN COALESCE(source_pnl, 0) ELSE 0 END), 0), 4) AS source_realized_pnl,
+            ROUND(COALESCE(SUM(CASE WHEN action_type = 'open' THEN COALESCE(follower_notional_usd, 0) ELSE 0 END), 0), 4) AS opened_notional_usd,
+            MAX(executed_at) AS last_action_at
+        FROM polymarket_copy_actions
+        GROUP BY wallet_address
+        HAVING COUNT(CASE WHEN action_type IN ('close', 'replay_closed') THEN 1 END) > 0
+            OR COALESCE(SUM(CASE WHEN action_type = 'open' THEN COALESCE(follower_notional_usd, 0) ELSE 0 END), 0) > 0
+        ORDER BY follower_realized_pnl DESC, last_action_at DESC
+        LIMIT 20
+        "
+    );
+    $summary['wallet_follower_pnl_summary'] = array_map(
+        static function (array $row): array {
+            $followerPnl = (float) ($row['follower_realized_pnl'] ?? 0.0);
+            $sourcePnl = (float) ($row['source_realized_pnl'] ?? 0.0);
+            return [
+                'wallet_address' => (string) ($row['wallet_address'] ?? ''),
+                'closed_actions' => (int) ($row['closed_actions'] ?? 0),
+                'follower_realized_pnl' => round($followerPnl, 4),
+                'source_realized_pnl' => round($sourcePnl, 4),
+                'pnl_drift' => round($followerPnl - $sourcePnl, 4),
+                'opened_notional_usd' => round((float) ($row['opened_notional_usd'] ?? 0.0), 4),
+                'last_action_at' => (string) ($row['last_action_at'] ?? ''),
+            ];
+        },
+        $pnlRows
+    );
+    $summary['copy_execution_summary']['wallets_with_realized_pnl'] = count(
+        array_filter(
+            $summary['wallet_follower_pnl_summary'],
+            static fn (array $row): bool => (int) ($row['closed_actions'] ?? 0) > 0
+        )
+    );
+
+    $sourcePnl = array_sum(array_map(static fn (array $row): float => (float) ($row['source_realized_pnl'] ?? 0.0), $summary['wallet_follower_pnl_summary']));
+    $copyPnl = array_sum(array_map(static fn (array $row): float => (float) ($row['follower_realized_pnl'] ?? 0.0), $summary['wallet_follower_pnl_summary']));
+    $summary['shadow_vs_copy_drift_summary']['source_realized_pnl'] = round($sourcePnl, 4);
+    $summary['shadow_vs_copy_drift_summary']['copy_realized_pnl'] = round($copyPnl, 4);
+    $summary['shadow_vs_copy_drift_summary']['copy_vs_source_pnl_gap'] = round($copyPnl - $sourcePnl, 4);
+
+    $recentRows = dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT
+            executed_at,
+            wallet_address,
+            market_id,
+            category,
+            action_type,
+            reason,
+            side,
+            source_status,
+            source_notional_usd,
+            follower_notional_usd,
+            source_pnl,
+            follower_pnl,
+            delayed_seconds,
+            source_opened_at,
+            source_closed_at,
+            notes_json
+        FROM polymarket_copy_actions
+        ORDER BY executed_at DESC, id DESC
+        LIMIT 12
+        "
+    );
+    $summary['recent_copy_actions'] = array_map(
+        static fn (array $row): array => [
+            'executed_at' => (string) ($row['executed_at'] ?? ''),
+            'wallet_address' => (string) ($row['wallet_address'] ?? ''),
+            'market_id' => (string) ($row['market_id'] ?? ''),
+            'category' => (string) ($row['category'] ?? 'UNKNOWN'),
+            'action_type' => (string) ($row['action_type'] ?? ''),
+            'reason' => (string) ($row['reason'] ?? ''),
+            'side' => (string) ($row['side'] ?? ''),
+            'source_status' => (string) ($row['source_status'] ?? ''),
+            'source_notional_usd' => round((float) ($row['source_notional_usd'] ?? 0.0), 4),
+            'follower_notional_usd' => round((float) ($row['follower_notional_usd'] ?? 0.0), 4),
+            'source_pnl' => round((float) ($row['source_pnl'] ?? 0.0), 4),
+            'follower_pnl' => round((float) ($row['follower_pnl'] ?? 0.0), 4),
+            'delayed_seconds' => (int) ($row['delayed_seconds'] ?? 0),
+            'source_opened_at' => (string) ($row['source_opened_at'] ?? ''),
+            'source_closed_at' => (string) ($row['source_closed_at'] ?? ''),
+            'notes' => dashboard_decode_inputs_json((string) ($row['notes_json'] ?? '{}')),
+        ],
+        $recentRows
+    );
+
+    if (dashboard_table_exists($pdo, 'polymarket_copy_positions')) {
+        $activeRows = dashboard_fetch_all(
+            $pdo,
+            "
+            SELECT
+                wallet_address,
+                market_id,
+                category,
+                side,
+                source_notional_usd,
+                follower_notional_usd,
+                opened_at,
+                source_opened_at,
+                status
+            FROM polymarket_copy_positions
+            WHERE status = 'OPEN'
+            ORDER BY opened_at DESC, id DESC
+            LIMIT 20
+            "
+        );
+        $summary['active_copy_positions'] = array_map(
+            static fn (array $row): array => [
+                'wallet_address' => (string) ($row['wallet_address'] ?? ''),
+                'market_id' => (string) ($row['market_id'] ?? ''),
+                'category' => (string) ($row['category'] ?? 'UNKNOWN'),
+                'side' => (string) ($row['side'] ?? ''),
+                'source_notional_usd' => round((float) ($row['source_notional_usd'] ?? 0.0), 4),
+                'follower_notional_usd' => round((float) ($row['follower_notional_usd'] ?? 0.0), 4),
+                'opened_at' => (string) ($row['opened_at'] ?? ''),
+                'source_opened_at' => (string) ($row['source_opened_at'] ?? ''),
+                'status' => (string) ($row['status'] ?? 'OPEN'),
+            ],
+            $activeRows
+        );
+        $summary['copy_execution_summary']['active_copy_positions'] = count($summary['active_copy_positions']);
+    }
+
+    return $summary;
+}
+
 function dashboard_build_binance_fresh_pnl_summary(PDO $pdo): array
 {
     $tradeOpenedAtExpr = dashboard_table_has_column($pdo, 'trades', 'opened_at')
@@ -2496,6 +2723,7 @@ function dashboard_build_dashboard_tab_help(): array
 {
     return [
         'polymarket-research' => 'Bu sekme istikrarli Polymarket cüzdanlarini once kesfeder, sonra shadow cohort ve copy-ready kisitli listeyi gosterir.',
+        'polymarket-copy' => 'Bu sekme sadece copy-ready cohorttan gelen paper copy aksiyonlarini, aktif follower pozisyonlarini ve red nedenlerini gosterir.',
         'binance-technical' => 'Bu sekme bagimsiz Binance teknik paper lane performansini, taze 7 gun PnL ozetini ve kapasite baskisini gosterir.',
         'sozluk-aciklamalar' => 'Bu sekme metriklerin ne anlama geldigini sade Turkce ile aciklar ve servis logunu tek yerde toplar.',
     ];
@@ -2530,6 +2758,12 @@ function dashboard_build_dashboard_glossary(): array
             ['term' => 'Spread reject', 'meaning' => 'Piyasa yapisi guvenli degilse sinyal olsa bile giris acilmaz.'],
             ['term' => 'Position pressure', 'meaning' => 'Acilan eski ve yeni pozisyonlarin yeni sinyal acma kapasitesini ne kadar kistigi.'],
             ['term' => 'Legacy position', 'meaning' => 'Yeni lane disinda kalmis veya eski metadata ile tasinan acik Binance paper pozisyonu.'],
+        ],
+        'polymarket-copy' => [
+            ['term' => 'Paper copy', 'meaning' => 'Gercek para kullanmadan copy-ready cuzdan aksiyonunu takip eden deneme islemi.'],
+            ['term' => 'Follower position', 'meaning' => 'Balinanin pozisyonuna gecikmeli ve limitli sekilde eslik eden bizim paper pozisyonumuz.'],
+            ['term' => 'Copy reject', 'meaning' => 'Copy sinyali geldi ama risk, tekrar pozisyon veya islem boyutu kurali nedeniyle acilmadi.'],
+            ['term' => 'Shadow vs copy drift', 'meaning' => 'Shadow simulasyon sonucu ile gercek paper copy sonucunun arasindaki fark.'],
         ],
         'sozluk-aciklamalar' => [
             ['term' => 'Trade acmak degil, once kanit', 'meaning' => 'Polymarket lane once istikrari ispatlar; shadow edge pozitif olmadan copy acmaz.'],
@@ -2609,6 +2843,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['relaxed_gate_reject_breakdown'] = dashboard_build_relaxed_gate_reject_breakdown($pdo);
         $payload['whale_copy_recovery_summary'] = dashboard_build_whale_copy_recovery_summary($pdo);
         $payload = array_merge($payload, dashboard_build_polymarket_research_summary($pdo));
+        $payload = array_merge($payload, dashboard_build_polymarket_copy_summary($pdo));
         $payload = array_merge($payload, dashboard_build_binance_lane_summary($payload));
         $payload['dashboard_tab_help'] = dashboard_build_dashboard_tab_help();
         $payload['dashboard_glossary'] = dashboard_build_dashboard_glossary();
@@ -2653,6 +2888,7 @@ function dashboard_augment_payload(array $payload): array
         $payload['relaxed_gate_reject_breakdown'] = [];
         $payload['whale_copy_recovery_summary'] = [];
         $payload = array_merge($payload, dashboard_build_polymarket_research_summary(new PDO('sqlite::memory:')));
+        $payload = array_merge($payload, dashboard_build_polymarket_copy_summary(new PDO('sqlite::memory:')));
         $payload = array_merge($payload, dashboard_build_binance_lane_summary($payload));
         $payload['dashboard_tab_help'] = dashboard_build_dashboard_tab_help();
         $payload['dashboard_glossary'] = dashboard_build_dashboard_glossary();

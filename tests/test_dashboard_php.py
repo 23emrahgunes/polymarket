@@ -134,6 +134,91 @@ def _create_dashboard_db(path: Path) -> None:
     )
     cur.execute(
         """
+        CREATE TABLE polymarket_copy_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_trade_key TEXT NOT NULL,
+            wallet_address TEXT NOT NULL,
+            market_id TEXT NOT NULL,
+            category TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            source_status TEXT NOT NULL DEFAULT '',
+            side TEXT NOT NULL DEFAULT '',
+            source_notional_usd REAL NOT NULL DEFAULT 0,
+            follower_notional_usd REAL NOT NULL DEFAULT 0,
+            source_pnl REAL NOT NULL DEFAULT 0,
+            follower_pnl REAL NOT NULL DEFAULT 0,
+            delayed_seconds INTEGER NOT NULL DEFAULT 0,
+            source_opened_at TEXT NOT NULL DEFAULT '',
+            source_closed_at TEXT NOT NULL DEFAULT '',
+            executed_at TEXT NOT NULL,
+            notes_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    cur.executemany(
+        """
+        INSERT INTO polymarket_copy_actions (
+            source_trade_key, wallet_address, market_id, category, action_type, reason,
+            source_status, side, source_notional_usd, follower_notional_usd, source_pnl,
+            follower_pnl, delayed_seconds, source_opened_at, source_closed_at, executed_at, notes_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                '0xaaa:copy-open', '0xaaa', 'market-copy-1', 'CRYPTO', 'open',
+                'copy_entry', 'OPEN', 'BUY', 120.0, 50.0, 0.0, 0.0, 90,
+                '2026-04-09 09:00:00', '', '2026-04-09 09:02:00', '{}',
+            ),
+            (
+                '0xaaa:copy-closed', '0xaaa', 'market-copy-2', 'CRYPTO', 'replay_closed',
+                'shadow_replay_seed', 'CLOSED_WIN', 'BUY', 80.0, 50.0, 12.0, 7.5, 90,
+                '2026-04-08 09:00:00', '2026-04-08 11:00:00', '2026-04-09 09:03:00', '{}',
+            ),
+            (
+                '0xaaa:copy-reject', '0xaaa', 'market-copy-1', 'CRYPTO', 'reject',
+                'duplicate_market_exposure', 'OPEN', 'BUY', 30.0, 0.0, 0.0, 0.0, 90,
+                '2026-04-09 09:05:00', '', '2026-04-09 09:06:00', '{}',
+            ),
+        ],
+    )
+    cur.execute(
+        """
+        CREATE TABLE polymarket_copy_positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_trade_key TEXT UNIQUE NOT NULL,
+            wallet_address TEXT NOT NULL,
+            market_id TEXT NOT NULL,
+            category TEXT NOT NULL,
+            side TEXT NOT NULL,
+            source_notional_usd REAL NOT NULL DEFAULT 0,
+            follower_notional_usd REAL NOT NULL DEFAULT 0,
+            source_pnl REAL NOT NULL DEFAULT 0,
+            follower_pnl REAL NOT NULL DEFAULT 0,
+            source_status TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'OPEN',
+            source_opened_at TEXT NOT NULL DEFAULT '',
+            source_closed_at TEXT NOT NULL DEFAULT '',
+            opened_at TEXT NOT NULL,
+            closed_at TEXT,
+            notes_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    cur.execute(
+        """
+        INSERT INTO polymarket_copy_positions (
+            source_trade_key, wallet_address, market_id, category, side, source_notional_usd,
+            follower_notional_usd, source_status, status, source_opened_at, opened_at, notes_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            '0xaaa:copy-open', '0xaaa', 'market-copy-1', 'CRYPTO', 'BUY', 120.0,
+            50.0, 'OPEN', 'OPEN', '2026-04-09 09:00:00', '2026-04-09 09:02:00', '{}',
+        ),
+    )
+    cur.execute(
+        """
         CREATE TABLE polymarket_research_wallets (
             address TEXT PRIMARY KEY,
             source_type TEXT NOT NULL DEFAULT 'unknown',
@@ -418,6 +503,12 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert 'binance_technical_fresh_recovery_summary' in payload
     assert 'binance_technical_fresh_score_gap_summary' in payload
     assert 'binance_technical_fresh_reject_breakdown' in payload
+    assert 'copy_execution_summary' in payload
+    assert 'copy_reject_breakdown' in payload
+    assert 'active_copy_positions' in payload
+    assert 'wallet_follower_pnl_summary' in payload
+    assert 'shadow_vs_copy_drift_summary' in payload
+    assert 'recent_copy_actions' in payload
     assert payload['service']['name'] == 'ghost-trader'
     assert payload['runtime_summary']['tracked_whales'] == 3
     assert payload['runtime_summary']['total_trades'] == 2
@@ -505,6 +596,19 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['wallet_consistency_table'][0]['shadow_seeded'] is True
     assert payload['wallet_consistency_table'][0]['shadow_blocker_reason'] == 'eligible'
     assert payload['copy_ready_wallets'][0]['address'] == '0xaaa'
+    assert payload['copy_execution_summary']['copy_ready_wallets'] == 1
+    assert payload['copy_execution_summary']['open_actions'] == 1
+    assert payload['copy_execution_summary']['replay_closed_actions'] == 1
+    assert payload['copy_execution_summary']['reject_actions'] == 1
+    assert payload['copy_execution_summary']['active_copy_positions'] == 1
+    assert payload['copy_execution_summary']['wallets_with_realized_pnl'] == 1
+    assert payload['copy_reject_breakdown'][0]['reason'] == 'duplicate_market_exposure'
+    assert payload['active_copy_positions'][0]['market_id'] == 'market-copy-1'
+    assert payload['wallet_follower_pnl_summary'][0]['wallet_address'] == '0xaaa'
+    assert payload['wallet_follower_pnl_summary'][0]['follower_realized_pnl'] == 7.5
+    assert payload['shadow_vs_copy_drift_summary']['copy_ready_wallets'] == 1
+    assert payload['shadow_vs_copy_drift_summary']['copy_realized_pnl'] == 7.5
+    assert payload['recent_copy_actions'][0]['reason'] == 'duplicate_market_exposure'
     assert payload['priority_watchlist_rows'][0]['display_name'] == 'ohanism'
     assert payload['priority_watchlist_rows'][0]['profile_ref'] == 'https://polymarket.com/tr/@ohanism'
     assert payload['priority_watchlist_rows'][0]['identity_resolution_status'] == 'pending_resolution'
@@ -1030,6 +1134,7 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     html = response.read().decode('utf-8')
     assert 'Ghost Trader Operasyon Paneli' in html
     assert 'Polymarket Research' in html
+    assert 'Polymarket Copy' in html
     assert 'Binance Technical' in html
     assert ('Sözlük / Açıklamalar' in html) or ('SÃ¶zlÃ¼k / AÃ§Ä±klamalar' in html)
     assert 'Bu sekme neyi gosteriyor?' in html
@@ -1048,6 +1153,11 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Cuzdan Tutarlilik Tablosu' in html
     assert 'Copy-ready Kisa Liste' in html
     assert 'Son Shadow Aksiyonlari' in html
+    assert 'Paper Copy Ozeti' in html
+    assert 'Aktif Paper Copy Pozisyonlari' in html
+    assert 'Copy Red Nedenleri' in html
+    assert 'Wallet Follower PnL' in html
+    assert 'Son Copy Aksiyonlari' in html
     assert 'Ana Kaynak' in html
     assert 'Kaynak Etiketleri' in html
     assert 'Shadow Durumu' in html
@@ -1142,7 +1252,8 @@ def test_dashboard_research_lane_mode_hides_binance_tab_and_skips_report_warning
         response = _request(base_url + '/', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD))
         html = response.read().decode('utf-8')
         assert 'lane-polymarket-research' in html
-        assert 'DASHBOARD_TABS = ["polymarket-research","sozluk-aciklamalar"]' in html
+        assert 'DASHBOARD_TABS = ["polymarket-research","polymarket-copy","sozluk-aciklamalar"]' in html
+        assert 'Polymarket Copy' in html
         assert 'Binance Technical' not in html
     finally:
         if process.poll() is None:
