@@ -34,8 +34,10 @@ if [[ ! -d "$BINANCE_REPO_DIR" ]]; then
 fi
 
 pushd "$RESEARCH_REPO_DIR" >/dev/null
+POLYMARKET_RUNTIME_SEED_OPEN_TRADE=true bash scripts/ensure_polymarket_runtime_pilot.sh >/tmp/polymarket_runtime_pilot.out
 python scripts/query_polymarket_copy_lane.py acceptance-run --db-path "$RESEARCH_DB_PATH" --source-db-path "$RESEARCH_SOURCE_DB_PATH" >/tmp/polymarket_acceptance_run.out
 python scripts/query_polymarket_copy_lane.py acceptance-summary --db-path "$RESEARCH_DB_PATH" --source-db-path "$RESEARCH_SOURCE_DB_PATH" >/tmp/polymarket_acceptance_summary.out
+python scripts/query_polymarket_copy_lane.py run-once --db-path "$RESEARCH_DB_PATH" --source-db-path "$RESEARCH_SOURCE_DB_PATH" >/tmp/polymarket_run_once.out
 python scripts/query_polymarket_copy_lane.py runtime-acceptance-summary --db-path "$RESEARCH_DB_PATH" --source-db-path "$RESEARCH_SOURCE_DB_PATH" >/tmp/polymarket_runtime_acceptance_summary.out
 popd >/dev/null
 
@@ -87,12 +89,30 @@ if not poly.get("all_checks_passed"):
 for key, label in poly_required.items():
     if not poly.get(key):
         failures.append(f"{label} missing")
+if not poly_runtime.get("all_checks_passed"):
+    failures.append("Polymarket runtime checklist is not green")
+if int(poly_runtime.get("eligible_copy_wallets_total", 0) or 0) <= 0:
+    failures.append("Polymarket runtime has no eligible copy wallets")
+if not poly_runtime.get("runtime_open_action_observed"):
+    failures.append("Polymarket runtime open action missing")
+if not poly_runtime.get("runtime_open_position_observed"):
+    failures.append("Polymarket runtime open position missing")
 
 if not binance.get("all_checks_passed"):
     failures.append("Binance acceptance checklist is not green")
 for key, label in binance_required.items():
     if not binance.get(key):
         failures.append(f"{label} missing")
+if not binance_runtime.get("all_checks_passed"):
+    failures.append("Binance runtime checklist is not green")
+if not binance_runtime.get("runtime_futures_long_execute"):
+    failures.append("Binance runtime futures LONG missing")
+if not binance_runtime.get("runtime_futures_short_execute"):
+    failures.append("Binance runtime futures SHORT missing")
+if not binance_runtime.get("runtime_spot_long_execute"):
+    failures.append("Binance runtime spot LONG missing")
+if not binance_runtime.get("runtime_spot_short_reject"):
+    failures.append("Binance runtime spot SHORT reject missing")
 
 if failures:
     raise SystemExit("Acceptance failed:\n- " + "\n- ".join(failures))

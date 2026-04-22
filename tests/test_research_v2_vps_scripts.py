@@ -24,11 +24,36 @@ def test_bootstrap_research_v2_script_exists_and_contains_expected_flow() -> Non
     assert "ghost-trader-polymarket-copy.service.template" in text
     assert "query_polymarket_copy_lane.py summary" in text
     assert "import_research_seed_data.py" in text
+    assert "ensure_polymarket_runtime_pilot.sh" in text
     assert "RESEARCH_DASHBOARD_PORT" in text
     assert "8082" in text
     assert 'git clone --branch "$RESEARCH_BRANCH" "$SOURCE_REPO_DIR" "$RESEARCH_REPO_DIR"' in text
     assert 'git -C "$RESEARCH_REPO_DIR" fetch "$SOURCE_REPO_DIR" "$RESEARCH_BRANCH"' in text
     assert 'reset_managed_worktree_drift "$RESEARCH_REPO_DIR"' in text
+
+
+def test_polymarket_runtime_pilot_helper_exists_and_seeds_linked_priority_wallet() -> None:
+    text = _read("scripts/ensure_polymarket_runtime_pilot.sh")
+    assert "#!/usr/bin/env bash" in text
+    assert "set -euo pipefail" in text
+    assert "load_dotenv_file" in text
+    assert "operator_approved_pilot" in text
+    assert "runtime_pilot_seed" in text
+    assert "watchlist_row_id" in text
+
+
+def test_final_acceptance_vps_script_requires_runtime_green() -> None:
+    text = _read("scripts/run_final_acceptance_vps.sh")
+    assert "ensure_polymarket_runtime_pilot.sh" in text
+    assert "query_polymarket_copy_lane.py run-once" in text
+    assert 'poly_runtime.get("all_checks_passed")' in text
+    assert 'poly_runtime.get("runtime_open_action_observed")' in text
+    assert 'poly_runtime.get("runtime_open_position_observed")' in text
+    assert 'binance_runtime.get("all_checks_passed")' in text
+    assert 'binance_runtime.get("runtime_futures_long_execute")' in text
+    assert 'binance_runtime.get("runtime_futures_short_execute")' in text
+    assert 'binance_runtime.get("runtime_spot_long_execute")' in text
+    assert 'binance_runtime.get("runtime_spot_short_reject")' in text
 
 
 def test_bootstrap_binance_v2_script_exists_and_contains_expected_flow() -> None:

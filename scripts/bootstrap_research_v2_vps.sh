@@ -161,6 +161,7 @@ if [[ -f "$LEGACY_DB_PATH" ]]; then
     python scripts/import_research_seed_data.py --source-db "$LEGACY_DB_PATH" --target-db "$RESEARCH_DB_PATH"
 fi
 
+bash scripts/ensure_polymarket_runtime_pilot.sh
 bash scripts/refresh_polymarket_research.sh
 bash scripts/refresh_polymarket_copy.sh
 
