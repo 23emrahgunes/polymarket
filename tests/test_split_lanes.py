@@ -247,6 +247,17 @@ def _create_binance_lane_db(db_path: Path) -> None:
     repository.ensure_tables()
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    futures_closed_at = now - timedelta(days=2)
+    futures_opened_at = futures_closed_at - timedelta(hours=2)
+    spot_closed_at = now - timedelta(days=3)
+    spot_opened_at = spot_closed_at - timedelta(hours=3)
+    old_futures_closed_at = now - timedelta(days=21)
+    old_futures_opened_at = old_futures_closed_at - timedelta(hours=3)
+    fresh_execute_at = now - timedelta(days=2)
+    fresh_reject_at = now - timedelta(days=2, hours=1)
+    fresh_opened_position_at = now - timedelta(days=2, hours=3)
+    legacy_opened_position_at = now - timedelta(days=3, hours=4)
     cur.executemany(
         """
         INSERT INTO trades (
@@ -272,9 +283,9 @@ def _create_binance_lane_db(db_path: Path) -> None:
                 "CLOSED_WIN",
                 45.5,
                 None,
-                "2026-04-16 12:00:00",
-                "2026-04-16 10:00:00",
-                "2026-04-16 12:00:00",
+                futures_closed_at.strftime("%Y-%m-%d %H:%M:%S"),
+                futures_opened_at.strftime("%Y-%m-%d %H:%M:%S"),
+                futures_closed_at.strftime("%Y-%m-%d %H:%M:%S"),
                 0,
             ),
             (
@@ -293,9 +304,9 @@ def _create_binance_lane_db(db_path: Path) -> None:
                 "CLOSED_LOSS",
                 -10.0,
                 None,
-                "2026-04-15 12:00:00",
-                "2026-04-15 09:00:00",
-                "2026-04-15 12:00:00",
+                spot_closed_at.strftime("%Y-%m-%d %H:%M:%S"),
+                spot_opened_at.strftime("%Y-%m-%d %H:%M:%S"),
+                spot_closed_at.strftime("%Y-%m-%d %H:%M:%S"),
                 0,
             ),
             (
@@ -314,9 +325,9 @@ def _create_binance_lane_db(db_path: Path) -> None:
                 "CLOSED_WIN",
                 99.0,
                 None,
-                "2026-04-01 12:00:00",
-                "2026-04-01 09:00:00",
-                "2026-04-01 12:00:00",
+                old_futures_closed_at.strftime("%Y-%m-%d %H:%M:%S"),
+                old_futures_opened_at.strftime("%Y-%m-%d %H:%M:%S"),
+                old_futures_closed_at.strftime("%Y-%m-%d %H:%M:%S"),
                 0,
             ),
         ],
@@ -330,7 +341,7 @@ def _create_binance_lane_db(db_path: Path) -> None:
         """,
         [
             (
-                "2026-04-16 12:00:00",
+                fresh_execute_at.strftime("%Y-%m-%d %H:%M:%S"),
                 "binance_futures",
                 "BTC/USDT:USDT",
                 "CRYPTO",
@@ -347,7 +358,7 @@ def _create_binance_lane_db(db_path: Path) -> None:
                 "{}",
             ),
             (
-                "2026-04-16 11:00:00",
+                fresh_reject_at.strftime("%Y-%m-%d %H:%M:%S"),
                 "binance_spot",
                 "ETH/USDT",
                 "CRYPTO",
@@ -392,7 +403,7 @@ def _create_binance_lane_db(db_path: Path) -> None:
                 "binance_technical_momentum",
                 "binance_technical_momentum",
                 "OPEN",
-                "2026-04-16 09:00:00",
+                fresh_opened_position_at.strftime("%Y-%m-%d %H:%M:%S"),
                 None,
                 69000.0,
                 62000.0,
@@ -415,7 +426,7 @@ def _create_binance_lane_db(db_path: Path) -> None:
                 "legacy_signal",
                 "legacy_signal",
                 "OPEN",
-                "2026-04-15 09:00:00",
+                legacy_opened_position_at.strftime("%Y-%m-%d %H:%M:%S"),
                 None,
                 3600.0,
                 3000.0,
@@ -714,7 +725,7 @@ def test_polymarket_copy_acceptance_fixture_isolated_from_live_metrics(
     assert summary["copy_execution_summary"]["active_copy_positions"] == 0
     assert summary["copy_execution_summary"]["reject_actions"] == 0
     assert summary["copy_runtime_acceptance_summary"]["all_checks_passed"] is False
-    assert summary["copy_runtime_acceptance_summary"]["reason"] == "no_eligible_copy_wallets"
+    assert summary["copy_runtime_acceptance_summary"]["reason"] in {"no_eligible_copy_wallets", "no_research_wallets"}
 
     assert (
         polymarket_copy_cli_main(

@@ -93,6 +93,7 @@ def _copy_runtime_acceptance_summary(
     eligible_copy_wallets_total: int,
     shadow_proven_wallets: int,
     manual_fast_track_wallets: int,
+    copy_blocker_reason: str = "",
 ) -> dict[str, Any]:
     open_actions = [row for row in actions if str(row.get("action_type") or "") == "open"]
     close_actions = [row for row in actions if str(row.get("action_type") or "") == "close"]
@@ -105,7 +106,7 @@ def _copy_runtime_acceptance_summary(
             latest_ts = candidate
 
     if eligible_copy_wallets_total <= 0:
-        reason = "no_eligible_copy_wallets"
+        reason = copy_blocker_reason or "no_eligible_copy_wallets"
     elif not open_actions and not open_positions and not close_actions and not replay_closed_actions:
         reason = "eligible_wallets_no_runtime_actions"
     else:
@@ -133,7 +134,7 @@ def _wallet_limits(settings: PolymarketCopySettings, wallet: dict[str, Any]) -> 
     wallet_risk_limit = float(settings.wallet_risk_limit_usd)
     market_risk_limit = float(settings.market_risk_limit_usd)
     max_concurrent_positions = 999999
-    if cohort_source == "manual_fast_track":
+    if cohort_source in {"manual_fast_track", "pilot_copy_ready"}:
         max_trade_size = min(
             max_trade_size,
             max(float(settings.min_trade_size_usd), round(float(settings.max_trade_size_usd) * 0.5, 4)),
@@ -172,7 +173,8 @@ class PolymarketCopyService:
             "close_actions": 0,
             "replay_closed_actions": 0,
             "reject_actions": 0,
-            "manual_fast_track_wallets": sum(1 for row in copy_ready_wallets if row.get("cohort_source") == "manual_fast_track"),
+            "manual_fast_track_wallets": sum(1 for row in copy_ready_wallets if row.get("cohort_source") in {"manual_fast_track", "pilot_copy_ready"}),
+            "pilot_copy_wallets": sum(1 for row in copy_ready_wallets if row.get("cohort_source") == "pilot_copy_ready"),
             "shadow_proven_wallets": sum(1 for row in copy_ready_wallets if row.get("cohort_source") == "shadow_proven"),
         }
 
@@ -552,7 +554,9 @@ class PolymarketCopyService:
         replay_closed_actions = sum(1 for row in actions if row["action_type"] == "replay_closed")
         reject_actions = sum(1 for row in actions if row["action_type"] == "reject")
         shadow_proven_wallets = sum(1 for row in copy_ready_wallets if row.get("cohort_source") == "shadow_proven")
-        manual_fast_track_wallets = sum(1 for row in copy_ready_wallets if row.get("cohort_source") == "manual_fast_track")
+        pilot_copy_wallets = sum(1 for row in copy_ready_wallets if row.get("cohort_source") == "pilot_copy_ready")
+        manual_fast_track_wallets = sum(1 for row in copy_ready_wallets if row.get("cohort_source") in {"manual_fast_track", "pilot_copy_ready"})
+        admission_counts = self.repository.fetch_copy_admission_counts()
 
         def _action_cohort(row: dict[str, Any]) -> str:
             raw_notes = str(row.get("notes_json") or "")
@@ -672,13 +676,15 @@ class PolymarketCopyService:
             for row in active_positions
         ]
         active_shadow_positions = sum(1 for row in active_copy_positions if row["cohort_source"] == "shadow_proven")
-        active_manual_fast_track_positions = sum(1 for row in active_copy_positions if row["cohort_source"] == "manual_fast_track")
+        active_pilot_copy_positions = sum(1 for row in active_copy_positions if row["cohort_source"] == "pilot_copy_ready")
+        active_manual_fast_track_positions = sum(1 for row in active_copy_positions if row["cohort_source"] in {"manual_fast_track", "pilot_copy_ready"})
         runtime_acceptance_summary = _copy_runtime_acceptance_summary(
             recent_copy_actions,
             active_copy_positions,
             eligible_copy_wallets_total=len(copy_ready_wallets),
             shadow_proven_wallets=shadow_proven_wallets,
             manual_fast_track_wallets=manual_fast_track_wallets,
+            copy_blocker_reason=str(admission_counts.get("copy_blocker_reason", "")),
         )
 
         return {
@@ -686,6 +692,9 @@ class PolymarketCopyService:
                 "copy_ready_wallets": shadow_proven_wallets,
                 "shadow_proven_wallets": shadow_proven_wallets,
                 "manual_fast_track_wallets": manual_fast_track_wallets,
+                "pilot_copy_wallets": pilot_copy_wallets,
+                "watch_only_wallets": int(admission_counts.get("watch_only_wallets", 0) or 0),
+                "copy_blocker_reason": str(admission_counts.get("copy_blocker_reason", "")),
                 "eligible_copy_wallets_total": len(copy_ready_wallets),
                 "copy_window_days": self.settings.lookback_days,
                 "open_actions": open_actions,
@@ -695,6 +704,7 @@ class PolymarketCopyService:
                 "active_copy_positions": len(active_positions),
                 "active_shadow_proven_positions": active_shadow_positions,
                 "active_manual_fast_track_positions": active_manual_fast_track_positions,
+                "active_pilot_copy_positions": active_pilot_copy_positions,
                 "wallets_with_realized_pnl": sum(1 for row in wallet_summary_rows if row["closed_actions"] > 0),
             },
             "copy_reject_breakdown": [
@@ -707,6 +717,9 @@ class PolymarketCopyService:
                 "copy_ready_wallets": shadow_proven_wallets,
                 "shadow_proven_wallets": shadow_proven_wallets,
                 "manual_fast_track_wallets": manual_fast_track_wallets,
+                "pilot_copy_wallets": pilot_copy_wallets,
+                "watch_only_wallets": int(admission_counts.get("watch_only_wallets", 0) or 0),
+                "copy_blocker_reason": str(admission_counts.get("copy_blocker_reason", "")),
                 "eligible_copy_wallets_total": len(copy_ready_wallets),
                 "shadow_closed_trades": shadow_closed,
                 "shadow_net_edge": copy_ready_shadow_edge,

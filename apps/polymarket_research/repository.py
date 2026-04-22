@@ -113,6 +113,7 @@ class PolymarketResearchRepository:
                     priority_rank INTEGER NOT NULL DEFAULT 0,
                     priority_mode TEXT NOT NULL DEFAULT 'normal',
                     target_specialization TEXT NOT NULL DEFAULT 'UNKNOWN',
+                    operator_approved_pilot INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'pending_resolution',
                     notes TEXT,
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -120,6 +121,7 @@ class PolymarketResearchRepository:
                 )
                 """
             )
+            self._ensure_column(connection, "polymarket_research_watchlist", "operator_approved_pilot", "INTEGER NOT NULL DEFAULT 0")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS polymarket_research_wallets (
@@ -168,6 +170,15 @@ class PolymarketResearchRepository:
                     evidence_last_trade_at TEXT,
                     shadow_seeded INTEGER NOT NULL DEFAULT 0,
                     shadow_blocker_reason TEXT NOT NULL DEFAULT '',
+                    long_horizon_status TEXT NOT NULL DEFAULT 'untracked',
+                    long_horizon_score REAL NOT NULL DEFAULT 0,
+                    observation_days INTEGER NOT NULL DEFAULT 0,
+                    observed_action_count INTEGER NOT NULL DEFAULT 0,
+                    pnl_smoothness_score REAL NOT NULL DEFAULT 0,
+                    one_off_gain_penalty REAL NOT NULL DEFAULT 0,
+                    pilot_copy_gate_status TEXT NOT NULL DEFAULT 'blocked',
+                    pilot_copy_gate_reason TEXT NOT NULL DEFAULT 'operator_approval_required',
+                    operator_approved_pilot INTEGER NOT NULL DEFAULT 0,
                     refreshed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -191,6 +202,15 @@ class PolymarketResearchRepository:
                 ("evidence_last_trade_at", "TEXT"),
                 ("shadow_seeded", "INTEGER NOT NULL DEFAULT 0"),
                 ("shadow_blocker_reason", "TEXT NOT NULL DEFAULT ''"),
+                ("long_horizon_status", "TEXT NOT NULL DEFAULT 'untracked'"),
+                ("long_horizon_score", "REAL NOT NULL DEFAULT 0"),
+                ("observation_days", "INTEGER NOT NULL DEFAULT 0"),
+                ("observed_action_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("pnl_smoothness_score", "REAL NOT NULL DEFAULT 0"),
+                ("one_off_gain_penalty", "REAL NOT NULL DEFAULT 0"),
+                ("pilot_copy_gate_status", "TEXT NOT NULL DEFAULT 'blocked'"),
+                ("pilot_copy_gate_reason", "TEXT NOT NULL DEFAULT 'operator_approval_required'"),
+                ("operator_approved_pilot", "INTEGER NOT NULL DEFAULT 0"),
             ]:
                 self._ensure_column(connection, "polymarket_research_wallets", column_name, column_def)
             connection.execute(
@@ -215,6 +235,7 @@ class PolymarketResearchRepository:
                     priority_rank,
                     priority_mode,
                     target_specialization,
+                    operator_approved_pilot,
                     status,
                     notes
                 ) VALUES (
@@ -225,6 +246,7 @@ class PolymarketResearchRepository:
                     1,
                     'fast_track_shadow',
                     'CRYPTO',
+                    0,
                     'pending_resolution',
                     'Seeded priority specialist candidate'
                 )
@@ -703,6 +725,7 @@ class PolymarketResearchRepository:
                     priority_rank,
                     priority_mode,
                     target_specialization,
+                    operator_approved_pilot,
                     status,
                     notes,
                     created_at,
@@ -726,6 +749,7 @@ class PolymarketResearchRepository:
                     priority_rank,
                     priority_mode,
                     target_specialization,
+                    operator_approved_pilot,
                     status,
                     notes,
                     created_at,
@@ -766,10 +790,11 @@ class PolymarketResearchRepository:
                     priority_rank,
                     priority_mode,
                     target_specialization,
+                    operator_approved_pilot,
                     status,
                     notes,
                     updated_at
-                ) VALUES (?, ?, NULL, ?, ?, ?, 'pending_resolution', ?, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, NULL, ?, ?, ?, 0, 'pending_resolution', ?, CURRENT_TIMESTAMP)
                 """,
                 (
                     normalized_display,
@@ -792,6 +817,7 @@ class PolymarketResearchRepository:
                     priority_rank,
                     priority_mode,
                     target_specialization,
+                    operator_approved_pilot,
                     status,
                     notes,
                     created_at,
@@ -857,6 +883,55 @@ class PolymarketResearchRepository:
                     priority_rank,
                     priority_mode,
                     target_specialization,
+                    operator_approved_pilot,
+                    status,
+                    notes,
+                    created_at,
+                    updated_at
+                FROM polymarket_research_watchlist
+                WHERE id = ?
+                """,
+                (int(row_id),),
+            ).fetchone()
+
+    def approve_watchlist_pilot(self, row_id: int, *, approved: bool = True, notes: str | None = None) -> sqlite3.Row:
+        self.ensure_tables()
+        normalized_notes = None if notes is None else str(notes)
+        with self.connect() as connection:
+            existing_row = connection.execute(
+                """
+                SELECT id
+                FROM polymarket_research_watchlist
+                WHERE id = ?
+                """,
+                (int(row_id),),
+            ).fetchone()
+            if existing_row is None:
+                raise ValueError(f"watchlist row {row_id} was not found")
+
+            connection.execute(
+                """
+                UPDATE polymarket_research_watchlist
+                SET
+                    operator_approved_pilot = ?,
+                    notes = CASE WHEN ? IS NULL THEN notes ELSE ? END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (1 if approved else 0, normalized_notes, normalized_notes, int(row_id)),
+            )
+            connection.commit()
+            return connection.execute(
+                """
+                SELECT
+                    id,
+                    display_name,
+                    profile_ref,
+                    wallet_address,
+                    priority_rank,
+                    priority_mode,
+                    target_specialization,
+                    operator_approved_pilot,
                     status,
                     notes,
                     created_at,
@@ -920,6 +995,15 @@ class PolymarketResearchRepository:
                         evidence_last_trade_at,
                         shadow_seeded,
                         shadow_blocker_reason,
+                        long_horizon_status,
+                        long_horizon_score,
+                        observation_days,
+                        observed_action_count,
+                        pnl_smoothness_score,
+                        one_off_gain_penalty,
+                        pilot_copy_gate_status,
+                        pilot_copy_gate_reason,
+                        operator_approved_pilot,
                         refreshed_at
                     ) VALUES (
                         :address,
@@ -967,6 +1051,15 @@ class PolymarketResearchRepository:
                         :evidence_last_trade_at,
                         :shadow_seeded,
                         :shadow_blocker_reason,
+                        :long_horizon_status,
+                        :long_horizon_score,
+                        :observation_days,
+                        :observed_action_count,
+                        :pnl_smoothness_score,
+                        :one_off_gain_penalty,
+                        :pilot_copy_gate_status,
+                        :pilot_copy_gate_reason,
+                        :operator_approved_pilot,
                         CURRENT_TIMESTAMP
                     )
                     """,
@@ -1024,6 +1117,15 @@ class PolymarketResearchRepository:
                     evidence_last_trade_at,
                     shadow_seeded,
                     shadow_blocker_reason,
+                    long_horizon_status,
+                    long_horizon_score,
+                    observation_days,
+                    observed_action_count,
+                    pnl_smoothness_score,
+                    one_off_gain_penalty,
+                    pilot_copy_gate_status,
+                    pilot_copy_gate_reason,
+                    operator_approved_pilot,
                     refreshed_at
                 FROM polymarket_research_wallets
                 ORDER BY discovery_rank ASC, consistency_score DESC, trust_score DESC

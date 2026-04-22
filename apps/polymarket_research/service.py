@@ -20,6 +20,11 @@ DISCOVERY_MIN_VIABLE_POOL = 30
 SHADOW_CONSISTENCY_MIN = 0.45
 SHADOW_CRYPTO_RATIO_MIN = 0.60
 COPY_READY_MAX_DRAWDOWN = -15.0
+PILOT_COPY_MAX_DRAWDOWN = -15.0
+PILOT_COPY_MIN_OBSERVATION_DAYS = 7
+PILOT_COPY_MIN_OBSERVED_ACTIONS = 10
+PILOT_COPY_MIN_CLOSED_SHADOW_TRADES = 3
+PILOT_COPY_MIN_LONG_HORIZON_SCORE = 0.45
 SHADOW_REPLAY_DELAY_SECONDS = 90
 CRYPTO_UP_DOWN_SLIPPAGE_BPS = 20
 CRYPTO_GENERIC_SLIPPAGE_BPS = 35
@@ -34,6 +39,7 @@ MANUAL_PERSISTED_LABELS = {
 EVIDENCE_DETAILED_TRADE_HISTORY = "detailed_trade_history"
 EVIDENCE_STATS_ONLY = "stats_only"
 EVIDENCE_NO_HISTORICAL = "no_historical_evidence"
+EVIDENCE_STATUSES_WITH_PROOF = {EVIDENCE_DETAILED_TRADE_HISTORY, EVIDENCE_STATS_ONLY}
 
 
 def _clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
@@ -278,6 +284,38 @@ class PolymarketResearchService:
             + (frequency_score * 0.02),
             4,
         )
+        drawdown_pct = abs(float(candidate.get("drawdown_estimate_pct", 0.0) or 0.0))
+        positive_pnl = max(realized_pnl, 0.0)
+        smoothness_score = _clamp(
+            (profit_consistency_score * 0.50)
+            + (_clamp(active_days / 30.0) * 0.20)
+            + (_clamp(closed_trades / 30.0) * 0.15)
+            + ((_clamp(1.0 - (drawdown_pct / 30.0))) * 0.15)
+        )
+        one_off_penalty = 0.0
+        if positive_pnl > 0:
+            one_off_penalty = _clamp((positive_pnl / 10000.0) * (1.0 - _clamp(closed_trades / 10.0)))
+            if active_days < 3:
+                one_off_penalty = max(one_off_penalty, 0.35)
+        candidate["pnl_smoothness_score"] = round(smoothness_score, 4)
+        candidate["one_off_gain_penalty"] = round(one_off_penalty, 4)
+        long_horizon_score = (
+            (_clamp(active_days / 30.0) * 0.18)
+            + (_clamp(closed_trades / 25.0) * 0.16)
+            + (profit_consistency_score * 0.18)
+            + ((_clamp(crypto_ratio) if candidate.get("specialization") == "CRYPTO" else _clamp(crypto_ratio) * 0.75) * 0.16)
+            + (_clamp(1.0 - (drawdown_pct / 30.0)) * 0.14)
+            + (smoothness_score * 0.12)
+            + (recency_score * 0.06)
+            - (one_off_penalty * 0.20)
+        )
+        candidate["long_horizon_score"] = round(_clamp(long_horizon_score), 4)
+        candidate["observation_days"] = max(active_days, 0)
+        candidate["observed_action_count"] = max(
+            int(candidate.get("event_count_24h", 0) or 0),
+            int(candidate.get("historical_trade_rows", 0) or 0),
+            closed_trades,
+        )
 
     def _apply_linked_wallet_evidence(
         self,
@@ -446,6 +484,15 @@ class PolymarketResearchService:
             "shadow_seeded": 0,
             "shadow_blocker_reason": "",
             "target_specialization": "",
+            "operator_approved_pilot": 0,
+            "long_horizon_status": "untracked",
+            "long_horizon_score": 0.0,
+            "observation_days": 0,
+            "observed_action_count": 0,
+            "pnl_smoothness_score": 0.0,
+            "one_off_gain_penalty": 0.0,
+            "pilot_copy_gate_status": "blocked",
+            "pilot_copy_gate_reason": "operator_approval_required",
             "discovery_rank": 0,
             "shadow_rank": 0,
             "copy_ready_rank": 0,
@@ -465,6 +512,7 @@ class PolymarketResearchService:
                 "priority_rank": int(row["priority_rank"] or 0),
                 "priority_mode": str(row["priority_mode"] or "normal"),
                 "target_specialization": str(row["target_specialization"] or "UNKNOWN").upper(),
+                "operator_approved_pilot": int(row["operator_approved_pilot"] or 0),
                 "status": str(row["status"] or "linked"),
                 "notes": str(row["notes"] or ""),
             }
@@ -547,6 +595,15 @@ class PolymarketResearchService:
                     "shadow_seeded": 0,
                     "shadow_blocker_reason": "",
                     "target_specialization": "",
+                    "operator_approved_pilot": 0,
+                    "long_horizon_status": "untracked",
+                    "long_horizon_score": 0.0,
+                    "observation_days": 0,
+                    "observed_action_count": 0,
+                    "pnl_smoothness_score": 0.0,
+                    "one_off_gain_penalty": 0.0,
+                    "pilot_copy_gate_status": "blocked",
+                    "pilot_copy_gate_reason": "operator_approval_required",
                     "discovery_rank": 0,
                     "shadow_rank": 0,
                     "copy_ready_rank": 0,
@@ -569,6 +626,7 @@ class PolymarketResearchService:
             candidate["identity_resolution_status"] = "linked"
             candidate["priority_pinned"] = 1
             candidate["target_specialization"] = str(watchlist["target_specialization"])
+            candidate["operator_approved_pilot"] = int(watchlist.get("operator_approved_pilot", 0) or 0)
             if watchlist["target_specialization"] == "CRYPTO":
                 candidate["specialization"] = "CRYPTO"
                 candidate["crypto_participation_ratio"] = max(float(candidate["crypto_participation_ratio"]), SHADOW_CRYPTO_RATIO_MIN)
@@ -699,6 +757,47 @@ class PolymarketResearchService:
             return "drawdown_too_deep"
         return "eligible"
 
+    def _pilot_copy_gate_reason(self, wallet: dict[str, Any]) -> str:
+        if wallet.get("copy_ready_gate_status") == "promoted":
+            return "shadow_proven"
+        if wallet.get("identity_resolution_status") != "linked" or wallet.get("watchlist_status") != "linked":
+            return "not_linked"
+        if wallet.get("primary_source") != "manual_persisted":
+            return "not_manual_persisted"
+        targeted_crypto = str(wallet.get("target_specialization") or "").upper() == "CRYPTO"
+        if not targeted_crypto and wallet.get("specialization") != "CRYPTO" and float(wallet.get("crypto_participation_ratio", 0.0)) < SHADOW_CRYPTO_RATIO_MIN:
+            return "non_crypto_specialist"
+        if int(wallet.get("operator_approved_pilot", 0) or 0) != 1:
+            return "operator_approval_required"
+        evidence_status = str(wallet.get("historical_trade_evidence_status") or EVIDENCE_NO_HISTORICAL)
+        if evidence_status not in EVIDENCE_STATUSES_WITH_PROOF and int(wallet.get("observation_days", 0) or 0) < PILOT_COPY_MIN_OBSERVATION_DAYS:
+            return "needs_observation_window"
+        if (
+            int(wallet.get("observed_action_count", 0) or 0) < PILOT_COPY_MIN_OBSERVED_ACTIONS
+            and int(wallet.get("closed_shadow_trades", 0) or 0) < PILOT_COPY_MIN_CLOSED_SHADOW_TRADES
+        ):
+            return "needs_observed_actions"
+        if int(wallet.get("closed_shadow_trades", 0) or 0) >= PILOT_COPY_MIN_CLOSED_SHADOW_TRADES and float(wallet.get("shadow_edge", 0.0) or 0.0) <= 0.0:
+            return "shadow_edge_not_positive"
+        if float(wallet.get("worst_drawdown_pct", 0.0) or 0.0) < PILOT_COPY_MAX_DRAWDOWN:
+            return "drawdown_too_deep"
+        if float(wallet.get("long_horizon_score", 0.0) or 0.0) < PILOT_COPY_MIN_LONG_HORIZON_SCORE:
+            return "low_long_horizon_score"
+        return "eligible"
+
+    def _long_horizon_status(self, wallet: dict[str, Any]) -> str:
+        if wallet.get("copy_ready_gate_status") == "promoted":
+            return "copy_ready"
+        if wallet.get("pilot_copy_gate_status") == "promoted":
+            return "pilot_copy_ready"
+        if wallet.get("shadow_gate_status") == "promoted":
+            return "shadow_tracking"
+        if wallet.get("identity_resolution_status") == "linked":
+            return "observing"
+        if int(wallet.get("watchlist_priority_rank", 0) or 0) > 0:
+            return "priority_watch"
+        return "untracked"
+
     def _build_shadow_replay_rows(
         self,
         replay_trade_rows: list[Any],
@@ -825,6 +924,34 @@ class PolymarketResearchService:
                     "linked_entries": len(linked_watchlist_addresses),
                     "unresolved_but_ranked_entries": sum(1 for row in watchlist_rows if str(row["wallet_address"] or "").strip() == "" and int(row["priority_rank"] or 0) > 0),
                 },
+                "long_horizon_watchlist_summary": {
+                    "priority_watch": len(watchlist_rows),
+                    "linked": len(linked_watchlist_addresses),
+                    "observing": 0,
+                    "shadow_tracking": 0,
+                    "pilot_copy_ready": 0,
+                    "copy_ready": 0,
+                    "watch_only": len(watchlist_rows),
+                },
+                "specialist_wallet_score_summary": {
+                    "sample_count": 0,
+                    "avg_long_horizon_score": 0.0,
+                    "avg_smoothness_score": 0.0,
+                    "avg_one_off_gain_penalty": 0.0,
+                    "crypto_specialists": 0,
+                },
+                "observation_progress_summary": {
+                    "observing_wallets": 0,
+                    "wallets_with_observed_actions": 0,
+                    "wallets_over_7d_observation": 0,
+                    "wallets_over_10_actions": 0,
+                },
+                "pilot_copy_admission_summary": {
+                    "pilot_copy_wallets": 0,
+                    "operator_approved_wallets": 0,
+                    "watch_only_wallets": len(watchlist_rows),
+                    "blocker_counts": [],
+                },
                 "shadow_replay_summary": {
                     "replayed_actions_created": 0,
                     "wallets_with_replay_history": 0,
@@ -869,6 +996,7 @@ class PolymarketResearchService:
         self._apply_linked_wallet_evidence(candidates, watchlist_map, source_trade_rows, source_stats_rows)
         for candidate in candidates:
             self._ensure_evidence_defaults(candidate)
+            self._recompute_candidate_quality(candidate)
         candidates.sort(key=_wallet_sort_key, reverse=True)
 
         discovery_wallets, discovery_source_summary = self._build_discovery_pool(candidates)
@@ -998,6 +1126,22 @@ class PolymarketResearchService:
         for index, wallet in enumerate(copy_ready_wallets, start=1):
             wallet["copy_ready_rank"] = index
 
+        pilot_copy_wallets: list[dict[str, Any]] = []
+        pilot_blockers: Counter[str] = Counter()
+        for candidate in discovery_wallets:
+            pilot_reason = self._pilot_copy_gate_reason(candidate)
+            candidate["pilot_copy_gate_reason"] = pilot_reason
+            if pilot_reason == "eligible":
+                candidate["pilot_copy_gate_status"] = "promoted"
+                pilot_copy_wallets.append(candidate)
+            else:
+                candidate["pilot_copy_gate_status"] = "shadow_proven" if pilot_reason == "shadow_proven" else "blocked"
+                if candidate.get("watchlist_priority_rank") or candidate.get("identity_resolution_status") == "linked":
+                    pilot_blockers[pilot_reason] += 1
+
+        for candidate in discovery_wallets:
+            candidate["long_horizon_status"] = self._long_horizon_status(candidate)
+
         persisted_rows = []
         for candidate in discovery_wallets:
             candidate["cohort"] = (
@@ -1052,6 +1196,15 @@ class PolymarketResearchService:
                     "evidence_last_trade_at": candidate["evidence_last_trade_at"],
                     "shadow_seeded": candidate["shadow_seeded"],
                     "shadow_blocker_reason": candidate["shadow_blocker_reason"],
+                    "long_horizon_status": candidate["long_horizon_status"],
+                    "long_horizon_score": candidate["long_horizon_score"],
+                    "observation_days": candidate["observation_days"],
+                    "observed_action_count": candidate["observed_action_count"],
+                    "pnl_smoothness_score": candidate["pnl_smoothness_score"],
+                    "one_off_gain_penalty": candidate["one_off_gain_penalty"],
+                    "pilot_copy_gate_status": candidate["pilot_copy_gate_status"],
+                    "pilot_copy_gate_reason": candidate["pilot_copy_gate_reason"],
+                    "operator_approved_pilot": candidate["operator_approved_pilot"],
                 }
             )
         self.repository.replace_wallet_snapshots(persisted_rows)
@@ -1100,6 +1253,13 @@ class PolymarketResearchService:
                     "evidence_last_trade_at": str(linked_candidate.get("evidence_last_trade_at", "")) if linked_candidate else "",
                     "shadow_seeded": bool(linked_candidate and int(linked_candidate.get("shadow_seeded", 0) or 0) == 1),
                     "shadow_blocker_reason": str(linked_candidate.get("shadow_blocker_reason", "")) if linked_candidate else "",
+                    "long_horizon_status": str(linked_candidate.get("long_horizon_status", "priority_watch")) if linked_candidate else ("priority_watch" if not wallet_address else "linked"),
+                    "long_horizon_score": round(float(linked_candidate.get("long_horizon_score", 0.0)), 4) if linked_candidate else 0.0,
+                    "observed_action_count": int(linked_candidate.get("observed_action_count", 0)) if linked_candidate else 0,
+                    "observation_days": int(linked_candidate.get("observation_days", 0)) if linked_candidate else 0,
+                    "pilot_copy_gate_status": str(linked_candidate.get("pilot_copy_gate_status", "blocked")) if linked_candidate else "blocked",
+                    "pilot_copy_gate_reason": str(linked_candidate.get("pilot_copy_gate_reason", "not_linked")) if linked_candidate else "not_linked",
+                    "operator_approved_pilot": bool(row["operator_approved_pilot"] or 0),
                 }
             )
 
@@ -1167,6 +1327,54 @@ class PolymarketResearchService:
             ),
         }
 
+        long_horizon_watchlist_summary = {
+            "priority_watch": sum(1 for row in discovery_wallets if row["long_horizon_status"] == "priority_watch"),
+            "linked": sum(1 for row in discovery_wallets if row["identity_resolution_status"] == "linked"),
+            "observing": sum(1 for row in discovery_wallets if row["long_horizon_status"] == "observing"),
+            "shadow_tracking": sum(1 for row in discovery_wallets if row["long_horizon_status"] == "shadow_tracking"),
+            "pilot_copy_ready": len(pilot_copy_wallets),
+            "copy_ready": len(copy_ready_wallets),
+            "watch_only": sum(
+                1
+                for row in discovery_wallets
+                if row.get("watchlist_priority_rank")
+                and row["long_horizon_status"] in {"priority_watch", "observing"}
+                and row.get("pilot_copy_gate_status") != "promoted"
+                and row.get("copy_ready_gate_status") != "promoted"
+            ),
+        }
+        specialist_wallet_score_summary = {
+            "sample_count": len(discovery_wallets),
+            "avg_long_horizon_score": round(
+                sum(float(row.get("long_horizon_score", 0.0)) for row in discovery_wallets) / max(len(discovery_wallets), 1),
+                4,
+            ),
+            "avg_smoothness_score": round(
+                sum(float(row.get("pnl_smoothness_score", 0.0)) for row in discovery_wallets) / max(len(discovery_wallets), 1),
+                4,
+            ),
+            "avg_one_off_gain_penalty": round(
+                sum(float(row.get("one_off_gain_penalty", 0.0)) for row in discovery_wallets) / max(len(discovery_wallets), 1),
+                4,
+            ),
+            "crypto_specialists": sum(1 for row in discovery_wallets if row["specialization"] == "CRYPTO"),
+        }
+        observation_progress_summary = {
+            "observing_wallets": sum(1 for row in discovery_wallets if row["long_horizon_status"] == "observing"),
+            "wallets_with_observed_actions": sum(1 for row in discovery_wallets if int(row.get("observed_action_count", 0) or 0) > 0),
+            "wallets_over_7d_observation": sum(1 for row in discovery_wallets if int(row.get("observation_days", 0) or 0) >= PILOT_COPY_MIN_OBSERVATION_DAYS),
+            "wallets_over_10_actions": sum(1 for row in discovery_wallets if int(row.get("observed_action_count", 0) or 0) >= PILOT_COPY_MIN_OBSERVED_ACTIONS),
+        }
+        pilot_copy_admission_summary = {
+            "pilot_copy_wallets": len(pilot_copy_wallets),
+            "operator_approved_wallets": sum(1 for row in discovery_wallets if int(row.get("operator_approved_pilot", 0) or 0) == 1),
+            "watch_only_wallets": long_horizon_watchlist_summary["watch_only"],
+            "blocker_counts": [
+                {"reason": reason, "count": count}
+                for reason, count in sorted(pilot_blockers.items())
+            ],
+        }
+
         clean_discovery_rows = []
         for row in discovery_wallets[:12]:
             clean_discovery_rows.append(
@@ -1210,6 +1418,10 @@ class PolymarketResearchService:
             },
             "priority_watchlist_summary": priority_watchlist_summary,
             "identity_resolution_summary": identity_resolution_summary,
+            "long_horizon_watchlist_summary": long_horizon_watchlist_summary,
+            "specialist_wallet_score_summary": specialist_wallet_score_summary,
+            "observation_progress_summary": observation_progress_summary,
+            "pilot_copy_admission_summary": pilot_copy_admission_summary,
             "shadow_replay_summary": shadow_replay_summary,
             "linked_wallet_evidence_summary": linked_wallet_evidence_summary,
             "shadow_evidence_backfill_summary": shadow_evidence_backfill_summary,

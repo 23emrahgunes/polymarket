@@ -16,6 +16,10 @@ SUMMARY_SECTIONS = [
     "WALLET_PROVENANCE_SUMMARY",
     "PRIORITY_WATCHLIST_SUMMARY",
     "IDENTITY_RESOLUTION_SUMMARY",
+    "LONG_HORIZON_WATCHLIST_SUMMARY",
+    "SPECIALIST_WALLET_SCORE_SUMMARY",
+    "OBSERVATION_PROGRESS_SUMMARY",
+    "PILOT_COPY_ADMISSION_SUMMARY",
     "LINKED_WALLET_EVIDENCE_SUMMARY",
     "SHADOW_EVIDENCE_BACKFILL_SUMMARY",
     "SHADOW_REPLAY_SUMMARY",
@@ -86,6 +90,17 @@ def _run_watchlist_link(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_watchlist_approve_pilot(args: argparse.Namespace) -> int:
+    repository = _repository_from_args(args)
+    row = repository.approve_watchlist_pilot(
+        row_id=args.id,
+        approved=not bool(args.revoke),
+        notes=args.notes,
+    )
+    _print_json_section("WATCHLIST_ROW_PILOT_APPROVAL_UPDATED", _row_to_dict(row))
+    return 0
+
+
 def _add_db_path_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--db-path",
@@ -115,6 +130,13 @@ def build_parser() -> argparse.ArgumentParser:
     link_parser.add_argument("--wallet-address", required=True, help="Verified 0x-prefixed wallet address")
     link_parser.add_argument("--notes", default=None, help="Manual verification note")
     link_parser.set_defaults(func=_run_watchlist_link)
+
+    approve_parser = subparsers.add_parser("watchlist-approve-pilot", help="Approve or revoke low-risk paper pilot copy for a linked watchlist wallet")
+    _add_db_path_argument(approve_parser)
+    approve_parser.add_argument("--id", type=int, required=True, help="Watchlist row id")
+    approve_parser.add_argument("--notes", default=None, help="Operator approval note")
+    approve_parser.add_argument("--revoke", action="store_true", help="Revoke pilot approval instead of approving")
+    approve_parser.set_defaults(func=_run_watchlist_approve_pilot)
 
     add_parser = subparsers.add_parser("watchlist-add", help="Add a handle/profile to the priority watchlist")
     _add_db_path_argument(add_parser)

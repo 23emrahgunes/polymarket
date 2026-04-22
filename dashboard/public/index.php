@@ -572,6 +572,22 @@ $laneBodyClass = $researchOnly
                     <div class="subcard-header"><h3 class="subcard-title">Shadow Evidence Backfill</h3><span class="badge info">Backfill</span></div>
                     <div class="metric-list" id="shadow-evidence-backfill-summary"></div>
                 </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Uzun Vade Izleme Ozeti</h3><span class="badge info">Long Horizon</span></div>
+                    <div class="metric-list" id="long-horizon-watchlist-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Uzman Skor Ozeti</h3><span class="badge info">Specialist</span></div>
+                    <div class="metric-list" id="specialist-wallet-score-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Canli Takip Ilerlemesi</h3><span class="badge info">Observe</span></div>
+                    <div class="metric-list" id="observation-progress-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Pilot Copy Giris Kapisi</h3><span class="badge warn">Pilot</span></div>
+                    <div class="metric-list" id="pilot-copy-admission-summary"></div>
+                </div>
             </div>
         </article>
         <article class="panel panel-wide" data-tab="polymarket-research">
@@ -1114,6 +1130,17 @@ function translateReason(value) {
         detailed_trade_history: 'Detayli gecmis islem kaniti var',
         stats_only: 'Sadece toplu performans ozeti var',
         no_historical_evidence: 'Gecmis islem kaniti yok',
+        priority_watch: 'Oncelikli uzman aday',
+        observing: 'Canli izleme asamasinda',
+        shadow_tracking: 'Shadow takip asamasinda',
+        pilot_copy_ready: 'Dusuk limitli paper kopyaya uygun',
+        copy_ready: 'Normal copy cohorta uygun',
+        operator_approval_required: 'Operator onayi gerekiyor',
+        needs_observation_window: 'En az 7 gun gozlem gerekiyor',
+        needs_observed_actions: 'Yeterli observed action yok',
+        watch_only_needs_shadow_or_pilot_proof: 'Copy icin once shadow veya pilot kanit gerekiyor',
+        eligible_copy_wallets_available: 'Copy icin uygun wallet bulundu',
+        low_long_horizon_score: 'Uzun vade tutarlilik skoru dusuk',
         pending_resolution: 'Kimlik henuz cozulmedi',
         linked: 'Cuzdan adresi baglandi',
         none: 'yok'
@@ -1125,7 +1152,8 @@ function translateCohortSource(value) {
     const text = String(value ?? '').trim();
     const map = {
         shadow_proven: 'Shadow-proven',
-        manual_fast_track: 'Manual fast-track',
+        manual_fast_track: 'Pilot Copy',
+        pilot_copy_ready: 'Pilot Copy',
         none: 'yok',
         '': 'yok'
     };
@@ -1904,6 +1932,37 @@ function updatePanels(payload) {
         { label: 'Net linked replay PnL', value: formatNumber(shadowEvidenceBackfillSummary.net_replay_shadow_pnl, 2) },
         { label: 'Net linked replay edge', value: formatNumber(shadowEvidenceBackfillSummary.net_replay_shadow_edge, 4) }
     ]);
+    const longHorizonSummary = payload.long_horizon_watchlist_summary || {};
+    renderMetrics('long-horizon-watchlist-summary', [
+        { label: 'Priority watch', value: formatNumber(longHorizonSummary.priority_watch, 0) },
+        { label: 'Linked', value: formatNumber(longHorizonSummary.linked, 0) },
+        { label: 'Observing', value: formatNumber(longHorizonSummary.observing, 0) },
+        { label: 'Shadow tracking', value: formatNumber(longHorizonSummary.shadow_tracking, 0) },
+        { label: 'Pilot Copy', value: formatNumber(longHorizonSummary.pilot_copy_ready, 0) },
+        { label: 'Copy Ready', value: formatNumber(longHorizonSummary.copy_ready, 0) }
+    ]);
+    const specialistScoreSummary = payload.specialist_wallet_score_summary || {};
+    renderMetrics('specialist-wallet-score-summary', [
+        { label: 'Ornek sayisi', value: formatNumber(specialistScoreSummary.sample_count, 0) },
+        { label: 'Ort. long-horizon', value: formatNumber(specialistScoreSummary.avg_long_horizon_score, 3) },
+        { label: 'Ort. pürüzsüzlük', value: formatNumber(specialistScoreSummary.avg_pnl_smoothness_score, 3) },
+        { label: 'Ort. tek atis cezasi', value: formatNumber(specialistScoreSummary.avg_one_off_gain_penalty, 3) },
+        { label: 'Crypto specialist', value: formatNumber(specialistScoreSummary.crypto_specialists, 0) }
+    ]);
+    const observationProgress = payload.observation_progress_summary || {};
+    renderMetrics('observation-progress-summary', [
+        { label: 'Izlenen wallet', value: formatNumber(observationProgress.watch_wallets, 0) },
+        { label: 'Canli takipte', value: formatNumber(observationProgress.observing_wallets, 0) },
+        { label: 'Toplam observed action', value: formatNumber(observationProgress.total_observed_actions, 0) },
+        { label: 'Observed actioni olan', value: formatNumber(observationProgress.wallets_with_observed_actions, 0) },
+        { label: 'Ort. gozlem gunu', value: formatNumber(observationProgress.avg_observation_days, 2) }
+    ]);
+    const pilotCopyAdmission = payload.pilot_copy_admission_summary || {};
+    renderMetrics('pilot-copy-admission-summary', [
+        { label: 'Pilot Copy wallet', value: formatNumber(pilotCopyAdmission.pilot_copy_wallets, 0) },
+        { label: 'Operator onayli', value: formatNumber(pilotCopyAdmission.operator_approved_wallets, 0) },
+        { label: 'Bloke wallet', value: formatNumber(pilotCopyAdmission.blocked_wallets, 0) }
+    ]);
     renderTable('wallet-consistency-table', [
         { key: 'address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.address || '', 20) },
         { key: 'watchlist_priority_rank', label: 'Oncelik', render: (row) => escapeHtml(row.watchlist_priority_rank ? formatNumber(row.watchlist_priority_rank, 0) : '-') },
@@ -1914,6 +1973,12 @@ function updatePanels(payload) {
         { key: 'historical_trade_evidence_status', label: 'Kanit Durumu', render: (row) => escapeHtml(translateReason(row.historical_trade_evidence_status || 'no_historical_evidence')) },
         { key: 'historical_trade_rows', label: 'Gecmis Islem', render: (row) => escapeHtml(formatNumber(row.historical_trade_rows, 0)) },
         { key: 'shadow_seeded', label: 'Shadow Seed', render: (row) => row.shadow_seeded ? 'evet' : 'hayir' },
+        { key: 'long_horizon_status', label: 'Uzun Vade Asamasi', render: (row) => escapeHtml(translateReason(row.long_horizon_status || 'untracked')) },
+        { key: 'observed_action_count', label: 'Observed Action', render: (row) => escapeHtml(formatNumber(row.observed_action_count, 0)) },
+        { key: 'observation_days', label: 'Gozlem Gunu', render: (row) => escapeHtml(formatNumber(row.observation_days, 0)) },
+        { key: 'long_horizon_score', label: 'Long-Horizon', render: (row) => escapeHtml(formatNumber(row.long_horizon_score, 3)) },
+        { key: 'pilot_copy_gate_status', label: 'Pilot Copy', render: (row) => escapeHtml(row.pilot_copy_gate_status || 'blocked') },
+        { key: 'pilot_copy_gate_reason', label: 'Pilot Nedeni', render: (row) => escapeHtml(translateReason(row.pilot_copy_gate_reason || 'operator_approval_required')) },
         { key: 'specialization', label: 'Uzmanlik', render: (row) => escapeHtml(row.specialization || 'UNKNOWN') },
         { key: 'consistency_score', label: 'Tutarlilik', render: (row) => escapeHtml(formatNumber(row.consistency_score, 3)) },
         { key: 'trust_score', label: 'Guven', render: (row) => escapeHtml(formatNumber(row.trust_score, 3)) },
@@ -1935,6 +2000,10 @@ function updatePanels(payload) {
         { key: 'historical_trade_evidence_status', label: 'Kanit Durumu', render: (row) => escapeHtml(translateReason(row.historical_trade_evidence_status || (row.wallet_address ? 'no_historical_evidence' : 'pending_resolution'))) },
         { key: 'historical_trade_rows', label: 'Gecmis Islem', render: (row) => escapeHtml(formatNumber(row.historical_trade_rows, 0)) },
         { key: 'shadow_seeded', label: 'Shadow Seed', render: (row) => row.shadow_seeded ? 'evet' : 'hayir' },
+        { key: 'long_horizon_status', label: 'Asama', render: (row) => escapeHtml(translateReason(row.long_horizon_status || (row.wallet_address ? 'linked' : 'priority_watch'))) },
+        { key: 'observed_action_count', label: 'Observed Action', render: (row) => escapeHtml(formatNumber(row.observed_action_count, 0)) },
+        { key: 'pilot_copy_gate_status', label: 'Pilot Copy', render: (row) => escapeHtml(row.pilot_copy_gate_status || 'blocked') },
+        { key: 'pilot_copy_gate_reason', label: 'Pilot Blokaji', render: (row) => escapeHtml(translateReason(row.pilot_copy_gate_reason || 'operator_approval_required')) },
         { key: 'shadow_blocker_reason', label: 'Shadow Blokaji', render: (row) => escapeHtml(translateReason(row.shadow_blocker_reason || 'none')) },
         { key: 'promoted_to_shadow', label: 'Shadowa alindi mi', render: (row) => row.promoted_to_shadow ? 'evet' : 'hayir' }
     ], payload.priority_watchlist_rows || [], 'Henuz oncelikli izleme kaydi yok.');
@@ -1960,7 +2029,8 @@ function updatePanels(payload) {
     renderMetrics('copy-execution-summary', [
         { label: 'Copy-ready wallet', value: formatNumber(copyExecution.copy_ready_wallets, 0) },
         { label: 'Shadow-proven wallet', value: formatNumber(copyExecution.shadow_proven_wallets, 0) },
-        { label: 'Manual fast-track wallet', value: formatNumber(copyExecution.manual_fast_track_wallets, 0) },
+        { label: 'Pilot Copy wallet', value: formatNumber(copyExecution.pilot_copy_wallets ?? copyExecution.manual_fast_track_wallets, 0) },
+        { label: 'Watch-only wallet', value: formatNumber(copyExecution.watch_only_wallets, 0) },
         { label: 'Toplam eligible wallet', value: formatNumber(copyExecution.eligible_copy_wallets_total, 0) },
         { label: 'Open aksiyon', value: formatNumber(copyExecution.open_actions, 0) },
         { label: 'Close aksiyon', value: formatNumber(copyExecution.close_actions, 0) },
@@ -1968,20 +2038,23 @@ function updatePanels(payload) {
         { label: 'Reject aksiyon', value: formatNumber(copyExecution.reject_actions, 0) },
         { label: 'Aktif follower pozisyon', value: formatNumber(copyExecution.active_copy_positions, 0) },
         { label: 'Aktif standard cohort', value: formatNumber(copyExecution.active_shadow_proven_positions, 0) },
-        { label: 'Aktif fast-track cohort', value: formatNumber(copyExecution.active_manual_fast_track_positions, 0) },
-        { label: 'Realized PnL wallet', value: formatNumber(copyExecution.wallets_with_realized_pnl, 0) }
+        { label: 'Aktif pilot cohort', value: formatNumber(copyExecution.active_pilot_copy_positions ?? copyExecution.active_manual_fast_track_positions, 0) },
+        { label: 'Realized PnL wallet', value: formatNumber(copyExecution.wallets_with_realized_pnl, 0) },
+        { label: 'Copy bekleme nedeni', value: translateReason(copyExecution.copy_blocker_reason || 'no_eligible_copy_wallets'), long: true }
     ]);
     const copyDrift = payload.shadow_vs_copy_drift_summary || {};
     renderMetrics('shadow-vs-copy-drift-summary', [
         { label: 'Copy-ready wallet', value: formatNumber(copyDrift.copy_ready_wallets, 0) },
         { label: 'Shadow-proven wallet', value: formatNumber(copyDrift.shadow_proven_wallets, 0) },
-        { label: 'Manual fast-track wallet', value: formatNumber(copyDrift.manual_fast_track_wallets, 0) },
+        { label: 'Pilot Copy wallet', value: formatNumber(copyDrift.pilot_copy_wallets ?? copyDrift.manual_fast_track_wallets, 0) },
+        { label: 'Watch-only wallet', value: formatNumber(copyDrift.watch_only_wallets, 0) },
         { label: 'Toplam eligible wallet', value: formatNumber(copyDrift.eligible_copy_wallets_total, 0) },
         { label: 'Shadow closed trade', value: formatNumber(copyDrift.shadow_closed_trades, 0) },
         { label: 'Shadow net edge', value: formatNumber(copyDrift.shadow_net_edge, 4) },
         { label: 'Source realized PnL', value: formatNumber(copyDrift.source_realized_pnl, 2) },
         { label: 'Copy realized PnL', value: formatNumber(copyDrift.copy_realized_pnl, 2) },
-        { label: 'Copy-source fark', value: formatNumber(copyDrift.copy_vs_source_pnl_gap, 2) }
+        { label: 'Copy-source fark', value: formatNumber(copyDrift.copy_vs_source_pnl_gap, 2) },
+        { label: 'Bekleme nedeni', value: translateReason(copyDrift.copy_blocker_reason || 'no_eligible_copy_wallets'), long: true }
     ]);
     const copyAcceptance = payload.copy_acceptance_summary || {};
     renderMetrics('copy-acceptance-summary', [
@@ -1999,7 +2072,7 @@ function updatePanels(payload) {
         { label: 'Son runtime aksiyonu', value: copyRuntimeAcceptance.last_runtime_action_at || 'yok', long: true },
         { label: 'Eligible wallet', value: formatNumber(copyRuntimeAcceptance.eligible_copy_wallets_total, 0) },
         { label: 'Shadow-proven wallet', value: formatNumber(copyRuntimeAcceptance.shadow_proven_wallets, 0) },
-        { label: 'Manual fast-track wallet', value: formatNumber(copyRuntimeAcceptance.manual_fast_track_wallets, 0) },
+        { label: 'Pilot Copy wallet', value: formatNumber(copyRuntimeAcceptance.pilot_copy_wallets ?? copyRuntimeAcceptance.manual_fast_track_wallets, 0) },
         { label: 'Runtime open action', value: copyRuntimeAcceptance.runtime_open_action_observed ? 'evet' : 'hayir' },
         { label: 'Runtime open position', value: copyRuntimeAcceptance.runtime_open_position_observed ? 'evet' : 'hayir' },
         { label: 'Runtime close action', value: copyRuntimeAcceptance.runtime_close_action_observed ? 'evet' : 'hayir' },

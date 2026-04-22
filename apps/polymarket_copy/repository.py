@@ -133,6 +133,10 @@ class PolymarketCopyRepository:
                 "historical_trade_evidence_status",
                 "'no_historical_evidence'",
             )
+            pilot_copy_expr = _value_expr(wallet_columns, "pilot_copy_gate_status", "'blocked'")
+            pilot_reason_expr = _value_expr(wallet_columns, "pilot_copy_gate_reason", "''")
+            long_status_expr = _value_expr(wallet_columns, "long_horizon_status", "'untracked'")
+            operator_approved_expr = _value_expr(wallet_columns, "operator_approved_pilot", "0")
             target_specialization_expr = _value_expr(wallet_columns, "target_specialization", "''")
             primary_source_expr = _value_expr(wallet_columns, "primary_source", "''")
             shadow_edge_expr = _value_expr(wallet_columns, "shadow_edge", "0")
@@ -141,17 +145,7 @@ class PolymarketCopyRepository:
             watchlist_rank_expr = _value_expr(wallet_columns, "watchlist_priority_rank", "999999")
             trust_score_expr = _value_expr(wallet_columns, "trust_score", "0")
             specialization_expr = _value_expr(wallet_columns, "specialization", "''")
-            manual_fast_track_condition = f"""
-                COALESCE({primary_source_expr}, '') = 'manual_persisted'
-                AND COALESCE({watchlist_mode_expr}, '') = 'fast_track_shadow'
-                AND COALESCE({watchlist_status_expr}, '') = 'linked'
-                AND COALESCE({identity_status_expr}, '') = 'linked'
-                AND COALESCE({evidence_expr}, 'no_historical_evidence') IN ('detailed_trade_history', 'stats_only')
-                AND (
-                    COALESCE({specialization_expr}, '') = 'CRYPTO'
-                    OR COALESCE({target_specialization_expr}, '') = 'CRYPTO'
-                )
-            """
+            pilot_copy_condition = f"COALESCE({pilot_copy_expr}, 'blocked') = 'promoted'"
             sql = f"""
                 SELECT
                     address,
@@ -166,14 +160,18 @@ class PolymarketCopyRepository:
                     COALESCE({watchlist_status_expr}, '') AS watchlist_status,
                     COALESCE({identity_status_expr}, '') AS identity_resolution_status,
                     COALESCE({evidence_expr}, 'no_historical_evidence') AS historical_trade_evidence_status,
+                    COALESCE({pilot_copy_expr}, 'blocked') AS pilot_copy_gate_status,
+                    COALESCE({pilot_reason_expr}, '') AS pilot_copy_gate_reason,
+                    COALESCE({long_status_expr}, 'untracked') AS long_horizon_status,
+                    COALESCE({operator_approved_expr}, 0) AS operator_approved_pilot,
                     CASE
                         WHEN COALESCE({copy_ready_expr}, 'blocked') = 'promoted' THEN 'shadow_proven'
-                        WHEN {manual_fast_track_condition} THEN 'manual_fast_track'
+                        WHEN {pilot_copy_condition} THEN 'pilot_copy_ready'
                         ELSE ''
                     END AS cohort_source
                 FROM polymarket_research_wallets
                 WHERE COALESCE({copy_ready_expr}, 'blocked') = 'promoted'
-                   OR ({manual_fast_track_condition})
+                   OR ({pilot_copy_condition})
                 ORDER BY
                     CASE
                         WHEN COALESCE({copy_ready_expr}, 'blocked') = 'promoted' THEN 0
@@ -192,6 +190,52 @@ class PolymarketCopyRepository:
                 sql += " LIMIT ?"
                 params.append(limit)
             return list(connection.execute(sql, params))
+
+    def fetch_copy_admission_counts(self) -> dict[str, int | str]:
+        with self.connect() as connection:
+            if not _table_exists(connection, "polymarket_research_wallets"):
+                return {
+                    "shadow_proven_wallets": 0,
+                    "pilot_copy_wallets": 0,
+                    "watch_only_wallets": 0,
+                    "copy_blocker_reason": "no_research_wallets",
+                }
+            wallet_columns = _column_names(connection, "polymarket_research_wallets")
+            copy_ready_expr = _value_expr(wallet_columns, "copy_ready_gate_status", "'blocked'")
+            pilot_copy_expr = _value_expr(wallet_columns, "pilot_copy_gate_status", "'blocked'")
+            watchlist_rank_expr = _value_expr(wallet_columns, "watchlist_priority_rank", "0")
+            identity_status_expr = _value_expr(wallet_columns, "identity_resolution_status", "''")
+            rows = connection.execute(
+                f"""
+                SELECT
+                    SUM(CASE WHEN COALESCE({copy_ready_expr}, 'blocked') = 'promoted' THEN 1 ELSE 0 END) AS shadow_proven_wallets,
+                    SUM(CASE WHEN COALESCE({pilot_copy_expr}, 'blocked') = 'promoted' THEN 1 ELSE 0 END) AS pilot_copy_wallets,
+                    SUM(
+                        CASE
+                            WHEN COALESCE({copy_ready_expr}, 'blocked') != 'promoted'
+                             AND COALESCE({pilot_copy_expr}, 'blocked') != 'promoted'
+                             AND (COALESCE({watchlist_rank_expr}, 0) > 0 OR COALESCE({identity_status_expr}, '') = 'linked')
+                            THEN 1 ELSE 0
+                        END
+                    ) AS watch_only_wallets
+                FROM polymarket_research_wallets
+                """
+            ).fetchone()
+            shadow_proven = int((rows or {})["shadow_proven_wallets"] or 0)
+            pilot_copy = int((rows or {})["pilot_copy_wallets"] or 0)
+            watch_only = int((rows or {})["watch_only_wallets"] or 0)
+            if shadow_proven + pilot_copy > 0:
+                reason = "eligible_copy_wallets_available"
+            elif watch_only > 0:
+                reason = "watch_only_needs_shadow_or_pilot_proof"
+            else:
+                reason = "no_eligible_copy_wallets"
+            return {
+                "shadow_proven_wallets": shadow_proven,
+                "pilot_copy_wallets": pilot_copy,
+                "watch_only_wallets": watch_only,
+                "copy_blocker_reason": reason,
+            }
 
     def fetch_source_trade_rows(self, wallet_addresses: Sequence[str], lookback_days: int) -> list[dict[str, Any]]:
         addresses = [address.strip().lower() for address in wallet_addresses if address and address.strip()]

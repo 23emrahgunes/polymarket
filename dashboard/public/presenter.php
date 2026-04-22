@@ -1677,6 +1677,34 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
         'net_replay_shadow_pnl' => 0.0,
         'net_replay_shadow_edge' => 0.0,
     ];
+    $emptyLongHorizonWatchlistSummary = [
+        'priority_watch' => 0,
+        'linked' => 0,
+        'observing' => 0,
+        'shadow_tracking' => 0,
+        'pilot_copy_ready' => 0,
+        'copy_ready' => 0,
+    ];
+    $emptySpecialistWalletScoreSummary = [
+        'sample_count' => 0,
+        'avg_long_horizon_score' => 0.0,
+        'avg_pnl_smoothness_score' => 0.0,
+        'avg_one_off_gain_penalty' => 0.0,
+        'crypto_specialists' => 0,
+    ];
+    $emptyObservationProgressSummary = [
+        'watch_wallets' => 0,
+        'observing_wallets' => 0,
+        'total_observed_actions' => 0,
+        'wallets_with_observed_actions' => 0,
+        'avg_observation_days' => 0.0,
+    ];
+    $emptyPilotCopyAdmissionSummary = [
+        'pilot_copy_wallets' => 0,
+        'operator_approved_wallets' => 0,
+        'blocked_wallets' => 0,
+        'blocker_counts' => [],
+    ];
 
     if (dashboard_table_exists($pdo, 'polymarket_research_wallets')) {
         $persistedCount = (int) ((dashboard_fetch_one($pdo, 'SELECT COUNT(*) AS count FROM polymarket_research_wallets')['count'] ?? 0));
@@ -1696,6 +1724,33 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
             $shadowBlockerExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'shadow_blocker_reason')
                 ? "shadow_blocker_reason"
                 : "shadow_gate_reason AS shadow_blocker_reason";
+            $longHorizonStatusExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'long_horizon_status')
+                ? "long_horizon_status"
+                : "'untracked' AS long_horizon_status";
+            $longHorizonScoreExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'long_horizon_score')
+                ? "long_horizon_score"
+                : "0 AS long_horizon_score";
+            $observationDaysExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'observation_days')
+                ? "observation_days"
+                : "0 AS observation_days";
+            $observedActionCountExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'observed_action_count')
+                ? "observed_action_count"
+                : "0 AS observed_action_count";
+            $pnlSmoothnessExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'pnl_smoothness_score')
+                ? "pnl_smoothness_score"
+                : "0 AS pnl_smoothness_score";
+            $oneOffPenaltyExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'one_off_gain_penalty')
+                ? "one_off_gain_penalty"
+                : "0 AS one_off_gain_penalty";
+            $pilotGateStatusExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'pilot_copy_gate_status')
+                ? "pilot_copy_gate_status"
+                : "'blocked' AS pilot_copy_gate_status";
+            $pilotGateReasonExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'pilot_copy_gate_reason')
+                ? "pilot_copy_gate_reason"
+                : "'operator_approval_required' AS pilot_copy_gate_reason";
+            $operatorApprovedPilotExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'operator_approved_pilot')
+                ? "operator_approved_pilot"
+                : "0 AS operator_approved_pilot";
             $walletRows = dashboard_fetch_all(
                 $pdo,
                 "
@@ -1745,6 +1800,15 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                     {$evidenceLastTradeExpr},
                     {$shadowSeededExpr},
                     {$shadowBlockerExpr},
+                    {$longHorizonStatusExpr},
+                    {$longHorizonScoreExpr},
+                    {$observationDaysExpr},
+                    {$observedActionCountExpr},
+                    {$pnlSmoothnessExpr},
+                    {$oneOffPenaltyExpr},
+                    {$pilotGateStatusExpr},
+                    {$pilotGateReasonExpr},
+                    {$operatorApprovedPilotExpr},
                     refreshed_at
                 FROM polymarket_research_wallets
                 ORDER BY discovery_rank ASC, consistency_score DESC, trust_score DESC
@@ -1804,6 +1868,15 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                     'evidence_last_trade_at' => (string) ($row['evidence_last_trade_at'] ?? ''),
                     'shadow_seeded' => !empty($row['shadow_seeded']),
                     'shadow_blocker_reason' => (string) ($row['shadow_blocker_reason'] ?? $row['shadow_gate_reason'] ?? ''),
+                    'long_horizon_status' => (string) ($row['long_horizon_status'] ?? 'untracked'),
+                    'long_horizon_score' => round((float) ($row['long_horizon_score'] ?? 0.0), 4),
+                    'observation_days' => (int) ($row['observation_days'] ?? 0),
+                    'observed_action_count' => (int) ($row['observed_action_count'] ?? 0),
+                    'pnl_smoothness_score' => round((float) ($row['pnl_smoothness_score'] ?? 0.0), 4),
+                    'one_off_gain_penalty' => round((float) ($row['one_off_gain_penalty'] ?? 0.0), 4),
+                    'pilot_copy_gate_status' => (string) ($row['pilot_copy_gate_status'] ?? 'blocked'),
+                    'pilot_copy_gate_reason' => (string) ($row['pilot_copy_gate_reason'] ?? 'operator_approval_required'),
+                    'operator_approved_pilot' => !empty($row['operator_approved_pilot']),
                 ],
                 $walletRows
             );
@@ -2022,6 +2095,10 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
             ];
             $linkedWalletEvidenceSummary = $emptyLinkedWalletEvidenceSummary;
             $shadowEvidenceBackfillSummary = $emptyShadowEvidenceBackfillSummary;
+            $longHorizonWatchlistSummary = $emptyLongHorizonWatchlistSummary;
+            $specialistWalletScoreSummary = $emptySpecialistWalletScoreSummary;
+            $observationProgressSummary = $emptyObservationProgressSummary;
+            $pilotCopyAdmissionSummary = $emptyPilotCopyAdmissionSummary;
             if (dashboard_table_exists($pdo, 'polymarket_research_watchlist')) {
                 $watchlistRows = dashboard_fetch_all(
                     $pdo,
@@ -2101,6 +2178,13 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                         'evidence_last_trade_at' => $linkedCandidate !== null ? (string) ($linkedCandidate['evidence_last_trade_at'] ?? '') : '',
                         'shadow_seeded' => $linkedCandidate !== null && !empty($linkedCandidate['shadow_seeded']),
                         'shadow_blocker_reason' => $linkedCandidate !== null ? (string) ($linkedCandidate['shadow_blocker_reason'] ?? $linkedCandidate['shadow_gate_reason'] ?? '') : '',
+                        'long_horizon_status' => $linkedCandidate !== null ? (string) ($linkedCandidate['long_horizon_status'] ?? ($linked ? 'linked' : 'priority_watch')) : ($linked ? 'linked' : 'priority_watch'),
+                        'long_horizon_score' => $linkedCandidate !== null ? round((float) ($linkedCandidate['long_horizon_score'] ?? 0.0), 4) : 0.0,
+                        'observation_days' => $linkedCandidate !== null ? (int) ($linkedCandidate['observation_days'] ?? 0) : 0,
+                        'observed_action_count' => $linkedCandidate !== null ? (int) ($linkedCandidate['observed_action_count'] ?? 0) : 0,
+                        'pilot_copy_gate_status' => $linkedCandidate !== null ? (string) ($linkedCandidate['pilot_copy_gate_status'] ?? 'blocked') : 'blocked',
+                        'pilot_copy_gate_reason' => $linkedCandidate !== null ? (string) ($linkedCandidate['pilot_copy_gate_reason'] ?? 'operator_approval_required') : 'operator_approval_required',
+                        'operator_approved_pilot' => $linkedCandidate !== null && !empty($linkedCandidate['operator_approved_pilot']),
                     ];
                 }
                 $priorityWatchlistSummary = [
@@ -2139,6 +2223,47 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                     'net_replay_shadow_edge' => round(array_sum(array_map(static fn (array $row): float => (float) ($row['shadow_edge'] ?? 0.0), $linkedReplayRows)), 4),
                 ];
             }
+            $statusCounts = array_count_values(array_map(static fn (array $row): string => (string) ($row['long_horizon_status'] ?? 'untracked'), $candidates));
+            $longHorizonWatchlistSummary = [
+                'priority_watch' => (int) ($statusCounts['priority_watch'] ?? 0),
+                'linked' => (int) ($statusCounts['linked'] ?? 0),
+                'observing' => (int) ($statusCounts['observing'] ?? 0),
+                'shadow_tracking' => (int) ($statusCounts['shadow_tracking'] ?? 0),
+                'pilot_copy_ready' => (int) ($statusCounts['pilot_copy_ready'] ?? 0),
+                'copy_ready' => (int) ($statusCounts['copy_ready'] ?? 0),
+            ];
+            $sampleCount = count($candidates);
+            $watchWallets = array_values(array_filter(
+                $candidates,
+                static fn (array $row): bool => (int) ($row['watchlist_priority_rank'] ?? 0) > 0 || (string) ($row['identity_resolution_status'] ?? '') === 'linked'
+            ));
+            $pilotBlockers = [];
+            foreach ($watchWallets as $row) {
+                $reason = (string) ($row['pilot_copy_gate_reason'] ?? 'operator_approval_required');
+                if ($reason !== 'eligible') {
+                    $pilotBlockers[$reason] = ($pilotBlockers[$reason] ?? 0) + 1;
+                }
+            }
+            $specialistWalletScoreSummary = [
+                'sample_count' => $sampleCount,
+                'avg_long_horizon_score' => $sampleCount > 0 ? round(array_sum(array_map(static fn (array $row): float => (float) ($row['long_horizon_score'] ?? 0.0), $candidates)) / $sampleCount, 4) : 0.0,
+                'avg_pnl_smoothness_score' => $sampleCount > 0 ? round(array_sum(array_map(static fn (array $row): float => (float) ($row['pnl_smoothness_score'] ?? 0.0), $candidates)) / $sampleCount, 4) : 0.0,
+                'avg_one_off_gain_penalty' => $sampleCount > 0 ? round(array_sum(array_map(static fn (array $row): float => (float) ($row['one_off_gain_penalty'] ?? 0.0), $candidates)) / $sampleCount, 4) : 0.0,
+                'crypto_specialists' => count(array_filter($candidates, static fn (array $row): bool => (string) ($row['specialization'] ?? '') === 'CRYPTO')),
+            ];
+            $observationProgressSummary = [
+                'watch_wallets' => count($watchWallets),
+                'observing_wallets' => count(array_filter($watchWallets, static fn (array $row): bool => in_array((string) ($row['long_horizon_status'] ?? ''), ['observing', 'shadow_tracking', 'pilot_copy_ready', 'copy_ready'], true))),
+                'total_observed_actions' => array_sum(array_map(static fn (array $row): int => (int) ($row['observed_action_count'] ?? 0), $watchWallets)),
+                'wallets_with_observed_actions' => count(array_filter($watchWallets, static fn (array $row): bool => (int) ($row['observed_action_count'] ?? 0) > 0)),
+                'avg_observation_days' => count($watchWallets) > 0 ? round(array_sum(array_map(static fn (array $row): int => (int) ($row['observation_days'] ?? 0), $watchWallets)) / count($watchWallets), 2) : 0.0,
+            ];
+            $pilotCopyAdmissionSummary = [
+                'pilot_copy_wallets' => count(array_filter($candidates, static fn (array $row): bool => (string) ($row['pilot_copy_gate_status'] ?? '') === 'promoted')),
+                'operator_approved_wallets' => count(array_filter($candidates, static fn (array $row): bool => !empty($row['operator_approved_pilot']))),
+                'blocked_wallets' => array_sum($pilotBlockers),
+                'blocker_counts' => $pilotBlockers,
+            ];
 
             return [
                 'discovery_wallet_summary' => [
@@ -2177,6 +2302,10 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
                 'shadow_replay_summary' => $shadowReplaySummary,
                 'linked_wallet_evidence_summary' => $linkedWalletEvidenceSummary,
                 'shadow_evidence_backfill_summary' => $shadowEvidenceBackfillSummary,
+                'long_horizon_watchlist_summary' => $longHorizonWatchlistSummary,
+                'specialist_wallet_score_summary' => $specialistWalletScoreSummary,
+                'observation_progress_summary' => $observationProgressSummary,
+                'pilot_copy_admission_summary' => $pilotCopyAdmissionSummary,
                 'priority_watchlist_rows' => $priorityWatchlistRows,
                 'recent_shadow_actions' => $recentShadowActions,
                 'wallet_consistency_table' => array_slice($candidates, 0, 12),
@@ -2200,6 +2329,10 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
             'shadow_replay_summary' => [],
             'linked_wallet_evidence_summary' => $emptyLinkedWalletEvidenceSummary,
             'shadow_evidence_backfill_summary' => $emptyShadowEvidenceBackfillSummary,
+            'long_horizon_watchlist_summary' => $emptyLongHorizonWatchlistSummary,
+            'specialist_wallet_score_summary' => $emptySpecialistWalletScoreSummary,
+            'observation_progress_summary' => $emptyObservationProgressSummary,
+            'pilot_copy_admission_summary' => $emptyPilotCopyAdmissionSummary,
             'priority_watchlist_rows' => [],
             'recent_shadow_actions' => [],
             'wallet_consistency_table' => [],
@@ -2423,8 +2556,12 @@ function dashboard_build_polymarket_research_summary(PDO $pdo): array
         'identity_resolution_summary' => [],
         'shadow_replay_summary' => [],
         'linked_wallet_evidence_summary' => $emptyLinkedWalletEvidenceSummary,
-        'shadow_evidence_backfill_summary' => $emptyShadowEvidenceBackfillSummary,
-        'priority_watchlist_rows' => [],
+            'shadow_evidence_backfill_summary' => $emptyShadowEvidenceBackfillSummary,
+            'long_horizon_watchlist_summary' => $emptyLongHorizonWatchlistSummary,
+            'specialist_wallet_score_summary' => $emptySpecialistWalletScoreSummary,
+            'observation_progress_summary' => $emptyObservationProgressSummary,
+            'pilot_copy_admission_summary' => $emptyPilotCopyAdmissionSummary,
+            'priority_watchlist_rows' => [],
         'recent_shadow_actions' => $recentShadowActions,
         'wallet_consistency_table' => array_slice($shadowWalletTable, 0, 12),
         'shadow_wallet_table' => $shadowWalletTable,
@@ -2439,6 +2576,9 @@ function dashboard_empty_polymarket_copy_summary(): array
             'copy_ready_wallets' => 0,
             'shadow_proven_wallets' => 0,
             'manual_fast_track_wallets' => 0,
+            'pilot_copy_wallets' => 0,
+            'watch_only_wallets' => 0,
+            'copy_blocker_reason' => 'no_eligible_copy_wallets',
             'eligible_copy_wallets_total' => 0,
             'copy_window_days' => 14,
             'open_actions' => 0,
@@ -2448,6 +2588,7 @@ function dashboard_empty_polymarket_copy_summary(): array
             'active_copy_positions' => 0,
             'active_shadow_proven_positions' => 0,
             'active_manual_fast_track_positions' => 0,
+            'active_pilot_copy_positions' => 0,
             'wallets_with_realized_pnl' => 0,
         ],
         'copy_acceptance_summary' => [
@@ -2468,6 +2609,9 @@ function dashboard_empty_polymarket_copy_summary(): array
             'copy_ready_wallets' => 0,
             'shadow_proven_wallets' => 0,
             'manual_fast_track_wallets' => 0,
+            'pilot_copy_wallets' => 0,
+            'watch_only_wallets' => 0,
+            'copy_blocker_reason' => 'no_eligible_copy_wallets',
             'eligible_copy_wallets_total' => 0,
             'shadow_closed_trades' => 0,
             'shadow_net_edge' => 0.0,
@@ -2584,15 +2728,15 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
         $copyReadyExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'copy_ready_gate_status')
             ? 'copy_ready_gate_status'
             : "'blocked'";
-        $primarySourceExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'primary_source')
-            ? 'primary_source'
-            : "''";
-        $watchlistModeExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'watchlist_mode')
-            ? 'watchlist_mode'
-            : "''";
-        $watchlistStatusExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'watchlist_status')
-            ? 'watchlist_status'
-            : "''";
+        $pilotCopyExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'pilot_copy_gate_status')
+            ? 'pilot_copy_gate_status'
+            : "'blocked'";
+        $pilotReasonExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'pilot_copy_gate_reason')
+            ? 'pilot_copy_gate_reason'
+            : "'operator_approval_required'";
+        $longHorizonExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'long_horizon_status')
+            ? 'long_horizon_status'
+            : "'untracked'";
         $identityStatusExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'identity_resolution_status')
             ? 'identity_resolution_status'
             : "''";
@@ -2620,17 +2764,7 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
         $watchlistRankExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'watchlist_priority_rank')
             ? 'watchlist_priority_rank'
             : '999999';
-        $manualFastTrackCondition = "
-            COALESCE({$primarySourceExpr}, '') = 'manual_persisted'
-            AND COALESCE({$watchlistModeExpr}, '') = 'fast_track_shadow'
-            AND COALESCE({$watchlistStatusExpr}, '') = 'linked'
-            AND COALESCE({$identityStatusExpr}, '') = 'linked'
-            AND COALESCE({$evidenceExpr}, 'no_historical_evidence') IN ('detailed_trade_history', 'stats_only')
-            AND (
-                COALESCE({$specializationExpr}, '') = 'CRYPTO'
-                OR COALESCE({$targetSpecializationExpr}, '') = 'CRYPTO'
-            )
-        ";
+        $pilotCopyCondition = "COALESCE({$pilotCopyExpr}, 'blocked') = 'promoted'";
         $eligibleWalletRows = dashboard_fetch_all(
             $pdo,
             "
@@ -2642,19 +2776,19 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
                 COALESCE({$closedShadowExpr}, 0) AS closed_shadow_trades,
                 COALESCE({$copyReadyRankExpr}, 999999) AS copy_ready_rank,
                 COALESCE({$watchlistRankExpr}, 999999) AS watchlist_priority_rank,
-                COALESCE({$primarySourceExpr}, '') AS primary_source,
-                COALESCE({$watchlistModeExpr}, '') AS watchlist_mode,
-                COALESCE({$watchlistStatusExpr}, '') AS watchlist_status,
                 COALESCE({$identityStatusExpr}, '') AS identity_resolution_status,
                 COALESCE({$evidenceExpr}, 'no_historical_evidence') AS historical_trade_evidence_status,
+                COALESCE({$pilotCopyExpr}, 'blocked') AS pilot_copy_gate_status,
+                COALESCE({$pilotReasonExpr}, 'operator_approval_required') AS pilot_copy_gate_reason,
+                COALESCE({$longHorizonExpr}, 'untracked') AS long_horizon_status,
                 CASE
                     WHEN COALESCE({$copyReadyExpr}, 'blocked') = 'promoted' THEN 'shadow_proven'
-                    WHEN ({$manualFastTrackCondition}) THEN 'manual_fast_track'
+                    WHEN ({$pilotCopyCondition}) THEN 'pilot_copy_ready'
                     ELSE ''
                 END AS cohort_source
             FROM polymarket_research_wallets
             WHERE COALESCE({$copyReadyExpr}, 'blocked') = 'promoted'
-               OR ({$manualFastTrackCondition})
+               OR ({$pilotCopyCondition})
             ORDER BY
                 CASE
                     WHEN COALESCE({$copyReadyExpr}, 'blocked') = 'promoted' THEN 0
@@ -2673,17 +2807,38 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
             $eligibleWalletMap[strtolower((string) ($row['address'] ?? ''))] = $row;
         }
         $shadowProvenWallets = count(array_filter($eligibleWalletRows, static fn (array $row): bool => (string) ($row['cohort_source'] ?? '') === 'shadow_proven'));
-        $manualFastTrackWallets = count(array_filter($eligibleWalletRows, static fn (array $row): bool => (string) ($row['cohort_source'] ?? '') === 'manual_fast_track'));
+        $pilotCopyWallets = count(array_filter($eligibleWalletRows, static fn (array $row): bool => (string) ($row['cohort_source'] ?? '') === 'pilot_copy_ready'));
+        $manualFastTrackWallets = $pilotCopyWallets;
+        $watchOnlyRows = dashboard_fetch_one(
+            $pdo,
+            "
+            SELECT COUNT(*) AS count
+            FROM polymarket_research_wallets
+            WHERE COALESCE({$longHorizonExpr}, 'untracked') IN ('priority_watch', 'linked', 'observing', 'shadow_tracking')
+              AND COALESCE({$copyReadyExpr}, 'blocked') <> 'promoted'
+              AND COALESCE({$pilotCopyExpr}, 'blocked') <> 'promoted'
+            "
+        );
+        $watchOnlyWallets = (int) ($watchOnlyRows['count'] ?? 0);
+        $copyBlockerReason = count($eligibleWalletRows) > 0
+            ? 'eligible_copy_wallets_available'
+            : ($watchOnlyWallets > 0 ? 'watch_only_needs_shadow_or_pilot_proof' : 'no_eligible_copy_wallets');
         $shadowClosedTrades = array_sum(array_map(static fn (array $row): int => (int) ($row['closed_shadow_trades'] ?? 0), $eligibleWalletRows));
         $shadowNetEdge = round(array_sum(array_map(static fn (array $row): float => (float) ($row['shadow_edge'] ?? 0.0), $eligibleWalletRows)), 4);
 
         $summary['copy_execution_summary']['copy_ready_wallets'] = $shadowProvenWallets;
         $summary['copy_execution_summary']['shadow_proven_wallets'] = $shadowProvenWallets;
         $summary['copy_execution_summary']['manual_fast_track_wallets'] = $manualFastTrackWallets;
+        $summary['copy_execution_summary']['pilot_copy_wallets'] = $pilotCopyWallets;
+        $summary['copy_execution_summary']['watch_only_wallets'] = $watchOnlyWallets;
+        $summary['copy_execution_summary']['copy_blocker_reason'] = $copyBlockerReason;
         $summary['copy_execution_summary']['eligible_copy_wallets_total'] = count($eligibleWalletRows);
         $summary['shadow_vs_copy_drift_summary']['copy_ready_wallets'] = $shadowProvenWallets;
         $summary['shadow_vs_copy_drift_summary']['shadow_proven_wallets'] = $shadowProvenWallets;
         $summary['shadow_vs_copy_drift_summary']['manual_fast_track_wallets'] = $manualFastTrackWallets;
+        $summary['shadow_vs_copy_drift_summary']['pilot_copy_wallets'] = $pilotCopyWallets;
+        $summary['shadow_vs_copy_drift_summary']['watch_only_wallets'] = $watchOnlyWallets;
+        $summary['shadow_vs_copy_drift_summary']['copy_blocker_reason'] = $copyBlockerReason;
         $summary['shadow_vs_copy_drift_summary']['eligible_copy_wallets_total'] = count($eligibleWalletRows);
         $summary['shadow_vs_copy_drift_summary']['shadow_closed_trades'] = $shadowClosedTrades;
         $summary['shadow_vs_copy_drift_summary']['shadow_net_edge'] = $shadowNetEdge;
@@ -2915,7 +3070,13 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
         $summary['copy_execution_summary']['active_manual_fast_track_positions'] = count(
             array_filter(
                 $summary['active_copy_positions'],
-                static fn (array $row): bool => (string) ($row['cohort_source'] ?? '') === 'manual_fast_track'
+                static fn (array $row): bool => in_array((string) ($row['cohort_source'] ?? ''), ['manual_fast_track', 'pilot_copy_ready'], true)
+            )
+        );
+        $summary['copy_execution_summary']['active_pilot_copy_positions'] = count(
+            array_filter(
+                $summary['active_copy_positions'],
+                static fn (array $row): bool => (string) ($row['cohort_source'] ?? '') === 'pilot_copy_ready'
             )
         );
         $summary['copy_acceptance_summary'] = dashboard_build_copy_acceptance_summary_from_rows(
