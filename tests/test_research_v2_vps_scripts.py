@@ -40,6 +40,8 @@ def test_polymarket_runtime_pilot_helper_exists_and_seeds_linked_priority_wallet
     assert "operator_approved_pilot" in text
     assert "runtime_pilot_seed" in text
     assert "watchlist_row_id" in text
+    assert "PRAGMA table_info(" in text
+    assert "_fallback_value" in text
 
 
 def test_final_acceptance_vps_script_requires_runtime_green() -> None:

@@ -88,6 +88,72 @@ if seed_runtime_source_trade:
     source_path = Path(source_db_path)
     source_path.parent.mkdir(parents=True, exist_ok=True)
     now_text = datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _table_columns(connection: sqlite3.Connection, table_name: str) -> list[dict[str, object]]:
+        rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return [
+            {
+                "name": str(row[1]),
+                "type": str(row[2] or ""),
+                "notnull": int(row[3] or 0),
+                "default": row[4],
+                "pk": int(row[5] or 0),
+            }
+            for row in rows
+        ]
+
+    def _runtime_seed_row() -> dict[str, object]:
+        return {
+            "venue": "polymarket",
+            "execution_mode": "paper",
+            "instrument_type": "prediction",
+            "market_id": "Bitcoin Up or Down - runtime pilot seed",
+            "symbol_or_market_id": "Bitcoin Up or Down - runtime pilot seed",
+            "side": "BUY",
+            "size": 140.0,
+            "price": 0.55,
+            "confidence": 0.95,
+            "source_signal": "runtime_pilot_seed",
+            "signal_family": "polymarket_copy",
+            "category": "CRYPTO",
+            "strategy_profile": "manual_persisted",
+            "sample_kind": "runtime_pilot_seed",
+            "is_synthetic": 0,
+            "status": "OPEN",
+            "pnl": 0.0,
+            "whale_address": wallet_address.strip().lower(),
+            "timestamp": now_text,
+            "opened_at": now_text,
+            "closed_at": now_text,
+        }
+
+    def _fallback_value(column_name: str, column_type: str) -> object:
+        normalized_name = column_name.lower()
+        normalized_type = column_type.upper()
+        if normalized_name == "id":
+            return None
+        if normalized_name.endswith("_at") or "time" in normalized_name or "date" in normalized_name:
+            return now_text
+        if "price" in normalized_name or "confidence" in normalized_name:
+            return 0.0
+        if normalized_name in {"qty", "size", "notional_usd", "pnl"}:
+            return 0.0
+        if normalized_name in {"is_synthetic", "reduce_only"}:
+            return 0
+        if normalized_name == "status":
+            return "OPEN"
+        if normalized_name == "side":
+            return "BUY"
+        if normalized_name in {"venue", "instrument_type", "category", "source_signal", "signal_family", "strategy_profile", "sample_kind"}:
+            return str(_runtime_seed_row().get(normalized_name, "runtime_pilot_seed"))
+        if normalized_name in {"market_id", "symbol_or_market_id"}:
+            return "Bitcoin Up or Down - runtime pilot seed"
+        if normalized_name == "whale_address":
+            return wallet_address.strip().lower()
+        if "INT" in normalized_type or "REAL" in normalized_type or "NUM" in normalized_type or "FLOA" in normalized_type:
+            return 0
+        return "runtime_pilot_seed"
+
     with sqlite3.connect(source_path) as connection:
         connection.execute(
             """
@@ -120,26 +186,25 @@ if seed_runtime_source_trade:
             (wallet_address.strip().lower(),),
         ).fetchone()
         if existing_row is None:
+            column_rows = _table_columns(connection, "trades")
+            seed_row = _runtime_seed_row()
+            insert_columns: list[str] = []
+            insert_values: list[object] = []
+            for column in column_rows:
+                column_name = str(column["name"])
+                if str(column_name).lower() == "id":
+                    continue
+                if column_name in seed_row:
+                    value = seed_row[column_name]
+                elif int(column["notnull"] or 0) == 1 and column["default"] is None:
+                    value = _fallback_value(column_name, str(column["type"] or ""))
+                else:
+                    continue
+                insert_columns.append(column_name)
+                insert_values.append(value)
             connection.execute(
-                """
-                INSERT INTO trades (
-                    whale_address, venue, market_id, status, pnl, size,
-                    closed_at, timestamp, category, source_signal, side
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    wallet_address.strip().lower(),
-                    "polymarket",
-                    "Bitcoin Up or Down - runtime pilot seed",
-                    "OPEN",
-                    0.0,
-                    140.0,
-                    now_text,
-                    now_text,
-                    "CRYPTO",
-                    "runtime_pilot_seed",
-                    "BUY",
-                ),
+                f"INSERT INTO trades ({', '.join(insert_columns)}) VALUES ({', '.join('?' for _ in insert_columns)})",
+                insert_values,
             )
         connection.commit()
 
