@@ -33,6 +33,10 @@ class PolymarketCopyRuntime:
         self.service.sync_copy_actions()
         return self.service.build_summary()
 
+    def run_acceptance(self) -> dict[str, Any]:
+        assert self.service is not None
+        return self.service.run_acceptance_fixture()
+
     def run_loop(self, iterations: int | None = None) -> dict[str, Any]:
         final_summary: dict[str, Any] = {}
         completed = 0

@@ -16,6 +16,11 @@ from pathlib import Path
 
 import pytest
 
+from apps.binance_technical.config import BinanceTechnicalSettings
+from apps.binance_technical.runtime import BinanceTechnicalRuntime
+from apps.polymarket_copy.config import PolymarketCopySettings
+from apps.polymarket_copy.runtime import PolymarketCopyRuntime
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PHP_BIN = shutil.which('php')
 DASHBOARD_HASH = '$2y$10$ycVVdHE7aM4FCpXKhwIg2.lP64iQndfqYEI2uvcj7FQ.gXo9umPzy'
@@ -736,6 +741,130 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert isinstance(payload['warnings'], list)
 
 
+def test_dashboard_api_exposes_acceptance_summaries(dashboard_server: DashboardServer) -> None:
+    polymarket_runtime = PolymarketCopyRuntime(
+        PolymarketCopySettings(
+            db_path=str(dashboard_server.db_path),
+            source_db_path=str(dashboard_server.db_path),
+        )
+    )
+    polymarket_runtime.repository.ensure_tables()
+    acceptance_notes = {
+        "acceptance_fixture": True,
+        "cohort_source": "acceptance_fixture",
+        "reason": "acceptance_copy_entry",
+    }
+    polymarket_runtime.repository.insert_copy_action(
+        source_trade_key="acceptance:polymarket_copy:open:v1",
+        wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        market_id="acceptance-market",
+        category="CRYPTO",
+        action_type="open",
+        reason="acceptance_copy_entry",
+        source_status="OPEN",
+        side="YES",
+        source_notional_usd=50.0,
+        follower_notional_usd=25.0,
+        source_pnl=0.0,
+        follower_pnl=0.0,
+        delayed_seconds=0,
+        source_opened_at="2026-04-21 10:00:00",
+        source_closed_at="",
+        executed_at="2026-04-21 10:00:01",
+        notes=acceptance_notes,
+    )
+    polymarket_runtime.repository.create_or_replace_position(
+        source_trade_key="acceptance:polymarket_copy:open:v1",
+        wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        market_id="acceptance-market",
+        category="CRYPTO",
+        side="YES",
+        source_notional_usd=50.0,
+        follower_notional_usd=25.0,
+        source_pnl=0.0,
+        follower_pnl=0.0,
+        source_status="OPEN",
+        status="OPEN",
+        source_opened_at="2026-04-21 10:00:00",
+        source_closed_at="",
+        opened_at="2026-04-21 10:00:01",
+        closed_at=None,
+        notes=acceptance_notes,
+    )
+
+    acceptance_db = dashboard_server.db_path.parent / 'binance_acceptance_dashboard.db'
+    if acceptance_db.exists():
+        acceptance_db.unlink()
+    binance_runtime = BinanceTechnicalRuntime(
+        BinanceTechnicalSettings(
+            db_path=str(acceptance_db),
+            symbols=["BTC", "ETH", "SOL"],
+            futures_enabled=True,
+            spot_enabled=True,
+        )
+    )
+    binance_runtime.run_acceptance_fixture()
+
+    source_conn = sqlite3.connect(acceptance_db)
+    source_conn.row_factory = sqlite3.Row
+    dashboard_conn = sqlite3.connect(dashboard_server.db_path)
+    dashboard_conn.row_factory = sqlite3.Row
+    try:
+        decision_rows = source_conn.execute(
+            """
+            SELECT *
+            FROM decision_audit
+            WHERE strategy_profile = 'binance_technical_sampling'
+              AND json_extract(inputs_json, '$.acceptance_fixture') = 1
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        if decision_rows:
+            target_cols = [row['name'] for row in dashboard_conn.execute("PRAGMA table_info(decision_audit)").fetchall()]
+            insert_cols = [col for col in target_cols if col in decision_rows[0].keys() and col != 'id']
+            placeholders = ",".join("?" for _ in insert_cols)
+            dashboard_conn.executemany(
+                f"INSERT INTO decision_audit ({','.join(insert_cols)}) VALUES ({placeholders})",
+                [tuple(row[col] for col in insert_cols) for row in decision_rows],
+            )
+
+        position_rows = source_conn.execute(
+            """
+            SELECT *
+            FROM venue_positions
+            WHERE sample_kind = 'acceptance_fixture'
+               OR source_signal = 'binance_acceptance_fixture'
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        if position_rows:
+            target_cols = [row['name'] for row in dashboard_conn.execute("PRAGMA table_info(venue_positions)").fetchall()]
+            insert_cols = [col for col in target_cols if col in position_rows[0].keys() and col != 'id']
+            placeholders = ",".join("?" for _ in insert_cols)
+            dashboard_conn.executemany(
+                f"INSERT INTO venue_positions ({','.join(insert_cols)}) VALUES ({placeholders})",
+                [tuple(row[col] for col in insert_cols) for row in position_rows],
+            )
+        dashboard_conn.commit()
+    finally:
+        source_conn.close()
+        dashboard_conn.close()
+
+    response = _request(dashboard_server.base_url + '/api.php', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD))
+    payload = json.loads(response.read().decode('utf-8'))
+
+    assert 'copy_acceptance_summary' in payload
+    assert 'all_checks_passed' in payload['copy_acceptance_summary']
+    assert 'copy_open_action_observed' in payload['copy_acceptance_summary']
+    assert 'copy_open_position_observed' in payload['copy_acceptance_summary']
+    assert 'technical_acceptance_summary' in payload
+    assert 'all_checks_passed' in payload['technical_acceptance_summary']
+    assert 'futures_long_execute' in payload['technical_acceptance_summary']
+    assert 'futures_short_execute' in payload['technical_acceptance_summary']
+    assert 'spot_long_execute' in payload['technical_acceptance_summary']
+    assert 'spot_short_reject' in payload['technical_acceptance_summary']
+
+
 def test_dashboard_api_returns_binance_technical_sections(dashboard_server: DashboardServer, tmp_path: Path):
     conn = sqlite3.connect(dashboard_server.db_path)
     cur = conn.cursor()
@@ -1221,6 +1350,7 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Copy-ready Kisa Liste' in html
     assert 'Son Shadow Aksiyonlari' in html
     assert 'Paper Copy Ozeti' in html
+    assert 'Acceptance Kaniti' in html
     assert 'Aktif Paper Copy Pozisyonlari' in html
     assert 'Copy Red Nedenleri' in html
     assert 'Wallet Follower PnL' in html
@@ -1234,6 +1364,8 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Watchlist Durumu' in html
     assert 'Kimlik Durumu' in html
     assert 'Fresh 7g Paper PnL' in html
+    assert 'Futures LONG execute' in html
+    assert 'Spot SHORT reject' in html
     assert 'Fresh PnL Ozeti' in html
     assert 'Fresh Teknik Ozet' in html
     assert 'Fresh Teknik Red Nedenleri' in html

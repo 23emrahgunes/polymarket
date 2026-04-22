@@ -2450,6 +2450,17 @@ function dashboard_empty_polymarket_copy_summary(): array
             'active_manual_fast_track_positions' => 0,
             'wallets_with_realized_pnl' => 0,
         ],
+        'copy_acceptance_summary' => [
+            'last_acceptance_at' => '',
+            'all_checks_passed' => false,
+            'copy_open_action_observed' => false,
+            'copy_open_action_id' => 0,
+            'copy_open_position_observed' => false,
+            'copy_open_position_id' => 0,
+            'acceptance_actions' => 0,
+            'acceptance_open_positions' => 0,
+            'reason' => 'acceptance_copy_entry_missing',
+        ],
         'copy_reject_breakdown' => [],
         'active_copy_positions' => [],
         'wallet_follower_pnl_summary' => [],
@@ -2465,6 +2476,102 @@ function dashboard_empty_polymarket_copy_summary(): array
             'copy_vs_source_pnl_gap' => 0.0,
         ],
         'recent_copy_actions' => [],
+    ];
+}
+
+function dashboard_is_polymarket_copy_acceptance_row(array $row): bool
+{
+    $sourceTradeKey = strtolower((string) ($row['source_trade_key'] ?? ''));
+    if (str_starts_with($sourceTradeKey, 'acceptance:')) {
+        return true;
+    }
+    $notes = dashboard_decode_inputs_json((string) ($row['notes_json'] ?? '{}'));
+    return ($notes['acceptance_fixture'] ?? false) === true
+        || (string) ($notes['cohort_source'] ?? '') === 'acceptance_fixture';
+}
+
+function dashboard_build_copy_acceptance_summary_from_rows(array $actions, array $positions): array
+{
+    $openActions = array_values(array_filter(
+        $actions,
+        static fn (array $row): bool => (string) ($row['action_type'] ?? '') === 'open'
+    ));
+    $openPositions = array_values(array_filter(
+        $positions,
+        static fn (array $row): bool => strtoupper((string) ($row['status'] ?? '')) === 'OPEN'
+    ));
+    $latestTs = '';
+    foreach (array_merge($openActions, $openPositions) as $row) {
+        $candidate = (string) ($row['executed_at'] ?? $row['opened_at'] ?? '');
+        if ($candidate !== '' && $candidate > $latestTs) {
+            $latestTs = $candidate;
+        }
+    }
+    $firstAction = $openActions[0] ?? [];
+    $firstPosition = $openPositions[0] ?? [];
+    $actionSeen = !empty($openActions);
+    $positionSeen = !empty($openPositions);
+    return [
+        'last_acceptance_at' => $latestTs,
+        'all_checks_passed' => $actionSeen && $positionSeen,
+        'copy_open_action_observed' => $actionSeen,
+        'copy_open_action_id' => (int) ($firstAction['id'] ?? 0),
+        'copy_open_position_observed' => $positionSeen,
+        'copy_open_position_id' => (int) ($firstPosition['id'] ?? 0),
+        'acceptance_actions' => count($actions),
+        'acceptance_open_positions' => count($openPositions),
+        'reason' => $actionSeen && $positionSeen ? 'acceptance_copy_entry' : 'acceptance_copy_entry_missing',
+    ];
+}
+
+function dashboard_build_copy_runtime_acceptance_summary_from_rows(array $actions, array $positions, array $copyExecutionSummary): array
+{
+    $openActions = array_values(array_filter(
+        $actions,
+        static fn (array $row): bool => (string) ($row['action_type'] ?? '') === 'open'
+    ));
+    $closeActions = array_values(array_filter(
+        $actions,
+        static fn (array $row): bool => (string) ($row['action_type'] ?? '') === 'close'
+    ));
+    $replayClosedActions = array_values(array_filter(
+        $actions,
+        static fn (array $row): bool => (string) ($row['action_type'] ?? '') === 'replay_closed'
+    ));
+    $openPositions = array_values(array_filter(
+        $positions,
+        static fn (array $row): bool => strtoupper((string) ($row['status'] ?? '')) === 'OPEN'
+    ));
+    $latestTs = '';
+    foreach (array_merge($actions, $positions) as $row) {
+        $candidate = (string) ($row['executed_at'] ?? $row['opened_at'] ?? '');
+        if ($candidate !== '' && $candidate > $latestTs) {
+            $latestTs = $candidate;
+        }
+    }
+
+    $eligibleWallets = (int) ($copyExecutionSummary['eligible_copy_wallets_total'] ?? 0);
+    if ($eligibleWallets <= 0) {
+        $reason = 'no_eligible_copy_wallets';
+    } elseif (empty($openActions) && empty($openPositions) && empty($closeActions) && empty($replayClosedActions)) {
+        $reason = 'eligible_wallets_no_runtime_actions';
+    } else {
+        $reason = 'runtime_copy_active';
+    }
+
+    return [
+        'last_runtime_action_at' => $latestTs,
+        'all_checks_passed' => $eligibleWallets > 0 && !empty($openActions) && !empty($openPositions),
+        'runtime_open_action_observed' => !empty($openActions),
+        'runtime_open_position_observed' => !empty($openPositions),
+        'runtime_close_action_observed' => !empty($closeActions),
+        'runtime_replay_closed_observed' => !empty($replayClosedActions),
+        'runtime_action_rows' => count($actions),
+        'runtime_open_positions' => count($openPositions),
+        'eligible_copy_wallets_total' => $eligibleWallets,
+        'shadow_proven_wallets' => (int) ($copyExecutionSummary['shadow_proven_wallets'] ?? 0),
+        'manual_fast_track_wallets' => (int) ($copyExecutionSummary['manual_fast_track_wallets'] ?? 0),
+        'reason' => $reason,
     ];
 }
 
@@ -2590,6 +2697,20 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
         $pdo,
         "SELECT action_type, COUNT(*) AS count FROM polymarket_copy_actions GROUP BY action_type"
     );
+    $acceptanceActionRows = dashboard_fetch_all(
+        $pdo,
+        "
+        SELECT id, executed_at, action_type, source_trade_key, notes_json
+        FROM polymarket_copy_actions
+        WHERE source_trade_key LIKE 'acceptance:%'
+           OR COALESCE(notes_json, '') LIKE '%acceptance_fixture%'
+        ORDER BY executed_at DESC, id DESC
+        "
+    );
+    $acceptanceActionIds = [];
+    foreach ($acceptanceActionRows as $row) {
+        $acceptanceActionIds[(int) ($row['id'] ?? 0)] = true;
+    }
     foreach ($actionCounts as $row) {
         $actionType = (string) ($row['action_type'] ?? '');
         $count = (int) ($row['count'] ?? 0);
@@ -2610,6 +2731,8 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
         SELECT reason, COUNT(*) AS count
         FROM polymarket_copy_actions
         WHERE action_type = 'reject'
+          AND source_trade_key NOT LIKE 'acceptance:%'
+          AND COALESCE(notes_json, '') NOT LIKE '%acceptance_fixture%'
         GROUP BY reason
         ORDER BY count DESC, reason ASC
         "
@@ -2633,6 +2756,8 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
             ROUND(COALESCE(SUM(CASE WHEN action_type = 'open' THEN COALESCE(follower_notional_usd, 0) ELSE 0 END), 0), 4) AS opened_notional_usd,
             MAX(executed_at) AS last_action_at
         FROM polymarket_copy_actions
+        WHERE source_trade_key NOT LIKE 'acceptance:%'
+          AND COALESCE(notes_json, '') NOT LIKE '%acceptance_fixture%'
         GROUP BY wallet_address
         HAVING COUNT(CASE WHEN action_type IN ('close', 'replay_closed') THEN 1 END) > 0
             OR COALESCE(SUM(CASE WHEN action_type = 'open' THEN COALESCE(follower_notional_usd, 0) ELSE 0 END), 0) > 0
@@ -2693,6 +2818,8 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
             source_closed_at,
             notes_json
         FROM polymarket_copy_actions
+        WHERE source_trade_key NOT LIKE 'acceptance:%'
+          AND COALESCE(notes_json, '') NOT LIKE '%acceptance_fixture%'
         ORDER BY executed_at DESC, id DESC
         LIMIT 12
         "
@@ -2742,8 +2869,20 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
                 notes_json
             FROM polymarket_copy_positions
             WHERE status = 'OPEN'
+              AND source_trade_key NOT LIKE 'acceptance:%'
+              AND COALESCE(notes_json, '') NOT LIKE '%acceptance_fixture%'
             ORDER BY opened_at DESC, id DESC
             LIMIT 20
+            "
+        );
+        $acceptancePositionRows = dashboard_fetch_all(
+            $pdo,
+            "
+            SELECT id, opened_at, status, source_trade_key, notes_json
+            FROM polymarket_copy_positions
+            WHERE source_trade_key LIKE 'acceptance:%'
+               OR COALESCE(notes_json, '') LIKE '%acceptance_fixture%'
+            ORDER BY opened_at DESC, id DESC
             "
         );
         $summary['active_copy_positions'] = array_map(
@@ -2779,9 +2918,151 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
                 static fn (array $row): bool => (string) ($row['cohort_source'] ?? '') === 'manual_fast_track'
             )
         );
+        $summary['copy_acceptance_summary'] = dashboard_build_copy_acceptance_summary_from_rows(
+            array_values(array_filter($acceptanceActionRows, 'dashboard_is_polymarket_copy_acceptance_row')),
+            array_values(array_filter($acceptancePositionRows, 'dashboard_is_polymarket_copy_acceptance_row'))
+        );
+        $summary['copy_runtime_acceptance_summary'] = dashboard_build_copy_runtime_acceptance_summary_from_rows(
+            $summary['recent_copy_actions'],
+            $summary['active_copy_positions'],
+            $summary['copy_execution_summary']
+        );
+    } else {
+        $summary['copy_acceptance_summary'] = dashboard_build_copy_acceptance_summary_from_rows(
+            array_values(array_filter($acceptanceActionRows, 'dashboard_is_polymarket_copy_acceptance_row')),
+            []
+        );
+        $summary['copy_runtime_acceptance_summary'] = dashboard_build_copy_runtime_acceptance_summary_from_rows(
+            $summary['recent_copy_actions'],
+            [],
+            $summary['copy_execution_summary']
+        );
     }
 
     return $summary;
+}
+
+function dashboard_is_binance_acceptance_row(array $row): bool
+{
+    $inputs = dashboard_decode_inputs_json((string) ($row['inputs_json'] ?? '{}'));
+    return ($inputs['acceptance_fixture'] ?? false) === true
+        || (string) ($inputs['sample_kind'] ?? '') === 'acceptance_fixture';
+}
+
+function dashboard_is_binance_acceptance_position(array $row): bool
+{
+    return (string) ($row['sample_kind'] ?? '') === 'acceptance_fixture'
+        || (string) ($row['source_signal'] ?? '') === 'binance_acceptance_fixture';
+}
+
+function dashboard_build_binance_technical_acceptance_summary(array $decisionRows, array $positionRows): array
+{
+    $find = static function (string $venue, string $action, ?string $direction = null, ?string $reason = null) use ($decisionRows): ?array {
+        foreach ($decisionRows as $row) {
+            $inputs = dashboard_decode_inputs_json((string) ($row['inputs_json'] ?? '{}'));
+            if ((string) ($row['venue'] ?? '') !== $venue) {
+                continue;
+            }
+            if (strtolower((string) ($row['action'] ?? '')) !== strtolower($action)) {
+                continue;
+            }
+            if ($direction !== null && strtoupper((string) ($inputs['signal_direction'] ?? '')) !== $direction) {
+                continue;
+            }
+            if ($reason !== null && !str_contains((string) ($row['reason'] ?? ''), $reason)) {
+                continue;
+            }
+            return $row;
+        }
+        return null;
+    };
+
+    $futuresLong = $find('binance_futures', 'execute', 'LONG');
+    $futuresShort = $find('binance_futures', 'execute', 'SHORT');
+    $spotLong = $find('binance_spot', 'execute', 'LONG');
+    $spotShortReject = $find('binance_spot', 'reject', 'SHORT', 'spot_short_not_supported');
+    $latestTs = '';
+    foreach ($decisionRows as $row) {
+        $candidate = (string) ($row['occurred_at'] ?? '');
+        if ($candidate !== '' && $candidate > $latestTs) {
+            $latestTs = $candidate;
+        }
+    }
+
+    return [
+        'last_acceptance_at' => $latestTs,
+        'all_checks_passed' => !empty($futuresLong) && !empty($futuresShort) && !empty($spotLong) && !empty($spotShortReject),
+        'futures_long_execute' => !empty($futuresLong),
+        'futures_long_execute_id' => (int) ($futuresLong['id'] ?? 0),
+        'futures_short_execute' => !empty($futuresShort),
+        'futures_short_execute_id' => (int) ($futuresShort['id'] ?? 0),
+        'spot_long_execute' => !empty($spotLong),
+        'spot_long_execute_id' => (int) ($spotLong['id'] ?? 0),
+        'spot_short_reject' => !empty($spotShortReject),
+        'spot_short_reject_id' => (int) ($spotShortReject['id'] ?? 0),
+        'acceptance_decision_rows' => count($decisionRows),
+        'acceptance_open_positions' => count($positionRows),
+    ];
+}
+
+function dashboard_build_binance_technical_runtime_acceptance_summary(array $decisionRows, array $positionRows): array
+{
+    $find = static function (string $venue, string $action, ?string $direction = null, ?string $reason = null) use ($decisionRows): ?array {
+        foreach ($decisionRows as $row) {
+            $inputs = dashboard_decode_inputs_json((string) ($row['inputs_json'] ?? '{}'));
+            if ((string) ($row['venue'] ?? '') !== $venue) {
+                continue;
+            }
+            if (strtolower((string) ($row['action'] ?? '')) !== strtolower($action)) {
+                continue;
+            }
+            if ($direction !== null && strtoupper((string) ($inputs['signal_direction'] ?? '')) !== $direction) {
+                continue;
+            }
+            if ($reason !== null && !str_contains((string) ($row['reason'] ?? ''), $reason)) {
+                continue;
+            }
+            return $row;
+        }
+        return null;
+    };
+
+    $futuresLong = $find('binance_futures', 'execute', 'LONG');
+    $futuresShort = $find('binance_futures', 'execute', 'SHORT');
+    $spotLong = $find('binance_spot', 'execute', 'LONG');
+    $spotShortReject = $find('binance_spot', 'reject', 'SHORT', 'spot_short_not_supported');
+    $latestTs = '';
+    foreach ($decisionRows as $row) {
+        $candidate = (string) ($row['occurred_at'] ?? '');
+        if ($candidate !== '' && $candidate > $latestTs) {
+            $latestTs = $candidate;
+        }
+    }
+
+    $allChecksPassed = !empty($futuresLong) && !empty($futuresShort) && !empty($spotLong) && !empty($spotShortReject);
+    if (empty($decisionRows)) {
+        $reason = 'no_runtime_decisions';
+    } elseif ($allChecksPassed) {
+        $reason = 'runtime_all_paths_observed';
+    } else {
+        $reason = 'runtime_paths_incomplete';
+    }
+
+    return [
+        'last_runtime_at' => $latestTs,
+        'all_checks_passed' => $allChecksPassed,
+        'runtime_futures_long_execute' => !empty($futuresLong),
+        'runtime_futures_long_execute_id' => (int) ($futuresLong['id'] ?? 0),
+        'runtime_futures_short_execute' => !empty($futuresShort),
+        'runtime_futures_short_execute_id' => (int) ($futuresShort['id'] ?? 0),
+        'runtime_spot_long_execute' => !empty($spotLong),
+        'runtime_spot_long_execute_id' => (int) ($spotLong['id'] ?? 0),
+        'runtime_spot_short_reject' => !empty($spotShortReject),
+        'runtime_spot_short_reject_id' => (int) ($spotShortReject['id'] ?? 0),
+        'runtime_decision_rows' => count($decisionRows),
+        'runtime_open_positions' => count($positionRows),
+        'reason' => $reason,
+    ];
 }
 
 function dashboard_build_binance_fresh_pnl_summary(PDO $pdo): array
@@ -2818,6 +3099,7 @@ function dashboard_build_binance_fresh_pnl_summary(PDO $pdo): array
             FROM decision_audit
             WHERE strategy_profile = 'binance_technical_sampling'
               AND action = 'execute'
+              AND COALESCE(inputs_json, '') NOT LIKE '%acceptance_fixture%'
               AND venue IN ('binance_futures', 'binance_spot')
               AND occurred_at >= datetime('now', '-7 days')
             GROUP BY venue
@@ -2871,6 +3153,8 @@ function dashboard_build_binance_lane_summary(array $payload): array
     return [
         'fresh_technical_summary' => $freshSummary,
         'fresh_pnl_summary_7d' => $payload['fresh_pnl_summary_7d'] ?? [],
+        'technical_acceptance_summary' => $payload['technical_acceptance_summary'] ?? [],
+        'technical_runtime_acceptance_summary' => $payload['technical_runtime_acceptance_summary'] ?? [],
         'technical_score_summary' => [
             'component_summary' => $payload['binance_technical_score_component_summary'] ?? [],
             'gap_summary' => $payload['binance_technical_fresh_score_gap_summary'] ?? [],
@@ -2965,7 +3249,9 @@ function dashboard_augment_payload(array $payload): array
     $warnings = [];
     $pdo = dashboard_open_db($warnings);
     if ($pdo !== null) {
-        $technicalRows = dashboard_fetch_recent_binance_technical_rows($pdo);
+        $allTechnicalRows = dashboard_fetch_recent_binance_technical_rows($pdo);
+        $acceptanceTechnicalRows = array_values(array_filter($allTechnicalRows, 'dashboard_is_binance_acceptance_row'));
+        $technicalRows = array_values(array_filter($allTechnicalRows, static fn (array $row): bool => !dashboard_is_binance_acceptance_row($row)));
         $freshTechnicalRows = dashboard_filter_rows_within_minutes($technicalRows, 60);
         $payload = array_merge($payload, dashboard_build_unresolved_alias_summary($pdo));
         $payload['runtime_summary'] = array_merge(
@@ -2980,6 +3266,17 @@ function dashboard_augment_payload(array $payload): array
         $payload['binance_technical_summary'] = dashboard_build_binance_technical_summary_from_rows($technicalRows);
         $payload['binance_technical_fresh_summary'] = dashboard_build_binance_technical_summary_from_rows($freshTechnicalRows);
         $payload['fresh_pnl_summary_7d'] = dashboard_build_binance_fresh_pnl_summary($pdo);
+        $acceptancePositionRows = dashboard_table_exists($pdo, 'venue_positions')
+            ? array_values(array_filter(dashboard_fetch_all($pdo, "SELECT id, sample_kind, source_signal FROM venue_positions WHERE execution_mode = 'paper'"), 'dashboard_is_binance_acceptance_position'))
+            : [];
+        $runtimePositionRows = dashboard_table_exists($pdo, 'venue_positions')
+            ? array_values(array_filter(
+                dashboard_fetch_all($pdo, "SELECT id, sample_kind, source_signal, opened_at, status FROM venue_positions WHERE execution_mode = 'paper'"),
+                static fn (array $row): bool => !dashboard_is_binance_acceptance_position($row)
+            ))
+            : [];
+        $payload['technical_acceptance_summary'] = dashboard_build_binance_technical_acceptance_summary($acceptanceTechnicalRows, $acceptancePositionRows);
+        $payload['technical_runtime_acceptance_summary'] = dashboard_build_binance_technical_runtime_acceptance_summary($technicalRows, $runtimePositionRows);
         $payload['binance_technical_gate_funnel'] = dashboard_build_binance_technical_gate_funnel_from_rows($technicalRows);
         $payload['binance_technical_fresh_gate_funnel'] = dashboard_build_binance_technical_gate_funnel_from_rows($freshTechnicalRows);
         $payload['binance_technical_recovery_summary'] = dashboard_build_binance_technical_recovery_summary_from_rows($technicalRows, $payload['runtime_summary'] ?? []);
@@ -3025,6 +3322,8 @@ function dashboard_augment_payload(array $payload): array
         $payload['binance_technical_summary'] = [];
         $payload['binance_technical_fresh_summary'] = [];
         $payload['fresh_pnl_summary_7d'] = [];
+        $payload['technical_acceptance_summary'] = [];
+        $payload['technical_runtime_acceptance_summary'] = [];
         $payload['binance_technical_gate_funnel'] = [];
         $payload['binance_technical_fresh_gate_funnel'] = [];
         $payload['binance_technical_recovery_summary'] = [];

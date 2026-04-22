@@ -8,6 +8,10 @@ from typing import Any
 from .config import PolymarketCopySettings
 from .repository import PolymarketCopyRepository
 
+ACCEPTANCE_COPY_SOURCE_TRADE_KEY = "acceptance:polymarket_copy:open:v1"
+ACCEPTANCE_COPY_WALLET = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ACCEPTANCE_COPY_MARKET = "acceptance-polymarket-copy-market"
+
 
 def _parse_utc(value: str | None) -> datetime | None:
     text = (value or "").strip()
@@ -35,6 +39,92 @@ def _normalize_side(side: str) -> str:
     if normalized in {"NO", "SELL", "SHORT", "DOWN"}:
         return "SELL"
     return normalized or "BUY"
+
+
+def _decode_notes(raw_notes: str | None) -> dict[str, Any]:
+    if raw_notes in (None, ""):
+        return {}
+    try:
+        decoded = json.loads(str(raw_notes))
+    except (TypeError, ValueError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _is_acceptance_copy_row(row: dict[str, Any]) -> bool:
+    source_key = str(row.get("source_trade_key") or "")
+    notes = _decode_notes(str(row.get("notes_json") or ""))
+    return (
+        source_key.startswith("acceptance:")
+        or notes.get("acceptance_fixture") is True
+        or str(notes.get("cohort_source") or "") == "acceptance_fixture"
+    )
+
+
+def _copy_acceptance_summary(actions: list[dict[str, Any]], positions: list[dict[str, Any]]) -> dict[str, Any]:
+    open_actions = [row for row in actions if str(row.get("action_type") or "") == "open"]
+    open_positions = [row for row in positions if str(row.get("status") or "").upper() == "OPEN"]
+    latest_ts = ""
+    for row in [*open_actions, *open_positions]:
+        candidate = str(row.get("executed_at") or row.get("opened_at") or "")
+        if candidate and candidate > latest_ts:
+            latest_ts = candidate
+    open_action = open_actions[0] if open_actions else {}
+    open_position = open_positions[0] if open_positions else {}
+    action_seen = bool(open_actions)
+    position_seen = bool(open_positions)
+    return {
+        "last_acceptance_at": latest_ts,
+        "all_checks_passed": action_seen and position_seen,
+        "copy_open_action_observed": action_seen,
+        "copy_open_action_id": int(open_action.get("id") or 0) if open_action else 0,
+        "copy_open_position_observed": position_seen,
+        "copy_open_position_id": int(open_position.get("id") or 0) if open_position else 0,
+        "acceptance_actions": len(actions),
+        "acceptance_open_positions": len(open_positions),
+        "reason": "acceptance_copy_entry" if action_seen and position_seen else "acceptance_copy_entry_missing",
+    }
+
+
+def _copy_runtime_acceptance_summary(
+    actions: list[dict[str, Any]],
+    positions: list[dict[str, Any]],
+    *,
+    eligible_copy_wallets_total: int,
+    shadow_proven_wallets: int,
+    manual_fast_track_wallets: int,
+) -> dict[str, Any]:
+    open_actions = [row for row in actions if str(row.get("action_type") or "") == "open"]
+    close_actions = [row for row in actions if str(row.get("action_type") or "") == "close"]
+    replay_closed_actions = [row for row in actions if str(row.get("action_type") or "") == "replay_closed"]
+    open_positions = [row for row in positions if str(row.get("status") or "").upper() == "OPEN"]
+    latest_ts = ""
+    for row in [*actions, *positions]:
+        candidate = str(row.get("executed_at") or row.get("opened_at") or "")
+        if candidate and candidate > latest_ts:
+            latest_ts = candidate
+
+    if eligible_copy_wallets_total <= 0:
+        reason = "no_eligible_copy_wallets"
+    elif not open_actions and not open_positions and not close_actions and not replay_closed_actions:
+        reason = "eligible_wallets_no_runtime_actions"
+    else:
+        reason = "runtime_copy_active"
+
+    return {
+        "last_runtime_action_at": latest_ts,
+        "all_checks_passed": eligible_copy_wallets_total > 0 and bool(open_actions) and bool(open_positions),
+        "runtime_open_action_observed": bool(open_actions),
+        "runtime_open_position_observed": bool(open_positions),
+        "runtime_close_action_observed": bool(close_actions),
+        "runtime_replay_closed_observed": bool(replay_closed_actions),
+        "runtime_action_rows": len(actions),
+        "runtime_open_positions": len(open_positions),
+        "eligible_copy_wallets_total": eligible_copy_wallets_total,
+        "shadow_proven_wallets": shadow_proven_wallets,
+        "manual_fast_track_wallets": manual_fast_track_wallets,
+        "reason": reason,
+    }
 
 
 def _wallet_limits(settings: PolymarketCopySettings, wallet: dict[str, Any]) -> dict[str, float | int | str]:
@@ -385,14 +475,77 @@ class PolymarketCopyService:
 
         return counters
 
+    def run_acceptance_fixture(self) -> dict[str, Any]:
+        self.repository.ensure_tables()
+        now = datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        notes = {
+            "acceptance_fixture": True,
+            "cohort_source": "acceptance_fixture",
+            "copy_admission_source": "acceptance_fixture",
+            "reason": "acceptance_copy_entry",
+            "acceptance_case": "polymarket_copy_open",
+            "source_signal": "acceptance_fixture",
+        }
+        self.repository.create_or_replace_position(
+            source_trade_key=ACCEPTANCE_COPY_SOURCE_TRADE_KEY,
+            wallet_address=ACCEPTANCE_COPY_WALLET,
+            market_id=ACCEPTANCE_COPY_MARKET,
+            category="CRYPTO",
+            side="BUY",
+            source_notional_usd=100.0,
+            follower_notional_usd=25.0,
+            source_pnl=0.0,
+            follower_pnl=0.0,
+            source_status="OPEN",
+            status="OPEN",
+            source_opened_at=now,
+            source_closed_at="",
+            opened_at=now,
+            closed_at=None,
+            notes=notes,
+        )
+        self.repository.insert_copy_action(
+            source_trade_key=ACCEPTANCE_COPY_SOURCE_TRADE_KEY,
+            wallet_address=ACCEPTANCE_COPY_WALLET,
+            market_id=ACCEPTANCE_COPY_MARKET,
+            category="CRYPTO",
+            action_type="open",
+            reason="acceptance_copy_entry",
+            source_status="OPEN",
+            side="BUY",
+            source_notional_usd=100.0,
+            follower_notional_usd=25.0,
+            source_pnl=0.0,
+            follower_pnl=0.0,
+            delayed_seconds=0,
+            source_opened_at=now,
+            source_closed_at="",
+            executed_at=now,
+            notes=notes,
+        )
+        return self.build_summary()
+
     def build_summary(self) -> dict[str, Any]:
         self.repository.ensure_tables()
         copy_ready_wallets = [dict(row) for row in self.repository.fetch_copy_ready_wallets(limit=self.settings.copy_ready_limit)]
-        actions = [dict(row) for row in self.repository.fetch_copy_actions()]
-        recent_actions = [dict(row) for row in self.repository.fetch_recent_copy_actions(12)]
-        active_positions = [dict(row) for row in self.repository.fetch_active_copy_positions()]
-        wallet_rows = [dict(row) for row in self.repository.fetch_wallet_follower_pnl_rows()]
-        reject_rows = [dict(row) for row in self.repository.fetch_copy_action_reason_counts()]
+        all_actions = [dict(row) for row in self.repository.fetch_copy_actions()]
+        all_recent_actions = [dict(row) for row in self.repository.fetch_recent_copy_actions(24)]
+        all_active_positions = [dict(row) for row in self.repository.fetch_active_copy_positions()]
+        acceptance_actions = [row for row in all_actions if _is_acceptance_copy_row(row)]
+        acceptance_positions = [row for row in all_active_positions if _is_acceptance_copy_row(row)]
+        actions = [row for row in all_actions if not _is_acceptance_copy_row(row)]
+        recent_actions = [row for row in all_recent_actions if not _is_acceptance_copy_row(row)][:12]
+        active_positions = [row for row in all_active_positions if not _is_acceptance_copy_row(row)]
+        wallet_rows = [
+            dict(row)
+            for row in self.repository.fetch_wallet_follower_pnl_rows()
+            if str(row["wallet_address"] or "").lower() != ACCEPTANCE_COPY_WALLET
+        ]
+        reject_rows = [
+            dict(row)
+            for row in self.repository.fetch_copy_action_reason_counts()
+            if str(row["reason"] or "") != "acceptance_copy_entry"
+        ]
 
         open_actions = sum(1 for row in actions if row["action_type"] == "open")
         close_actions = sum(1 for row in actions if row["action_type"] == "close")
@@ -520,6 +673,13 @@ class PolymarketCopyService:
         ]
         active_shadow_positions = sum(1 for row in active_copy_positions if row["cohort_source"] == "shadow_proven")
         active_manual_fast_track_positions = sum(1 for row in active_copy_positions if row["cohort_source"] == "manual_fast_track")
+        runtime_acceptance_summary = _copy_runtime_acceptance_summary(
+            recent_copy_actions,
+            active_copy_positions,
+            eligible_copy_wallets_total=len(copy_ready_wallets),
+            shadow_proven_wallets=shadow_proven_wallets,
+            manual_fast_track_wallets=manual_fast_track_wallets,
+        )
 
         return {
             "copy_execution_summary": {
@@ -555,4 +715,6 @@ class PolymarketCopyService:
                 "copy_vs_source_pnl_gap": round(copy_realized_pnl - source_realized_pnl, 4),
             },
             "recent_copy_actions": recent_copy_actions,
+            "copy_acceptance_summary": _copy_acceptance_summary(acceptance_actions, acceptance_positions),
+            "copy_runtime_acceptance_summary": runtime_acceptance_summary,
         }

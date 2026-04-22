@@ -451,7 +451,7 @@ $laneBodyClass = $researchOnly
         #market-alias-counts, #whale-wallet-counts, #unsupported-side-summary { max-height: 180px; overflow: auto; }
         #top-market-aliases, #top-whales, #trusted-whale-summary { max-height: 320px; overflow: auto; }
         #top-unresolved-aliases, #recent-unresolved-aliases { max-height: 220px; overflow: auto; }
-        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #copy-execution-summary, #shadow-vs-copy-drift-summary, #active-copy-positions, #wallet-follower-pnl-summary, #recent-copy-actions, #binance-technical-summary, #binance-technical-fresh-summary, #binance-technical-gate-funnel, #binance-technical-fresh-gate-funnel, #binance-technical-recovery-summary, #binance-technical-fresh-recovery-summary, #binance-technical-score-component-summary, #binance-technical-score-gap-summary, #binance-technical-fresh-score-gap-summary, #binance-technical-stale-eligibility-summary, #binance-technical-legacy-position-shape-summary, #binance-technical-position-pressure-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
+        #performance-snapshot, #source-quality-summary, #alias-persistence-summary, #whale-universe-summary, #whale-copy-summary, #whale-copy-recovery-summary, #copy-execution-summary, #shadow-vs-copy-drift-summary, #copy-acceptance-summary, #copy-runtime-acceptance-summary, #active-copy-positions, #wallet-follower-pnl-summary, #recent-copy-actions, #binance-technical-summary, #binance-technical-fresh-summary, #binance-technical-gate-funnel, #binance-technical-fresh-gate-funnel, #binance-technical-recovery-summary, #binance-technical-fresh-recovery-summary, #technical-acceptance-summary, #technical-runtime-acceptance-summary, #binance-technical-score-component-summary, #binance-technical-score-gap-summary, #binance-technical-fresh-score-gap-summary, #binance-technical-stale-eligibility-summary, #binance-technical-legacy-position-shape-summary, #binance-technical-position-pressure-summary, #graph-discovery-summary, #whale-candidate-aggregation-summary { max-height: 420px; overflow: auto; }
         #recent-gate-ready-candidates { max-height: 260px; overflow: auto; }
         #sampling-reject-breakdown, #gated-reject-breakdown, #relaxed-gate-reject-breakdown, #copy-reject-breakdown, #binance-technical-reject-breakdown, #binance-technical-fresh-reject-breakdown, #binance-technical-score-blocker-breakdown { max-height: 220px; overflow: auto; }
         #service-log { max-height: 280px; }
@@ -606,6 +606,16 @@ $laneBodyClass = $researchOnly
                     <div class="subcard-header"><h3 class="subcard-title">Shadow vs Copy Drift</h3><span class="badge info">Drift</span></div>
                     <div class="metric-list" id="shadow-vs-copy-drift-summary"></div>
                 </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Acceptance Kaniti</h3><span class="badge warn">Fixture</span></div>
+                    <p class="subcard-copy">Bu kart, paper copy hattinin gercek follower pozisyonu yazabildigini etiketli acceptance fixture ile kanitlar. Ana PnL ve shadow edge hesaplarina dahil edilmez.</p>
+                    <div class="metric-list" id="copy-acceptance-summary"></div>
+                </div>
+                <div class="subcard">
+                    <div class="subcard-header"><h3 class="subcard-title">Runtime Kaniti</h3><span class="badge info">Live Paper</span></div>
+                    <p class="subcard-copy">Bu kart, fixture disi normal runtime akisinda eligible wallet varsa gercek open, close veya replay hareketi yazilip yazilmadigini gosterir.</p>
+                    <div class="metric-list" id="copy-runtime-acceptance-summary"></div>
+                </div>
             </div>
         </article>
         <article class="panel panel-half" data-tab="polymarket-copy">
@@ -641,6 +651,16 @@ $laneBodyClass = $researchOnly
                     <div class="subcard">
                         <div class="subcard-header"><h3 class="subcard-title">Fresh Teknik Red Nedenleri</h3><span class="badge warn">Blocker</span></div>
                         <div id="lane-technical-reject-breakdown"></div>
+                    </div>
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Acceptance Kaniti</h3><span class="badge warn">Fixture</span></div>
+                        <p class="subcard-copy">Bu kart, Binance technical paper hattinin futures LONG, futures SHORT, spot LONG ve spot SHORT reject akislarini etiketli acceptance fixture ile gercekten yazabildigini gosterir. Ana fresh KPI'dan ayridir.</p>
+                        <div class="metric-list" id="technical-acceptance-summary"></div>
+                    </div>
+                    <div class="subcard">
+                        <div class="subcard-header"><h3 class="subcard-title">Runtime Kaniti</h3><span class="badge info">Live Paper</span></div>
+                        <p class="subcard-copy">Bu kart, fixture disi normal runtime akisinda futures LONG, futures SHORT, spot LONG ve spot SHORT reject yollarinin gercek karar satirlarinda gorulup gorulmedigini gosterir.</p>
+                        <div class="metric-list" id="technical-runtime-acceptance-summary"></div>
                     </div>
                 </div>
             </article>
@@ -1963,6 +1983,30 @@ function updatePanels(payload) {
         { label: 'Copy realized PnL', value: formatNumber(copyDrift.copy_realized_pnl, 2) },
         { label: 'Copy-source fark', value: formatNumber(copyDrift.copy_vs_source_pnl_gap, 2) }
     ]);
+    const copyAcceptance = payload.copy_acceptance_summary || {};
+    renderMetrics('copy-acceptance-summary', [
+        { label: 'Genel durum', value: copyAcceptance.all_checks_passed ? 'yesil' : 'eksik' },
+        { label: 'Son acceptance', value: copyAcceptance.last_acceptance_at || 'yok', long: true },
+        { label: 'Copy open action', value: copyAcceptance.copy_open_action_observed ? `evet (#${formatNumber(copyAcceptance.copy_open_action_id, 0)})` : 'hayir' },
+        { label: 'Copy open position', value: copyAcceptance.copy_open_position_observed ? `evet (#${formatNumber(copyAcceptance.copy_open_position_id, 0)})` : 'hayir' },
+        { label: 'Acceptance aksiyon', value: formatNumber(copyAcceptance.acceptance_actions, 0) },
+        { label: 'Acceptance pozisyon', value: formatNumber(copyAcceptance.acceptance_open_positions, 0) },
+        { label: 'Reason', value: copyAcceptance.reason || 'acceptance_copy_entry', long: true }
+    ]);
+    const copyRuntimeAcceptance = payload.copy_runtime_acceptance_summary || {};
+    renderMetrics('copy-runtime-acceptance-summary', [
+        { label: 'Genel durum', value: copyRuntimeAcceptance.all_checks_passed ? 'yesil' : 'eksik' },
+        { label: 'Son runtime aksiyonu', value: copyRuntimeAcceptance.last_runtime_action_at || 'yok', long: true },
+        { label: 'Eligible wallet', value: formatNumber(copyRuntimeAcceptance.eligible_copy_wallets_total, 0) },
+        { label: 'Shadow-proven wallet', value: formatNumber(copyRuntimeAcceptance.shadow_proven_wallets, 0) },
+        { label: 'Manual fast-track wallet', value: formatNumber(copyRuntimeAcceptance.manual_fast_track_wallets, 0) },
+        { label: 'Runtime open action', value: copyRuntimeAcceptance.runtime_open_action_observed ? 'evet' : 'hayir' },
+        { label: 'Runtime open position', value: copyRuntimeAcceptance.runtime_open_position_observed ? 'evet' : 'hayir' },
+        { label: 'Runtime close action', value: copyRuntimeAcceptance.runtime_close_action_observed ? 'evet' : 'hayir' },
+        { label: 'Replay closed', value: copyRuntimeAcceptance.runtime_replay_closed_observed ? 'evet' : 'hayir' },
+        { label: 'Runtime action satiri', value: formatNumber(copyRuntimeAcceptance.runtime_action_rows, 0) },
+        { label: 'Reason', value: copyRuntimeAcceptance.reason || 'runtime_copy_active', long: true }
+    ]);
     renderTable('active-copy-positions', [
         { key: 'wallet_address', label: 'Cuzdan', mono: true, render: (row) => truncateHtml(row.wallet_address || '', 20) },
         { key: 'cohort_source', label: 'Cohort', render: (row) => escapeHtml(translateCohortSource(row.cohort_source || 'none')) },
@@ -2006,6 +2050,7 @@ function updatePanels(payload) {
     const freshPnlVenues = freshPnl.venues || {};
     const futuresPnl = freshPnlVenues.binance_futures || {};
     const spotPnl = freshPnlVenues.binance_spot || {};
+    const technicalAcceptance = payload.technical_acceptance_summary || {};
     const technicalScore = payload.technical_score_summary || {};
     const positionPressure = payload.position_pressure_summary || {};
     const legacyPosition = payload.legacy_position_summary || {};
@@ -2028,6 +2073,28 @@ function updatePanels(payload) {
         { label: 'Win', value: formatNumber(binanceLane.wins, 0) },
         { label: 'Loss', value: formatNumber(binanceLane.losses, 0) },
         { label: 'Execute', value: formatNumber(binanceLane.fresh_execute_count, 0) }
+    ]);
+    renderMetrics('technical-acceptance-summary', [
+        { label: 'Genel durum', value: technicalAcceptance.all_checks_passed ? 'yesil' : 'eksik' },
+        { label: 'Son acceptance', value: technicalAcceptance.last_acceptance_at || 'yok', long: true },
+        { label: 'Futures LONG execute', value: technicalAcceptance.futures_long_execute ? `evet (#${formatNumber(technicalAcceptance.futures_long_execute_id, 0)})` : 'hayir' },
+        { label: 'Futures SHORT execute', value: technicalAcceptance.futures_short_execute ? `evet (#${formatNumber(technicalAcceptance.futures_short_execute_id, 0)})` : 'hayir' },
+        { label: 'Spot LONG execute', value: technicalAcceptance.spot_long_execute ? `evet (#${formatNumber(technicalAcceptance.spot_long_execute_id, 0)})` : 'hayir' },
+        { label: 'Spot SHORT reject', value: technicalAcceptance.spot_short_reject ? `evet (#${formatNumber(technicalAcceptance.spot_short_reject_id, 0)})` : 'hayir' },
+        { label: 'Acceptance karar satiri', value: formatNumber(technicalAcceptance.acceptance_decision_rows, 0) },
+        { label: 'Acceptance open pozisyon', value: formatNumber(technicalAcceptance.acceptance_open_positions, 0) }
+    ]);
+    const technicalRuntimeAcceptance = payload.technical_runtime_acceptance_summary || {};
+    renderMetrics('technical-runtime-acceptance-summary', [
+        { label: 'Genel durum', value: technicalRuntimeAcceptance.all_checks_passed ? 'yesil' : 'eksik' },
+        { label: 'Son runtime', value: technicalRuntimeAcceptance.last_runtime_at || 'yok', long: true },
+        { label: 'Futures LONG execute', value: technicalRuntimeAcceptance.runtime_futures_long_execute ? `evet (#${formatNumber(technicalRuntimeAcceptance.runtime_futures_long_execute_id, 0)})` : 'hayir' },
+        { label: 'Futures SHORT execute', value: technicalRuntimeAcceptance.runtime_futures_short_execute ? `evet (#${formatNumber(technicalRuntimeAcceptance.runtime_futures_short_execute_id, 0)})` : 'hayir' },
+        { label: 'Spot LONG execute', value: technicalRuntimeAcceptance.runtime_spot_long_execute ? `evet (#${formatNumber(technicalRuntimeAcceptance.runtime_spot_long_execute_id, 0)})` : 'hayir' },
+        { label: 'Spot SHORT reject', value: technicalRuntimeAcceptance.runtime_spot_short_reject ? `evet (#${formatNumber(technicalRuntimeAcceptance.runtime_spot_short_reject_id, 0)})` : 'hayir' },
+        { label: 'Runtime karar satiri', value: formatNumber(technicalRuntimeAcceptance.runtime_decision_rows, 0) },
+        { label: 'Runtime open pozisyon', value: formatNumber(technicalRuntimeAcceptance.runtime_open_positions, 0) },
+        { label: 'Reason', value: technicalRuntimeAcceptance.reason || 'runtime_paths_incomplete', long: true }
     ]);
     renderMetrics('lane-technical-score-components', [
         { label: 'Karar satiri', value: formatNumber(technicalScore.component_summary?.sample_count || technicalScore.decision_rows, 0) },

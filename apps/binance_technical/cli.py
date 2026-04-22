@@ -24,6 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_db_path_argument(summary_parser)
     run_once_parser = subparsers.add_parser("run-once", help="Run a single paper cycle and then print summary.")
     _add_db_path_argument(run_once_parser)
+    acceptance_run_parser = subparsers.add_parser("acceptance-run", help="Write labelled Binance acceptance evidence and print summary.")
+    _add_db_path_argument(acceptance_run_parser)
+    acceptance_summary_parser = subparsers.add_parser("acceptance-summary", help="Print labelled Binance acceptance checklist.")
+    _add_db_path_argument(acceptance_summary_parser)
+    runtime_acceptance_summary_parser = subparsers.add_parser("runtime-acceptance-summary", help="Print non-fixture Binance runtime checklist.")
+    _add_db_path_argument(runtime_acceptance_summary_parser)
     loop_parser = subparsers.add_parser("run-loop", help="Run the paper loop continuously or for a fixed number of iterations.")
     _add_db_path_argument(loop_parser)
     loop_parser.add_argument("--iterations", type=int, help="Optional number of iterations before stopping.")
@@ -44,11 +50,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     command = args.command or "summary"
     if command == "run-once":
         summary = runtime.run_once()
+        header = "BINANCE_TECHNICAL_LANE_SUMMARY"
+    elif command == "acceptance-run":
+        summary = runtime.run_acceptance_fixture()
+        header = "BINANCE_TECHNICAL_ACCEPTANCE_SUMMARY"
+        summary = summary.get("technical_acceptance_summary", {})
+    elif command == "acceptance-summary":
+        summary = runtime.build_summary().get("technical_acceptance_summary", {})
+        header = "BINANCE_TECHNICAL_ACCEPTANCE_SUMMARY"
+    elif command == "runtime-acceptance-summary":
+        summary = runtime.build_summary().get("technical_runtime_acceptance_summary", {})
+        header = "BINANCE_TECHNICAL_RUNTIME_ACCEPTANCE_SUMMARY"
     elif command == "run-loop":
         summary = runtime.run_loop(iterations=args.iterations)
+        header = "BINANCE_TECHNICAL_LANE_SUMMARY"
     else:
         summary = runtime.build_summary()
-    print("BINANCE_TECHNICAL_LANE_SUMMARY")
+        header = "BINANCE_TECHNICAL_LANE_SUMMARY"
+    print(header)
     print(json.dumps(summary, ensure_ascii=True, indent=2, sort_keys=True))
     return 0
 

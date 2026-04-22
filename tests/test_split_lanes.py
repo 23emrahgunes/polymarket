@@ -243,172 +243,182 @@ def _create_polymarket_source_evidence_db(
 
 
 def _create_binance_lane_db(db_path: Path) -> None:
+    repository = BinanceTechnicalRepository(str(db_path))
+    repository.ensure_tables()
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            venue TEXT,
-            instrument_type TEXT,
-            market_id TEXT,
-            status TEXT,
-            pnl REAL,
-            timestamp TEXT,
-            opened_at TEXT,
-            closed_at TEXT,
-            strategy_profile TEXT,
-            sample_kind TEXT
-        )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE decision_audit (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            occurred_at TEXT,
-            venue TEXT,
-            market_id TEXT,
-            action TEXT,
-            reason TEXT,
-            decision_score REAL,
-            threshold REAL,
-            trade_size REAL,
-            inputs_json TEXT,
-            strategy_profile TEXT
-        )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE venue_positions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            venue TEXT,
-            execution_mode TEXT,
-            symbol_or_market_id TEXT,
-            strategy_profile TEXT,
-            sample_kind TEXT,
-            status TEXT,
-            source_signal TEXT,
-            signal_family TEXT,
-            notional_usd REAL,
-            unrealized_pnl REAL,
-            opened_at TEXT
-        )
-        """
-    )
     cur.executemany(
         """
         INSERT INTO trades (
-            venue, instrument_type, market_id, status, pnl, timestamp, opened_at, closed_at,
-            strategy_profile, sample_kind
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            venue, execution_mode, instrument_type, market_id, side, size, price, confidence,
+            source_signal, category, strategy_profile, sample_kind, status, pnl,
+            whale_address, timestamp, opened_at, closed_at, is_synthetic
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
                 "binance_futures",
+                "paper",
                 "futures",
                 "BTC/USDT:USDT",
+                "BUY",
+                100.0,
+                65000.0,
+                0.72,
+                "binance_technical_momentum",
+                "CRYPTO",
+                "binance_technical_sampling",
+                "live_paper",
                 "CLOSED_WIN",
                 45.5,
+                None,
                 "2026-04-16 12:00:00",
                 "2026-04-16 10:00:00",
                 "2026-04-16 12:00:00",
-                "binance_technical_sampling",
-                "live_paper",
+                0,
             ),
             (
                 "binance_spot",
+                "paper",
                 "spot",
                 "ETH/USDT",
+                "BUY",
+                100.0,
+                3200.0,
+                0.41,
+                "binance_technical_momentum",
+                "CRYPTO",
+                "binance_technical_sampling",
+                "live_paper",
                 "CLOSED_LOSS",
                 -10.0,
+                None,
                 "2026-04-15 12:00:00",
                 "2026-04-15 09:00:00",
                 "2026-04-15 12:00:00",
-                "binance_technical_sampling",
-                "live_paper",
+                0,
             ),
             (
                 "binance_futures",
+                "paper",
                 "futures",
                 "SOL/USDT:USDT",
+                "SELL",
+                100.0,
+                155.0,
+                0.79,
+                "binance_technical_momentum",
+                "CRYPTO",
+                "binance_technical_sampling",
+                "live_paper",
                 "CLOSED_WIN",
                 99.0,
+                None,
                 "2026-04-01 12:00:00",
                 "2026-04-01 09:00:00",
                 "2026-04-01 12:00:00",
-                "binance_technical_sampling",
-                "live_paper",
+                0,
             ),
         ],
     )
     cur.executemany(
         """
         INSERT INTO decision_audit (
-            occurred_at, venue, market_id, action, reason, decision_score, threshold, trade_size, inputs_json, strategy_profile
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            occurred_at, venue, market_id, category, signal_family, strategy_profile, raw_source_signal,
+            action, reason, decision_score, threshold, trade_size, confidence, mapping_stage, inputs_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
                 "2026-04-16 12:00:00",
                 "binance_futures",
                 "BTC/USDT:USDT",
+                "CRYPTO",
+                "binance_technical_momentum",
+                "binance_technical_sampling",
+                "binance_technical_momentum",
                 "execute",
                 "",
                 0.72,
                 0.54,
                 100.0,
+                0.72,
+                "technical",
                 "{}",
-                "binance_technical_sampling",
             ),
             (
                 "2026-04-16 11:00:00",
                 "binance_spot",
                 "ETH/USDT",
+                "CRYPTO",
+                "binance_technical_momentum",
+                "binance_technical_sampling",
+                "binance_technical_momentum",
                 "reject",
                 "score_below_threshold,technical_alignment_weak",
                 0.41,
                 0.54,
                 100.0,
+                0.41,
+                "technical",
                 "{}",
-                "binance_technical_sampling",
             ),
         ],
     )
     cur.executemany(
         """
         INSERT INTO venue_positions (
-            venue, execution_mode, symbol_or_market_id, strategy_profile, sample_kind, status,
-            source_signal, signal_family, notional_usd, unrealized_pnl, opened_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            venue, execution_mode, instrument_type, symbol_or_market_id, side, qty, entry_price, mark_price,
+            notional_usd, unrealized_pnl, realized_pnl, leverage, strategy_profile, sample_kind,
+            source_signal, signal_family, status, opened_at, closed_at, take_profit_price, stop_loss_price
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
                 "binance_futures",
                 "paper",
+                "futures",
                 "BTC/USDT:USDT",
-                "binance_technical_sampling",
-                "live_paper",
-                "OPEN",
-                "binance_technical_momentum",
-                "binance_technical_momentum",
+                "LONG",
+                0.0015,
+                65000.0,
+                65833.33,
                 100.0,
                 12.5,
+                0.0,
+                2.0,
+                "binance_technical_sampling",
+                "live_paper",
+                "binance_technical_momentum",
+                "binance_technical_momentum",
+                "OPEN",
                 "2026-04-16 09:00:00",
+                None,
+                69000.0,
+                62000.0,
             ),
             (
                 "binance_spot",
                 "paper",
+                "spot",
                 "ETH/USDT",
-                "baseline",
-                "",
-                "OPEN",
-                "legacy_signal",
-                "legacy_signal",
+                "LONG",
+                0.025,
+                3200.0,
+                3160.0,
                 80.0,
                 -1.0,
+                0.0,
+                1.0,
+                "baseline",
+                "",
+                "legacy_signal",
+                "legacy_signal",
+                "OPEN",
                 "2026-04-15 09:00:00",
+                None,
+                3600.0,
+                3000.0,
             ),
         ],
     )
@@ -640,6 +650,9 @@ def test_polymarket_copy_lane_opens_replays_and_reports(
     assert summary["copy_execution_summary"]["active_copy_positions"] >= 1
     assert summary["wallet_follower_pnl_summary"]
     assert summary["shadow_vs_copy_drift_summary"]["copy_ready_wallets"] >= 1
+    assert summary["copy_runtime_acceptance_summary"]["runtime_open_action_observed"] is True
+    assert summary["copy_runtime_acceptance_summary"]["runtime_open_position_observed"] is True
+    assert summary["copy_runtime_acceptance_summary"]["all_checks_passed"] is True
 
     assert (
         polymarket_copy_cli_main(
@@ -677,6 +690,47 @@ def test_polymarket_copy_cli_accepts_db_path_after_subcommand(
     )
     output = capsys.readouterr().out
     assert "POLYMARKET_COPY_LANE_SUMMARY" in output
+
+
+def test_polymarket_copy_acceptance_fixture_isolated_from_live_metrics(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "polymarket_copy_acceptance.db"
+    runtime = PolymarketCopyRuntime(
+        PolymarketCopySettings(
+            db_path=str(db_path),
+            source_db_path=str(db_path),
+        )
+    )
+
+    summary = runtime.run_acceptance()
+    acceptance = summary["copy_acceptance_summary"]
+
+    assert acceptance["all_checks_passed"] is True
+    assert acceptance["copy_open_action_observed"] is True
+    assert acceptance["copy_open_position_observed"] is True
+    assert summary["copy_execution_summary"]["open_actions"] == 0
+    assert summary["copy_execution_summary"]["active_copy_positions"] == 0
+    assert summary["copy_execution_summary"]["reject_actions"] == 0
+    assert summary["copy_runtime_acceptance_summary"]["all_checks_passed"] is False
+    assert summary["copy_runtime_acceptance_summary"]["reason"] == "no_eligible_copy_wallets"
+
+    assert (
+        polymarket_copy_cli_main(
+            [
+                "acceptance-summary",
+                "--db-path",
+                str(db_path),
+                "--source-db-path",
+                str(db_path),
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "POLYMARKET_COPY_ACCEPTANCE_SUMMARY" in output
+    assert "copy_open_action_observed" in output
 
 
 def test_polymarket_watchlist_manual_linking_guards(tmp_path: Path) -> None:
@@ -961,6 +1015,37 @@ def test_binance_cli_accepts_db_path_after_subcommand(
     assert "BINANCE_TECHNICAL_LANE_SUMMARY" in output
 
 
+def test_binance_acceptance_fixture_isolated_from_fresh_metrics(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "binance_acceptance.db"
+    runtime = BinanceTechnicalRuntime(
+        BinanceTechnicalSettings(
+            db_path=str(db_path),
+            symbols=["BTC", "ETH", "SOL"],
+            futures_enabled=True,
+            spot_enabled=True,
+        )
+    )
+
+    summary = runtime.run_acceptance_fixture()
+    acceptance = summary["technical_acceptance_summary"]
+
+    assert acceptance["all_checks_passed"] is True
+    assert acceptance["futures_long_execute"] is True
+    assert acceptance["futures_short_execute"] is True
+    assert acceptance["spot_long_execute"] is True
+    assert acceptance["spot_short_reject"] is True
+    assert summary["fresh_technical_summary"]["fresh_execute_count"] == 0
+    assert summary["fresh_pnl_summary_7d"]["fresh_trade_count"] == 0
+
+    assert binance_technical_cli_main(["acceptance-summary", "--db-path", str(db_path)]) == 0
+    output = capsys.readouterr().out
+    assert "BINANCE_TECHNICAL_ACCEPTANCE_SUMMARY" in output
+    assert "futures_long_execute" in output
+
+
 def test_binance_technical_service_builds_fresh_and_legacy_summaries(tmp_path: Path) -> None:
     db_path = tmp_path / "binance_lane.db"
     _create_binance_lane_db(db_path)
@@ -997,6 +1082,11 @@ def test_binance_technical_service_builds_fresh_and_legacy_summaries(tmp_path: P
     assert summary["legacy_position_summary"]["legacy_open_positions"] == 1
     assert summary["legacy_position_summary"]["strict_fresh_positions"] == 1
     assert "ETH/USDT" in summary["legacy_position_summary"]["legacy_symbols"]
+    assert summary["technical_runtime_acceptance_summary"]["all_checks_passed"] is False
+    assert summary["technical_runtime_acceptance_summary"]["reason"] in {
+        "runtime_paths_incomplete",
+        "no_runtime_decisions",
+    }
 
 
 class _FakeMarketDataProvider:
@@ -1122,6 +1212,7 @@ def test_binance_runtime_run_once_creates_decision_execute_and_position(tmp_path
     runtime_snapshot = repository.fetch_runtime_status_snapshot()
 
     assert summary["fresh_technical_summary"]["fresh_execute_count"] == 1
+    assert summary["technical_runtime_acceptance_summary"]["runtime_futures_long_execute"] is True
     assert len(open_positions) == 1
     assert len(open_orders) == 2
     assert [row["action"] for row in decisions] == ["execute", "decision"]
@@ -1161,9 +1252,11 @@ def test_binance_runtime_rejects_spot_short_with_explicit_reason(tmp_path: Path)
         signal_engine=_FakeSignalEngine(signals),
     )
 
-    runtime.run_once()
+    summary = runtime.run_once()
 
     decisions = repository.fetch_technical_decision_rows(7)
+    assert summary["fresh_technical_summary"]["fresh_execute_count"] == 0
+    assert summary["technical_runtime_acceptance_summary"]["runtime_spot_short_reject"] is True
     assert len(decisions) == 1
     assert decisions[0]["action"] == "reject"
     assert "spot_short_not_supported" in str(decisions[0]["reason"])

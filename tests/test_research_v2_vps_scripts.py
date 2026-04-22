@@ -137,6 +137,19 @@ def test_final_split_rebuild_script_reinstalls_both_lanes_safely() -> None:
     assert 'exec bash "$SOURCE_REPO_DIR/scripts/bootstrap_split_final_v2_vps.sh"' in text
 
 
+def test_final_local_acceptance_script_exists_and_covers_both_lanes() -> None:
+    text = _read("scripts/run_final_acceptance_local.py")
+    assert "#!/usr/bin/env python3" in text
+    assert "FINAL_LOCAL_ACCEPTANCE_SUMMARY" in text
+    assert "query_polymarket_research.py" in text
+    assert "query_polymarket_copy_lane.py" in text
+    assert "query_binance_technical_lane.py" in text
+    assert "_binance_run_once_case" in text
+    assert "copy_open_action_observed" in text
+    assert "futures_long_execute" in text
+    assert "spot_short_reject" in text
+
+
 def test_query_wrapper_scripts_add_repo_root_to_sys_path() -> None:
     research_script = _read("scripts/query_polymarket_research.py")
     copy_script = _read("scripts/query_polymarket_copy_lane.py")

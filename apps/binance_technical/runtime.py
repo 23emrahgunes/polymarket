@@ -63,6 +63,107 @@ class BinanceTechnicalRuntime:
             sleep(max(self.settings.loop_interval_seconds, 1))
         return last_summary
 
+    def run_acceptance_fixture(self) -> dict[str, Any]:
+        assert self.repository is not None
+        self.repository.ensure_runtime_rows(("binance_futures", "binance_spot"))
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        cases = [
+            ("binance_futures", "BTC/USDT:USDT", "futures", "LONG", 50000.0, "acceptance_futures_long_execute"),
+            ("binance_futures", "ETH/USDT:USDT", "futures", "SHORT", 2500.0, "acceptance_futures_short_execute"),
+            ("binance_spot", "SOL/USDT", "spot", "LONG", 150.0, "acceptance_spot_long_execute"),
+        ]
+        for venue, symbol, instrument_type, direction, entry_price, case_name in cases:
+            stop_loss_price, take_profit_price = self._exit_prices(direction=direction, entry_price=entry_price)
+            inputs = {
+                "acceptance_fixture": True,
+                "acceptance_case": case_name,
+                "sample_kind": "acceptance_fixture",
+                "source_signal": "binance_acceptance_fixture",
+                "signal_direction": direction,
+                "symbol": _base_symbol(symbol),
+                "venue": venue,
+                "run_id": run_id,
+                "entry_price": entry_price,
+                "instrument_type": instrument_type,
+                "take_profit_price": round(take_profit_price, 6),
+                "stop_loss_price": round(stop_loss_price, 6),
+            }
+            self.repository.insert_decision_audit(
+                venue=venue,
+                market_id=symbol,
+                action="decision",
+                reason="",
+                decision_score=0.99,
+                threshold=0.54,
+                trade_size=25.0,
+                inputs=inputs,
+                confidence=0.99,
+            )
+            created = self.repository.create_entry(
+                venue=venue,
+                symbol_or_market_id=symbol,
+                execution_mode="paper",
+                instrument_type=instrument_type,
+                direction=direction,
+                entry_price=entry_price,
+                trade_size_usd=25.0,
+                leverage=2.0 if venue == "binance_futures" else 1.0,
+                confidence=0.99,
+                strategy_profile="binance_technical_sampling",
+                sample_kind="acceptance_fixture",
+                source_signal="binance_acceptance_fixture",
+                signal_family="binance_technical_momentum",
+                take_profit_price=take_profit_price,
+                stop_loss_price=stop_loss_price,
+            )
+            execute_inputs = dict(inputs)
+            execute_inputs.update(
+                {
+                    "order_qty": round(float(created["qty"]), 8),
+                    "entry_side": created["entry_side"],
+                    "exit_side": created["exit_side"],
+                    "position_id": int(created["position_id"]),
+                    "trade_id": int(created["trade_id"]),
+                }
+            )
+            self.repository.insert_decision_audit(
+                venue=venue,
+                market_id=symbol,
+                action="execute",
+                reason="acceptance_execute",
+                decision_score=0.99,
+                threshold=0.54,
+                trade_size=25.0,
+                inputs=execute_inputs,
+                confidence=0.99,
+            )
+
+        spot_short_inputs = {
+            "acceptance_fixture": True,
+            "acceptance_case": "acceptance_spot_short_reject",
+            "sample_kind": "acceptance_fixture",
+            "source_signal": "binance_acceptance_fixture",
+            "signal_direction": "SHORT",
+            "symbol": "BTC",
+            "venue": "binance_spot",
+            "run_id": run_id,
+        }
+        self.repository.insert_decision_audit(
+            venue="binance_spot",
+            market_id="BTC/USDT",
+            action="reject",
+            reason="spot_short_not_supported",
+            decision_score=0.99,
+            threshold=0.54,
+            trade_size=25.0,
+            inputs=spot_short_inputs,
+            confidence=0.99,
+        )
+        self.repository.refresh_account_snapshots(("binance_futures", "binance_spot"))
+        summary = self.service.build_summary()
+        self._write_runtime_snapshot(summary)
+        return summary
+
     def _fetch_frames(self) -> dict[tuple[str, str], MarketFrame]:
         frames: dict[tuple[str, str], MarketFrame] = {}
         for venue in self.settings.enabled_venues:

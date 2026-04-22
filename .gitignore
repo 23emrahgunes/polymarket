@@ -9,3 +9,4 @@ data/dashboard_api_cache_*.json
 .env
 __publish_repo/
 docs/polymarket-research.md
+polymarket-vps-restore-*.zip

@@ -28,6 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_db_path_arguments(summary_parser)
     run_once_parser = subparsers.add_parser("run-once", help="Run a single copy sync cycle and print the resulting summary.")
     _add_db_path_arguments(run_once_parser)
+    acceptance_run_parser = subparsers.add_parser("acceptance-run", help="Write labelled paper-copy acceptance evidence and print summary.")
+    _add_db_path_arguments(acceptance_run_parser)
+    acceptance_summary_parser = subparsers.add_parser("acceptance-summary", help="Print labelled paper-copy acceptance checklist.")
+    _add_db_path_arguments(acceptance_summary_parser)
+    runtime_acceptance_summary_parser = subparsers.add_parser("runtime-acceptance-summary", help="Print non-fixture runtime paper-copy checklist.")
+    _add_db_path_arguments(runtime_acceptance_summary_parser)
     loop_parser = subparsers.add_parser("run-loop", help="Run the copy sync loop continuously or for a fixed number of iterations.")
     _add_db_path_arguments(loop_parser)
     loop_parser.add_argument("--iterations", type=int, help="Optional number of iterations before stopping.")
@@ -50,11 +56,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     command = args.command or "summary"
     if command == "run-once":
         summary = runtime.run_once()
+        header = "POLYMARKET_COPY_LANE_SUMMARY"
+    elif command == "acceptance-run":
+        summary = runtime.run_acceptance()
+        header = "POLYMARKET_COPY_ACCEPTANCE_SUMMARY"
+        summary = summary.get("copy_acceptance_summary", {})
+    elif command == "acceptance-summary":
+        summary = runtime.build_summary().get("copy_acceptance_summary", {})
+        header = "POLYMARKET_COPY_ACCEPTANCE_SUMMARY"
+    elif command == "runtime-acceptance-summary":
+        summary = runtime.build_summary().get("copy_runtime_acceptance_summary", {})
+        header = "POLYMARKET_COPY_RUNTIME_ACCEPTANCE_SUMMARY"
     elif command == "run-loop":
         summary = runtime.run_loop(iterations=args.iterations)
+        header = "POLYMARKET_COPY_LANE_SUMMARY"
     else:
         summary = runtime.build_summary()
-    print("POLYMARKET_COPY_LANE_SUMMARY")
+        header = "POLYMARKET_COPY_LANE_SUMMARY"
+    print(header)
     print(json.dumps(summary, ensure_ascii=True, indent=2, sort_keys=True))
     return 0
 

@@ -19,6 +19,118 @@ def _parse_inputs(raw: str | None) -> dict[str, Any]:
     return decoded if isinstance(decoded, dict) else {}
 
 
+def _is_acceptance_decision(row: Any) -> bool:
+    inputs = _parse_inputs(row["inputs_json"] if "inputs_json" in row.keys() else None)
+    return inputs.get("acceptance_fixture") is True or str(inputs.get("sample_kind") or "") == "acceptance_fixture"
+
+
+def _is_acceptance_position(row: Any) -> bool:
+    return (
+        str(row["sample_kind"] or "") == "acceptance_fixture"
+        or str(row["source_signal"] or "") == "binance_acceptance_fixture"
+    )
+
+
+def _technical_acceptance_summary(decisions: list[Any], positions: list[Any]) -> dict[str, Any]:
+    def _match(*, venue: str, action: str, direction: str | None = None, reason: str | None = None) -> Any | None:
+        for row in decisions:
+            inputs = _parse_inputs(row["inputs_json"])
+            if str(row["venue"] or "") != venue:
+                continue
+            if str(row["action"] or "").lower() != action:
+                continue
+            if direction and str(inputs.get("signal_direction") or "").upper() != direction:
+                continue
+            if reason and reason not in str(row["reason"] or ""):
+                continue
+            return row
+        return None
+
+    futures_long = _match(venue="binance_futures", action="execute", direction="LONG")
+    futures_short = _match(venue="binance_futures", action="execute", direction="SHORT")
+    spot_long = _match(venue="binance_spot", action="execute", direction="LONG")
+    spot_short_reject = _match(
+        venue="binance_spot",
+        action="reject",
+        direction="SHORT",
+        reason="spot_short_not_supported",
+    )
+    latest_ts = ""
+    for row in decisions:
+        candidate = str(row["occurred_at"] or "")
+        if candidate > latest_ts:
+            latest_ts = candidate
+    return {
+        "last_acceptance_at": latest_ts,
+        "all_checks_passed": bool(futures_long and futures_short and spot_long and spot_short_reject),
+        "futures_long_execute": bool(futures_long),
+        "futures_long_execute_id": int(futures_long["id"] or 0) if futures_long else 0,
+        "futures_short_execute": bool(futures_short),
+        "futures_short_execute_id": int(futures_short["id"] or 0) if futures_short else 0,
+        "spot_long_execute": bool(spot_long),
+        "spot_long_execute_id": int(spot_long["id"] or 0) if spot_long else 0,
+        "spot_short_reject": bool(spot_short_reject),
+        "spot_short_reject_id": int(spot_short_reject["id"] or 0) if spot_short_reject else 0,
+        "acceptance_decision_rows": len(decisions),
+        "acceptance_open_positions": len(positions),
+    }
+
+
+def _technical_runtime_acceptance_summary(decisions: list[Any], positions: list[Any]) -> dict[str, Any]:
+    def _match(*, venue: str, action: str, direction: str | None = None, reason: str | None = None) -> Any | None:
+        for row in decisions:
+            inputs = _parse_inputs(row["inputs_json"] if "inputs_json" in row.keys() else None)
+            if str(row["venue"] or "") != venue:
+                continue
+            if str(row["action"] or "").lower() != action:
+                continue
+            if direction and str(inputs.get("signal_direction") or "").upper() != direction:
+                continue
+            if reason and reason not in str(row["reason"] or ""):
+                continue
+            return row
+        return None
+
+    futures_long = _match(venue="binance_futures", action="execute", direction="LONG")
+    futures_short = _match(venue="binance_futures", action="execute", direction="SHORT")
+    spot_long = _match(venue="binance_spot", action="execute", direction="LONG")
+    spot_short_reject = _match(
+        venue="binance_spot",
+        action="reject",
+        direction="SHORT",
+        reason="spot_short_not_supported",
+    )
+    latest_ts = ""
+    for row in decisions:
+        candidate = str(row["occurred_at"] or "")
+        if candidate and candidate > latest_ts:
+            latest_ts = candidate
+
+    all_checks_passed = bool(futures_long and futures_short and spot_long and spot_short_reject)
+    if not decisions:
+        reason = "no_runtime_decisions"
+    elif all_checks_passed:
+        reason = "runtime_all_paths_observed"
+    else:
+        reason = "runtime_paths_incomplete"
+
+    return {
+        "last_runtime_at": latest_ts,
+        "all_checks_passed": all_checks_passed,
+        "runtime_futures_long_execute": bool(futures_long),
+        "runtime_futures_long_execute_id": int(futures_long["id"] or 0) if futures_long else 0,
+        "runtime_futures_short_execute": bool(futures_short),
+        "runtime_futures_short_execute_id": int(futures_short["id"] or 0) if futures_short else 0,
+        "runtime_spot_long_execute": bool(spot_long),
+        "runtime_spot_long_execute_id": int(spot_long["id"] or 0) if spot_long else 0,
+        "runtime_spot_short_reject": bool(spot_short_reject),
+        "runtime_spot_short_reject_id": int(spot_short_reject["id"] or 0) if spot_short_reject else 0,
+        "runtime_decision_rows": len(decisions),
+        "runtime_open_positions": len(positions),
+        "reason": reason,
+    }
+
+
 @dataclass(slots=True)
 class BinanceTechnicalService:
     settings: BinanceTechnicalSettings
@@ -26,8 +138,12 @@ class BinanceTechnicalService:
 
     def build_summary(self) -> dict[str, Any]:
         trades = self.repository.fetch_fresh_trade_rows(self.settings.fresh_window_days)
-        decisions = self.repository.fetch_technical_decision_rows(self.settings.fresh_window_days)
-        open_positions = self.repository.fetch_open_positions()
+        all_decisions = self.repository.fetch_technical_decision_rows(self.settings.fresh_window_days)
+        all_open_positions = self.repository.fetch_open_positions()
+        acceptance_decisions = [row for row in all_decisions if _is_acceptance_decision(row)]
+        acceptance_positions = [row for row in all_open_positions if _is_acceptance_position(row)]
+        decisions = [row for row in all_decisions if not _is_acceptance_decision(row)]
+        open_positions = [row for row in all_open_positions if not _is_acceptance_position(row)]
         venues = ("binance_futures", "binance_spot")
 
         closed_trades = [row for row in trades if str(row["status"] or "").upper().startswith("CLOSED")]
@@ -138,4 +254,6 @@ class BinanceTechnicalService:
                 "strict_fresh_positions": len(fresh_positions),
                 "legacy_symbols": sorted({str(row["symbol_or_market_id"] or "") for row in legacy_positions if str(row["symbol_or_market_id"] or "").strip()}),
             },
+            "technical_acceptance_summary": _technical_acceptance_summary(acceptance_decisions, acceptance_positions),
+            "technical_runtime_acceptance_summary": _technical_runtime_acceptance_summary(decisions, open_positions),
         }
