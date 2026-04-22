@@ -966,6 +966,151 @@ def test_polymarket_linked_wallet_evidence_backfill_and_replay_seed(tmp_path: Pa
     assert persisted_by_address[detailed_address]["shadow_blocker_reason"] == "eligible"
 
 
+def test_polymarket_linked_watchlist_wallet_can_be_pilot_copy_ready(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket_research_pilot.db"
+    source_db_path = tmp_path / "polymarket_source_pilot.db"
+    _create_polymarket_research_db(db_path)
+
+    detailed_address = "0x89b5cdaaa4866c1e738406712012a630b4078beb"
+    stats_address = "0x1111111111111111111111111111111111111111"
+    _create_polymarket_source_evidence_db(
+        source_db_path,
+        detailed_address=detailed_address,
+        stats_address=stats_address,
+    )
+
+    repository = PolymarketResearchRepository(str(db_path), str(source_db_path))
+    repository.ensure_tables()
+    repository.link_watchlist_wallet(
+        row_id=1,
+        wallet_address=detailed_address,
+        notes="verified manually",
+    )
+    repository.approve_watchlist_pilot(
+        row_id=1,
+        approved=True,
+        notes="approved for local runtime proof",
+    )
+
+    summary = PolymarketResearchService(
+        PolymarketResearchSettings(
+            db_path=str(db_path),
+            source_db_path=str(source_db_path),
+            discovery_pool_size=50,
+            shadow_pool_size=20,
+            copy_ready_size=5,
+            shadow_window_days=14,
+        ),
+        repository,
+    ).build_summary()
+
+    ohanism_row = next(row for row in summary["priority_watchlist_rows"] if row["display_name"] == "ohanism")
+    persisted_rows = {str(row["address"]): row for row in repository.fetch_persisted_wallet_snapshots()}
+    detailed_snapshot = persisted_rows[detailed_address]
+
+    assert ohanism_row["wallet_address"] == detailed_address
+    assert ohanism_row["identity_resolution_status"] == "linked"
+    assert ohanism_row["status"] == "linked"
+    assert ohanism_row["operator_approved_pilot"] is True
+    assert ohanism_row["historical_trade_evidence_status"] == "detailed_trade_history"
+    assert ohanism_row["pilot_copy_gate_reason"] in {"eligible", "shadow_proven"}
+    assert ohanism_row["long_horizon_status"] in {"pilot_copy_ready", "copy_ready"}
+
+    assert detailed_snapshot["primary_source"] == "manual_persisted"
+    assert detailed_snapshot["operator_approved_pilot"] == 1
+    assert detailed_snapshot["historical_trade_evidence_status"] == "detailed_trade_history"
+    assert detailed_snapshot["pilot_copy_gate_status"] in {"promoted", "shadow_proven"}
+
+
+def test_polymarket_copy_runtime_acceptance_uses_linked_wallet_open_trade(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket_copy_runtime.db"
+    source_db_path = tmp_path / "polymarket_copy_runtime_source.db"
+    _create_polymarket_research_db(db_path)
+
+    detailed_address = "0x89b5cdaaa4866c1e738406712012a630b4078beb"
+    stats_address = "0x1111111111111111111111111111111111111111"
+    _create_polymarket_source_evidence_db(
+        source_db_path,
+        detailed_address=detailed_address,
+        stats_address=stats_address,
+    )
+
+    research_repository = PolymarketResearchRepository(str(db_path), str(source_db_path))
+    research_repository.ensure_tables()
+    research_repository.link_watchlist_wallet(
+        row_id=1,
+        wallet_address=detailed_address,
+        notes="verified manually",
+    )
+    research_repository.approve_watchlist_pilot(
+        row_id=1,
+        approved=True,
+        notes="approved for runtime acceptance",
+    )
+    PolymarketResearchService(
+        PolymarketResearchSettings(
+            db_path=str(db_path),
+            source_db_path=str(source_db_path),
+            discovery_pool_size=50,
+            shadow_pool_size=20,
+            copy_ready_size=5,
+            shadow_window_days=14,
+        ),
+        research_repository,
+    ).build_summary()
+
+    now_text = datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(source_db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO trades (
+                whale_address, venue, market_id, status, pnl, size,
+                closed_at, timestamp, category, source_signal, side
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                detailed_address,
+                "polymarket",
+                "Bitcoin Up or Down - linked runtime source",
+                "OPEN",
+                0.0,
+                140.0,
+                now_text,
+                now_text,
+                "CRYPTO",
+                "linked_runtime_source",
+                "BUY",
+            ),
+        )
+        connection.commit()
+
+    summary = PolymarketCopyRuntime(
+        PolymarketCopySettings(
+            db_path=str(db_path),
+            source_db_path=str(source_db_path),
+            lookback_days=14,
+            follower_delay_seconds=0,
+            min_trade_size_usd=25.0,
+            max_trade_size_usd=50.0,
+            wallet_risk_limit_usd=150.0,
+            market_risk_limit_usd=150.0,
+            copy_ready_limit=5,
+        )
+    ).run_once()
+
+    runtime_acceptance = summary["copy_runtime_acceptance_summary"]
+
+    assert summary["copy_execution_summary"]["eligible_copy_wallets_total"] >= 1
+    assert (
+        summary["copy_execution_summary"]["pilot_copy_wallets"]
+        + summary["copy_execution_summary"]["shadow_proven_wallets"]
+    ) >= 1
+    assert runtime_acceptance["eligible_copy_wallets_total"] >= 1
+    assert runtime_acceptance["runtime_open_action_observed"] is True
+    assert runtime_acceptance["runtime_open_position_observed"] is True
+    assert runtime_acceptance["all_checks_passed"] is True
+
+
 def test_polymarket_research_wrapper_script_runs_via_subprocess(tmp_path: Path) -> None:
     db_path = tmp_path / "polymarket_research_wrapper.db"
     _create_polymarket_research_db(db_path)

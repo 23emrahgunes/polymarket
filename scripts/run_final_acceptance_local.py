@@ -102,7 +102,6 @@ def main() -> int:
 
         research_db = tmp_dir / "research_v2.db"
         source_db = tmp_dir / "source_ghost_trader.db"
-        copy_runtime_db = tmp_dir / "polymarket_copy_runtime.db"
         binance_acceptance_db = tmp_dir / "binance_acceptance.db"
         binance_futures_long_db = tmp_dir / "binance_futures_long.db"
         binance_futures_short_db = tmp_dir / "binance_futures_short.db"
@@ -189,6 +188,22 @@ def main() -> int:
             ]
         )
         lane_gate["research_watchlist_link"] = "WATCHLIST_ROW_LINKED" in linked_row.stdout
+        pilot_approval = _run_command(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "query_polymarket_research.py"),
+                "watchlist-approve-pilot",
+                "--id",
+                "1",
+                "--notes",
+                "local acceptance pilot approval",
+                "--db-path",
+                str(research_db),
+                "--source-db-path",
+                str(source_db),
+            ]
+        )
+        lane_gate["research_watchlist_pilot_approval"] = "WATCHLIST_ROW_PILOT_APPROVAL_UPDATED" in pilot_approval.stdout
         research_summary_raw = _run_command(
             [
                 sys.executable,
@@ -206,8 +221,14 @@ def main() -> int:
             row.get("display_name") == "ohanism" and row.get("wallet_address") == detailed_address
             for row in research_summary.get("priority_watchlist_rows", [])
         )
+        lane_gate["ohanism_pilot_approved"] = any(
+            row.get("display_name") == "ohanism"
+            and bool(row.get("operator_approved_pilot"))
+            and row.get("pilot_copy_gate_reason") in {"eligible", "shadow_proven"}
+            for row in research_summary.get("priority_watchlist_rows", [])
+        )
 
-        copy_summary = _run_command(
+        copy_summary_raw = _run_command(
             [
                 sys.executable,
                 str(REPO_ROOT / "scripts" / "query_polymarket_copy_lane.py"),
@@ -218,7 +239,34 @@ def main() -> int:
                 str(source_db),
             ]
         )
-        lane_gate["copy_summary"] = "POLYMARKET_COPY_LANE_SUMMARY" in copy_summary.stdout
+        copy_summary = _extract_json_after_header(copy_summary_raw.stdout, "POLYMARKET_COPY_LANE_SUMMARY")
+        lane_gate["copy_summary"] = int(copy_summary.get("copy_execution_summary", {}).get("eligible_copy_wallets_total", 0)) > 0
+        lane_gate["copy_runtime_eligible_wallets"] = int(copy_summary.get("copy_execution_summary", {}).get("eligible_copy_wallets_total", 0)) > 0
+
+        now_text = (datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+        with sqlite3.connect(source_db) as connection:
+            connection.execute(
+                """
+                INSERT INTO trades (
+                    whale_address, venue, market_id, status, pnl, size,
+                    closed_at, timestamp, category, source_signal, side
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    detailed_address,
+                    "polymarket",
+                    "Bitcoin Up or Down - local runtime source",
+                    "OPEN",
+                    0.0,
+                    140.0,
+                    now_text,
+                    now_text,
+                    "CRYPTO",
+                    "local_runtime_source",
+                    "BUY",
+                ),
+            )
+            connection.commit()
         copy_run_once = _run_command(
             [
                 sys.executable,
@@ -274,72 +322,7 @@ def main() -> int:
         )
         lane_gate["copy_runtime_open_action"] = bool(copy_runtime_acceptance.get("runtime_open_action_observed"))
         lane_gate["copy_runtime_open_position"] = bool(copy_runtime_acceptance.get("runtime_open_position_observed"))
-
-        _create_polymarket_research_db(copy_runtime_db)
-        _run_command(
-            [
-                sys.executable,
-                str(REPO_ROOT / "scripts" / "query_polymarket_research.py"),
-                "summary",
-                "--db-path",
-                str(copy_runtime_db),
-                "--source-db-path",
-                str(copy_runtime_db),
-            ]
-        )
-        now_text = (datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-        with sqlite3.connect(copy_runtime_db) as connection:
-            connection.execute(
-                """
-                INSERT INTO trades (
-                    whale_address, venue, market_id, status, pnl, size,
-                    closed_at, timestamp, category, source_signal, side
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    "0xaaa",
-                    "polymarket",
-                    "Bitcoin Up or Down - acceptance runtime source",
-                    "OPEN",
-                    0.0,
-                    140.0,
-                    now_text,
-                    now_text,
-                    "CRYPTO",
-                    "acceptance_runtime_source",
-                    "BUY",
-                ),
-            )
-            connection.commit()
-
-        _run_command(
-            [
-                sys.executable,
-                str(REPO_ROOT / "scripts" / "query_polymarket_copy_lane.py"),
-                "run-once",
-                "--db-path",
-                str(copy_runtime_db),
-                "--source-db-path",
-                str(copy_runtime_db),
-            ]
-        )
-        copy_runtime_acceptance_raw = _run_command(
-            [
-                sys.executable,
-                str(REPO_ROOT / "scripts" / "query_polymarket_copy_lane.py"),
-                "runtime-acceptance-summary",
-                "--db-path",
-                str(copy_runtime_db),
-                "--source-db-path",
-                str(copy_runtime_db),
-            ]
-        )
-        copy_runtime_acceptance = _extract_json_after_header(
-            copy_runtime_acceptance_raw.stdout,
-            "POLYMARKET_COPY_RUNTIME_ACCEPTANCE_SUMMARY",
-        )
-        lane_gate["copy_runtime_open_action"] = bool(copy_runtime_acceptance.get("runtime_open_action_observed"))
-        lane_gate["copy_runtime_open_position"] = bool(copy_runtime_acceptance.get("runtime_open_position_observed"))
+        lane_gate["copy_runtime_all_checks"] = bool(copy_runtime_acceptance.get("all_checks_passed"))
 
         _create_binance_lane_db(binance_acceptance_db)
         binance_summary_raw = _run_command(
