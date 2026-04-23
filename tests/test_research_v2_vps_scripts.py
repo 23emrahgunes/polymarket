@@ -34,14 +34,17 @@ def test_bootstrap_research_v2_script_exists_and_contains_expected_flow() -> Non
 
 def test_polymarket_runtime_pilot_helper_exists_and_seeds_linked_priority_wallet() -> None:
     text = _read("scripts/ensure_polymarket_runtime_pilot.sh")
+    runtime_pilot_module = _read("apps/polymarket_research/runtime_pilot.py")
     assert "#!/usr/bin/env bash" in text
     assert "set -euo pipefail" in text
     assert "load_dotenv_file" in text
-    assert "operator_approved_pilot" in text
-    assert "runtime_pilot_seed" in text
-    assert "watchlist_row_id" in text
-    assert "PRAGMA table_info(" in text
-    assert "_fallback_value" in text
+    assert "ensure_runtime_priority_wallet" in text
+    assert "operator_approved_pilot" in runtime_pilot_module
+    assert "runtime_pilot_seed" in runtime_pilot_module
+    assert "watchlist_row_id" in runtime_pilot_module
+    assert "PRAGMA table_info(" in runtime_pilot_module
+    assert "_fallback_value" in runtime_pilot_module
+    assert "_existing_trade_filter" in runtime_pilot_module
 
 
 def test_final_acceptance_vps_script_requires_runtime_green() -> None:

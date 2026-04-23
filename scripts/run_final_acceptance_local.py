@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 from apps.binance_technical.config import BinanceTechnicalSettings
 from apps.binance_technical.repository import BinanceTechnicalRepository
 from apps.binance_technical.runtime import BinanceTechnicalRuntime
+from apps.polymarket_research.runtime_pilot import ensure_runtime_priority_wallet
 from tests.test_split_lanes import (
     _FakeMarketDataProvider,
     _FakeSignalEngine,
@@ -89,9 +90,110 @@ def _binance_run_once_case(*, db_path: Path, venue: str, symbol: str, direction:
     return runtime.run_once()
 
 
+def _create_polymarket_source_profile_db(db_path: Path, profile: str) -> None:
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    if profile == "minimal_market_id":
+        cur.execute(
+            """
+            CREATE TABLE trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                whale_address TEXT,
+                venue TEXT,
+                market_id TEXT,
+                status TEXT,
+                pnl REAL,
+                size REAL,
+                closed_at TEXT,
+                timestamp TEXT,
+                category TEXT,
+                source_signal TEXT,
+                side TEXT
+            )
+            """
+        )
+    elif profile == "symbol_only":
+        cur.execute(
+            """
+            CREATE TABLE trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                whale_address TEXT,
+                venue TEXT,
+                symbol_or_market_id TEXT,
+                status TEXT,
+                pnl REAL,
+                size REAL,
+                closed_at TEXT,
+                timestamp TEXT,
+                category TEXT,
+                source_signal TEXT,
+                side TEXT
+            )
+            """
+        )
+    elif profile == "extended_with_stats":
+        cur.execute(
+            """
+            CREATE TABLE trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                whale_address TEXT,
+                venue TEXT,
+                market_id TEXT,
+                symbol_or_market_id TEXT,
+                execution_mode TEXT NOT NULL,
+                instrument_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                pnl REAL NOT NULL,
+                size REAL NOT NULL,
+                price REAL NOT NULL,
+                confidence REAL NOT NULL,
+                source_signal TEXT NOT NULL,
+                signal_family TEXT,
+                category TEXT,
+                strategy_profile TEXT,
+                sample_kind TEXT,
+                is_synthetic INTEGER NOT NULL DEFAULT 0,
+                side TEXT,
+                timestamp TEXT,
+                opened_at TEXT,
+                closed_at TEXT
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE whale_wallets (
+                address TEXT PRIMARY KEY,
+                source_type TEXT,
+                discovery_score REAL,
+                event_count_24h INTEGER,
+                last_event_amount REAL,
+                last_event_category TEXT,
+                last_seen_at TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE whale_stats (
+                address TEXT PRIMARY KEY,
+                trust_score REAL,
+                total_trades INTEGER,
+                total_pnl REAL
+            )
+            """
+        )
+    else:
+        raise RuntimeError(f"Unknown Polymarket schema profile: {profile}")
+    conn.commit()
+    conn.close()
+
+
 def main() -> int:
     code_gate: dict[str, Any] = {}
     lane_gate: dict[str, Any] = {}
+    schema_profile_results: list[dict[str, Any]] = []
 
     code_gate["pytest"] = _run_command([sys.executable, "-m", "pytest", "-q"]).returncode == 0
     code_gate["php_index_lint"] = _run_command(["php", "-l", str(REPO_ROOT / "dashboard" / "public" / "index.php")]).returncode == 0
@@ -324,6 +426,109 @@ def main() -> int:
         lane_gate["copy_runtime_open_position"] = bool(copy_runtime_acceptance.get("runtime_open_position_observed"))
         lane_gate["copy_runtime_all_checks"] = bool(copy_runtime_acceptance.get("all_checks_passed"))
 
+        schema_profiles = ["minimal_market_id", "symbol_only", "extended_with_stats"]
+        for profile in schema_profiles:
+            profile_research_db = tmp_dir / f"{profile}_research.db"
+            profile_source_db = tmp_dir / f"{profile}_source.db"
+            _create_polymarket_research_db(profile_research_db)
+            _create_polymarket_source_profile_db(profile_source_db, profile)
+            ensure_runtime_priority_wallet(
+                db_path=str(profile_research_db),
+                source_db_path=str(profile_source_db),
+                display_name="ohanism",
+                profile_ref="https://polymarket.com/tr/@ohanism",
+                priority_rank=1,
+                priority_mode="fast_track_shadow",
+                target_specialization="CRYPTO",
+                wallet_address=detailed_address,
+                link_notes="schema profile validation",
+                approval_notes="schema profile validation",
+                seed_runtime_source_trade=True,
+            )
+            ensure_runtime_priority_wallet(
+                db_path=str(profile_research_db),
+                source_db_path=str(profile_source_db),
+                display_name="ohanism",
+                profile_ref="https://polymarket.com/tr/@ohanism",
+                priority_rank=1,
+                priority_mode="fast_track_shadow",
+                target_specialization="CRYPTO",
+                wallet_address=detailed_address,
+                link_notes="schema profile validation",
+                approval_notes="schema profile validation",
+                seed_runtime_source_trade=True,
+            )
+            profile_research_summary_raw = _run_command(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "query_polymarket_research.py"),
+                    "summary",
+                    "--db-path",
+                    str(profile_research_db),
+                    "--source-db-path",
+                    str(profile_source_db),
+                ]
+            )
+            profile_research_summary = _extract_json_after_header(
+                profile_research_summary_raw.stdout,
+                "POLYMARKET_RESEARCH_SUMMARY_JSON",
+            )
+            profile_copy_run_once_raw = _run_command(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "query_polymarket_copy_lane.py"),
+                    "run-once",
+                    "--db-path",
+                    str(profile_research_db),
+                    "--source-db-path",
+                    str(profile_source_db),
+                ]
+            )
+            profile_copy_summary = _extract_json_after_header(
+                profile_copy_run_once_raw.stdout,
+                "POLYMARKET_COPY_LANE_SUMMARY",
+            )
+            profile_runtime = profile_copy_summary.get("copy_runtime_acceptance_summary", {})
+            with sqlite3.connect(profile_source_db) as connection:
+                historical_seed_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM trades WHERE source_signal = 'manual_source_replay' AND status = 'CLOSED'"
+                    ).fetchone()[0]
+                )
+                runtime_seed_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM trades WHERE source_signal = 'runtime_pilot_seed' AND status = 'OPEN'"
+                    ).fetchone()[0]
+                )
+            profile_row = next(
+                row for row in profile_research_summary["priority_watchlist_rows"] if row["display_name"] == "ohanism"
+            )
+            profile_result = {
+                "profile": profile,
+                "historical_seed_count": historical_seed_count,
+                "runtime_seed_count": runtime_seed_count,
+                "historical_trade_evidence_status": profile_row.get("historical_trade_evidence_status", ""),
+                "pilot_copy_gate_status": profile_row.get("pilot_copy_gate_status", ""),
+                "pilot_copy_gate_reason": profile_row.get("pilot_copy_gate_reason", ""),
+                "eligible_copy_wallets_total": int(
+                    profile_copy_summary.get("copy_execution_summary", {}).get("eligible_copy_wallets_total", 0)
+                ),
+                "runtime_open_action_observed": bool(profile_runtime.get("runtime_open_action_observed")),
+                "runtime_open_position_observed": bool(profile_runtime.get("runtime_open_position_observed")),
+            }
+            profile_result["all_checks_passed"] = (
+                profile_result["historical_seed_count"] == 5
+                and profile_result["runtime_seed_count"] == 1
+                and profile_result["historical_trade_evidence_status"] == "detailed_trade_history"
+                and profile_result["pilot_copy_gate_status"] in {"promoted", "shadow_proven"}
+                and profile_result["eligible_copy_wallets_total"] > 0
+                and profile_result["runtime_open_action_observed"]
+                and profile_result["runtime_open_position_observed"]
+            )
+            schema_profile_results.append(profile_result)
+
+        lane_gate["schema_matrix_profiles"] = all(result["all_checks_passed"] for result in schema_profile_results)
+
         _create_binance_lane_db(binance_acceptance_db)
         binance_summary_raw = _run_command(
             [
@@ -435,6 +640,7 @@ def main() -> int:
         "all_checks_passed": all(code_gate.values()) and all(lane_gate.values()),
         "code_gate": code_gate,
         "lane_gate": lane_gate,
+        "polymarket_schema_profiles_tested": schema_profile_results,
         "polymarket_copy_acceptance_summary": copy_acceptance,
         "polymarket_copy_runtime_acceptance_summary": copy_runtime_acceptance,
         "binance_technical_acceptance_summary": binance_acceptance,

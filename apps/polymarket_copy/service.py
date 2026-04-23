@@ -124,6 +124,8 @@ def _copy_runtime_acceptance_summary(
         "eligible_copy_wallets_total": eligible_copy_wallets_total,
         "shadow_proven_wallets": shadow_proven_wallets,
         "manual_fast_track_wallets": manual_fast_track_wallets,
+        "runtime_blocker_reason": reason,
+        "runtime_schema_guard_status": "ok",
         "reason": reason,
     }
 

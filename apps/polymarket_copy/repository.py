@@ -252,7 +252,14 @@ class PolymarketCopyRepository:
             size_expr = _value_expr(trade_columns, "size", "0")
             category_expr = _value_expr(trade_columns, "category", "'UNKNOWN'")
             side_expr = _value_expr(trade_columns, "side", "''")
-            market_expr = _value_expr(trade_columns, "market_id", "''")
+            if "market_id" in trade_columns and "symbol_or_market_id" in trade_columns:
+                market_expr = "COALESCE(market_id, symbol_or_market_id, '')"
+            elif "market_id" in trade_columns:
+                market_expr = "COALESCE(market_id, '')"
+            elif "symbol_or_market_id" in trade_columns:
+                market_expr = "COALESCE(symbol_or_market_id, '')"
+            else:
+                market_expr = "''"
             timestamp_expr = _value_expr(trade_columns, "timestamp", "CURRENT_TIMESTAMP")
             opened_expr = _value_expr(trade_columns, "opened_at", timestamp_expr)
             closed_expr = _value_expr(trade_columns, "closed_at", timestamp_expr)

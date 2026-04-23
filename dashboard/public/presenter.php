@@ -2715,6 +2715,8 @@ function dashboard_build_copy_runtime_acceptance_summary_from_rows(array $action
         'eligible_copy_wallets_total' => $eligibleWallets,
         'shadow_proven_wallets' => (int) ($copyExecutionSummary['shadow_proven_wallets'] ?? 0),
         'manual_fast_track_wallets' => (int) ($copyExecutionSummary['manual_fast_track_wallets'] ?? 0),
+        'runtime_blocker_reason' => $reason,
+        'runtime_schema_guard_status' => 'ok',
         'reason' => $reason,
     ];
 }

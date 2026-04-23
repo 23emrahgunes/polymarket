@@ -2073,11 +2073,13 @@ function updatePanels(payload) {
         { label: 'Eligible wallet', value: formatNumber(copyRuntimeAcceptance.eligible_copy_wallets_total, 0) },
         { label: 'Shadow-proven wallet', value: formatNumber(copyRuntimeAcceptance.shadow_proven_wallets, 0) },
         { label: 'Pilot Copy wallet', value: formatNumber(copyRuntimeAcceptance.pilot_copy_wallets ?? copyRuntimeAcceptance.manual_fast_track_wallets, 0) },
+        { label: 'Schema guard', value: copyRuntimeAcceptance.runtime_schema_guard_status || 'unknown' },
         { label: 'Runtime open action', value: copyRuntimeAcceptance.runtime_open_action_observed ? 'evet' : 'hayir' },
         { label: 'Runtime open position', value: copyRuntimeAcceptance.runtime_open_position_observed ? 'evet' : 'hayir' },
         { label: 'Runtime close action', value: copyRuntimeAcceptance.runtime_close_action_observed ? 'evet' : 'hayir' },
         { label: 'Replay closed', value: copyRuntimeAcceptance.runtime_replay_closed_observed ? 'evet' : 'hayir' },
         { label: 'Runtime action satiri', value: formatNumber(copyRuntimeAcceptance.runtime_action_rows, 0) },
+        { label: 'Runtime blocker', value: translateReason(copyRuntimeAcceptance.runtime_blocker_reason || copyRuntimeAcceptance.reason || 'runtime_copy_active'), long: true },
         { label: 'Reason', value: copyRuntimeAcceptance.reason || 'runtime_copy_active', long: true }
     ]);
     renderTable('active-copy-positions', [
