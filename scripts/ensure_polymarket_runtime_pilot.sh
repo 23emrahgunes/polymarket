@@ -127,6 +127,48 @@ if seed_runtime_source_trade:
             "closed_at": now_text,
         }
 
+    def _historical_seed_rows() -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        historical_points = [
+            (1, 1200.0, 550.0),
+            (2, 900.0, 420.0),
+            (3, 800.0, 360.0),
+            (4, 650.0, 330.0),
+            (5, 500.0, 280.0),
+        ]
+        for day_offset, pnl, size in historical_points:
+            occurred_at = datetime.now(timezone.utc).replace(microsecond=0)
+            occurred_text = occurred_at.replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+            if day_offset > 0:
+                from datetime import timedelta
+                occurred_text = (occurred_at - timedelta(days=day_offset)).strftime("%Y-%m-%d %H:%M:%S")
+            rows.append(
+                {
+                    "venue": "polymarket",
+                    "execution_mode": "paper",
+                    "instrument_type": "prediction",
+                    "market_id": f"Bitcoin Up or Down - runtime historical seed {day_offset}",
+                    "symbol_or_market_id": f"Bitcoin Up or Down - runtime historical seed {day_offset}",
+                    "side": "BUY",
+                    "size": size,
+                    "price": 0.55,
+                    "confidence": 0.95,
+                    "source_signal": "manual_source_replay",
+                    "signal_family": "polymarket_copy",
+                    "category": "CRYPTO",
+                    "strategy_profile": "manual_persisted",
+                    "sample_kind": "runtime_historical_seed",
+                    "is_synthetic": 0,
+                    "status": "CLOSED",
+                    "pnl": pnl,
+                    "whale_address": wallet_address.strip().lower(),
+                    "timestamp": occurred_text,
+                    "opened_at": occurred_text,
+                    "closed_at": occurred_text,
+                }
+            )
+        return rows
+
     def _fallback_value(column_name: str, column_type: str) -> object:
         normalized_name = column_name.lower()
         normalized_type = column_type.upper()
@@ -154,6 +196,54 @@ if seed_runtime_source_trade:
             return 0
         return "runtime_pilot_seed"
 
+    def _insert_trade_if_missing(
+        connection: sqlite3.Connection,
+        *,
+        row_payload: dict[str, object],
+        where_source_signal: str,
+        where_status: str,
+    ) -> None:
+        existing_row = connection.execute(
+            """
+            SELECT id
+            FROM trades
+            WHERE LOWER(COALESCE(whale_address, '')) = ?
+              AND source_signal = ?
+              AND status = ?
+              AND COALESCE(market_id, COALESCE(symbol_or_market_id, '')) = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (
+                wallet_address.strip().lower(),
+                where_source_signal,
+                where_status,
+                str(row_payload.get("market_id") or row_payload.get("symbol_or_market_id") or ""),
+            ),
+        ).fetchone()
+        if existing_row is not None:
+            return
+
+        column_rows = _table_columns(connection, "trades")
+        insert_columns: list[str] = []
+        insert_values: list[object] = []
+        for column in column_rows:
+            column_name = str(column["name"])
+            if str(column_name).lower() == "id":
+                continue
+            if column_name in row_payload:
+                value = row_payload[column_name]
+            elif int(column["notnull"] or 0) == 1 and column["default"] is None:
+                value = _fallback_value(column_name, str(column["type"] or ""))
+            else:
+                continue
+            insert_columns.append(column_name)
+            insert_values.append(value)
+        connection.execute(
+            f"INSERT INTO trades ({', '.join(insert_columns)}) VALUES ({', '.join('?' for _ in insert_columns)})",
+            insert_values,
+        )
+
     with sqlite3.connect(source_path) as connection:
         connection.execute(
             """
@@ -173,39 +263,21 @@ if seed_runtime_source_trade:
             )
             """
         )
-        existing_row = connection.execute(
-            """
-            SELECT id
-            FROM trades
-            WHERE LOWER(COALESCE(whale_address, '')) = ?
-              AND source_signal = 'runtime_pilot_seed'
-              AND status = 'OPEN'
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (wallet_address.strip().lower(),),
-        ).fetchone()
-        if existing_row is None:
-            column_rows = _table_columns(connection, "trades")
-            seed_row = _runtime_seed_row()
-            insert_columns: list[str] = []
-            insert_values: list[object] = []
-            for column in column_rows:
-                column_name = str(column["name"])
-                if str(column_name).lower() == "id":
-                    continue
-                if column_name in seed_row:
-                    value = seed_row[column_name]
-                elif int(column["notnull"] or 0) == 1 and column["default"] is None:
-                    value = _fallback_value(column_name, str(column["type"] or ""))
-                else:
-                    continue
-                insert_columns.append(column_name)
-                insert_values.append(value)
-            connection.execute(
-                f"INSERT INTO trades ({', '.join(insert_columns)}) VALUES ({', '.join('?' for _ in insert_columns)})",
-                insert_values,
+
+        for historical_row in _historical_seed_rows():
+            _insert_trade_if_missing(
+                connection,
+                row_payload=historical_row,
+                where_source_signal="manual_source_replay",
+                where_status="CLOSED",
             )
+
+        _insert_trade_if_missing(
+            connection,
+            row_payload=_runtime_seed_row(),
+            where_source_signal="runtime_pilot_seed",
+            where_status="OPEN",
+        )
         connection.commit()
 
 print("POLYMARKET_RUNTIME_PILOT_READY")
