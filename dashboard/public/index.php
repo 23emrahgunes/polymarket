@@ -440,6 +440,23 @@ $laneBodyClass = $researchOnly
         .metric-value { font-weight: 700; max-width: 52%; text-align: right; }
         .metric-item.stacked { flex-direction: column; }
         .metric-item.stacked .metric-value { max-width: 100%; text-align: left; line-height: 1.45; font-weight: 600; }
+        .operator-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; margin-bottom: 18px; }
+        .operator-card {
+            grid-column: span 6; padding: 18px; border: 1px solid rgba(65, 211, 189, 0.22); border-radius: 18px;
+            background: linear-gradient(145deg, rgba(65, 211, 189, 0.09), rgba(8, 20, 30, 0.92));
+            box-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
+        }
+        .operator-card.wide { grid-column: span 12; }
+        .operator-kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+        .operator-kpi { padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255, 255, 255, 0.025); }
+        .operator-kpi-label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; }
+        .operator-kpi-value { margin-top: 8px; font-size: 1.45rem; font-weight: 800; }
+        .operator-kpi-note { margin-top: 4px; color: var(--muted); font-size: 0.86rem; }
+        .operator-proof { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+        .proof-pill { padding: 10px 12px; border-radius: 999px; border: 1px solid var(--line); font-weight: 800; text-align: center; }
+        .proof-pill.good { color: #8ff0c7; border-color: rgba(143, 240, 199, 0.45); background: rgba(34, 197, 94, 0.1); }
+        .proof-pill.bad { color: #ffd18a; border-color: rgba(255, 209, 138, 0.38); background: rgba(245, 158, 11, 0.09); }
+        .operator-detail-note { margin-top: 12px; color: var(--muted); font-size: 0.9rem; }
         .truncate-text {
             display: block;
             max-width: 100%;
@@ -465,6 +482,8 @@ $laneBodyClass = $researchOnly
         @media (max-width: 1100px) {
             .panel-half, .panel-third, .panel-tertiary, .panel-primary, .panel-secondary { grid-column: span 12; }
             .panel-inline-grid { grid-template-columns: 1fr; }
+            .operator-card { grid-column: span 12; }
+            .operator-kpi-row, .operator-proof { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
     </style>
 </head>
@@ -496,12 +515,12 @@ $laneBodyClass = $researchOnly
 
     <section class="tabs-shell" id="dashboard-tabs">
         <div class="tabs-bar" role="tablist" aria-label="Dashboard sekmeleri">
-            <button class="tab-button" type="button" data-tab-trigger="polymarket-research">Polymarket Research</button>
+            <button class="tab-button" type="button" data-tab-trigger="polymarket-research">Ana Panel</button>
             <?php if (!$binanceOnly): ?>
-                <button class="tab-button" type="button" data-tab-trigger="polymarket-copy">Polymarket Copy</button>
+                <button class="tab-button" type="button" data-tab-trigger="polymarket-copy">Detay / Teknik Kanit</button>
             <?php endif; ?>
             <?php if (!$researchOnly): ?>
-                <button class="tab-button" type="button" data-tab-trigger="binance-technical">Binance Technical</button>
+                <button class="tab-button" type="button" data-tab-trigger="binance-technical">Ana Panel</button>
             <?php endif; ?>
             <button class="tab-button" type="button" data-tab-trigger="sozluk-aciklamalar">Sözlük / Açıklamalar</button>
         </div>
@@ -519,8 +538,40 @@ $laneBodyClass = $researchOnly
     </section>
 
     <section class="grid">
-        <div class="section-marker" data-tab="polymarket-research"><span class="section-label">Polymarket Research</span></div>
+        <div class="section-marker" data-tab="polymarket-research"><span class="section-label">Polymarket Operator Panel</span></div>
         <article class="panel panel-wide" data-tab="polymarket-research">
+            <div class="panel-header"><h2>Polymarket Paper Trader Paneli</h2><span class="badge info">Operator</span></div>
+            <p class="panel-copy">Bu ilk blok teknik detay degil; hangi cuzdan izleniyor, paper copy acik mi, kar/zarar ve acik islemler ne durumda onu gosterir.</p>
+            <div class="operator-grid">
+                <div class="operator-card wide">
+                    <div class="operator-kpi-row" id="polymarket-operator-kpis"></div>
+                    <div class="operator-detail-note" id="polymarket-operator-note">Paper copy durumu yukleniyor...</div>
+                </div>
+                <div class="operator-card">
+                    <div class="subcard-header"><h3 class="subcard-title">Cuzdan / Copy Durumu</h3><span class="badge info">Watch</span></div>
+                    <div class="metric-list" id="polymarket-wallet-copy-status"></div>
+                </div>
+                <div class="operator-card">
+                    <div class="subcard-header"><h3 class="subcard-title">Paper Copy Performansi</h3><span class="badge warn">PnL</span></div>
+                    <div class="metric-list" id="polymarket-paper-copy-performance"></div>
+                </div>
+                <div class="operator-card wide">
+                    <div class="subcard-header"><h3 class="subcard-title">Sistem Calisma Kaniti</h3><span class="badge info">Paper</span></div>
+                    <div class="operator-proof" id="polymarket-work-proof"></div>
+                    <div class="operator-detail-note">Test kaniti sadece tesisati dogrular; ana PnL ve basari yuzdesine dahil edilmez.</div>
+                </div>
+            </div>
+        </article>
+        <article class="panel panel-half" data-tab="polymarket-research">
+            <div class="panel-header"><h2>Acik Paper Islemler</h2><span class="badge info">Copy</span></div>
+            <div id="polymarket-operator-open-trades"></div>
+        </article>
+        <article class="panel panel-half" data-tab="polymarket-research">
+            <div class="panel-header"><h2>Son Kapanan Islemler</h2><span class="badge info">PnL</span></div>
+            <div id="polymarket-operator-closed-trades"></div>
+        </article>
+        <div class="section-marker" data-tab="polymarket-copy"><span class="section-label">Polymarket Detay / Teknik Kanit</span></div>
+        <article class="panel panel-wide" data-tab="polymarket-copy">
             <div class="panel-header"><h2>Discovery Hunisi</h2><span class="badge info">50 / 20 / 5</span></div>
             <p class="panel-copy">Bu lane trade acmaz. Once aday cüzdan toplar, sonra shadow cohort ile takip eder, en son copy-ready kisa listeyi cikarir.</p>
             <div class="panel-subgrid">
@@ -590,21 +641,21 @@ $laneBodyClass = $researchOnly
                 </div>
             </div>
         </article>
-        <article class="panel panel-wide" data-tab="polymarket-research">
+        <article class="panel panel-wide" data-tab="polymarket-copy">
             <div class="panel-header"><h2>Oncelikli Izleme Listesi</h2><span class="badge warn">Curated</span></div>
             <p class="panel-copy">Burada elle oncelik verdigimiz uzman adaylari gorulur. Manual link, dogrulanmis cuzdan adresini handle kaydina elle baglar; adresi cozulmemis adaylar discovery ve shadow sayilarini bozmaz.</p>
             <div id="priority-watchlist"></div>
         </article>
-        <article class="panel panel-wide" data-tab="polymarket-research">
+        <article class="panel panel-wide" data-tab="polymarket-copy">
             <div class="panel-header"><h2>Cuzdan Tutarlilik Tablosu</h2><span class="badge info">Top Cohort</span></div>
             <p class="panel-copy">Bu tabloda cüzdanin en baskin kaynagi, hangi listelerde gorundugu ve shadow cohorta neden girdigi ya da giremedigi birlikte gorulur.</p>
             <div id="wallet-consistency-table"></div>
         </article>
-        <article class="panel panel-wide" data-tab="polymarket-research">
+        <article class="panel panel-wide" data-tab="polymarket-copy">
             <div class="panel-header"><h2>Copy-ready Kisa Liste</h2><span class="badge warn">Only If Proven</span></div>
             <div id="copy-ready-wallets"></div>
         </article>
-        <article class="panel panel-wide" data-tab="polymarket-research">
+        <article class="panel panel-wide" data-tab="polymarket-copy">
             <div class="panel-header"><h2>Son Shadow Aksiyonlari</h2><span class="badge info">Recent</span></div>
             <div id="recent-shadow-actions"></div>
         </article>
@@ -652,8 +703,40 @@ $laneBodyClass = $researchOnly
         </article>
 
         <?php if (!$researchOnly): ?>
-            <div class="section-marker" data-tab="binance-technical"><span class="section-label">Binance Technical</span></div>
+            <div class="section-marker" data-tab="binance-technical"><span class="section-label">Binance Operator Panel</span></div>
             <article class="panel panel-wide" data-tab="binance-technical">
+                <div class="panel-header"><h2>Binance Paper Trader Paneli</h2><span class="badge info">Operator</span></div>
+                <p class="panel-copy">Bu ilk blok teknik skor detayi degil; paper PnL, acik/kapanan islem ve futures/spot calisma kanitini gosterir.</p>
+                <div class="operator-grid">
+                    <div class="operator-card wide">
+                        <div class="operator-kpi-row" id="binance-operator-kpis"></div>
+                        <div class="operator-detail-note" id="binance-operator-note">Binance paper durumu yukleniyor...</div>
+                    </div>
+                    <div class="operator-card">
+                        <div class="subcard-header"><h3 class="subcard-title">Paper Bakiye / PnL</h3><span class="badge warn">7 Gun</span></div>
+                        <div class="metric-list" id="binance-paper-pnl"></div>
+                    </div>
+                    <div class="operator-card">
+                        <div class="subcard-header"><h3 class="subcard-title">Kapanan Islemler</h3><span class="badge info">Win Rate</span></div>
+                        <div class="metric-list" id="binance-closed-summary"></div>
+                    </div>
+                    <div class="operator-card wide">
+                        <div class="subcard-header"><h3 class="subcard-title">Calisma Kaniti</h3><span class="badge info">Paper</span></div>
+                        <div class="operator-proof" id="binance-work-proof"></div>
+                        <div class="operator-detail-note">Spot SHORT bilincli olarak desteklenmez; yesil reject, korumanin calistigini gosterir.</div>
+                    </div>
+                </div>
+            </article>
+            <article class="panel panel-half" data-tab="binance-technical">
+                <div class="panel-header"><h2>Acik Islemler</h2><span class="badge info">Futures / Spot</span></div>
+                <div id="binance-operator-open-trades"></div>
+            </article>
+            <article class="panel panel-half" data-tab="binance-technical">
+                <div class="panel-header"><h2>Son Kapanan Islemler</h2><span class="badge info">PnL</span></div>
+                <div id="binance-operator-closed-trades"></div>
+            </article>
+            <div class="section-marker" data-tab="sozluk-aciklamalar"><span class="section-label">Binance Detay / Teknik Kanit</span></div>
+            <article class="panel panel-wide" data-tab="sozluk-aciklamalar">
                 <div class="panel-header"><h2>Fresh 7g Paper PnL</h2><span class="badge warn">Main Metric</span></div>
                 <div class="panel-subgrid">
                     <div class="subcard">
@@ -680,7 +763,7 @@ $laneBodyClass = $researchOnly
                     </div>
                 </div>
             </article>
-            <article class="panel panel-wide" data-tab="binance-technical">
+            <article class="panel panel-wide" data-tab="sozluk-aciklamalar">
                 <div class="panel-header"><h2>Skor Kalite Ozeti</h2><span class="badge info">Technical</span></div>
                 <div class="panel-subgrid">
                     <div class="subcard">
@@ -697,7 +780,7 @@ $laneBodyClass = $researchOnly
                     </div>
                 </div>
             </article>
-            <article class="panel panel-wide" data-tab="binance-technical">
+            <article class="panel panel-wide" data-tab="sozluk-aciklamalar">
                 <div class="panel-header"><h2>Pozisyon Baskisi ve Legacy Durum</h2><span class="badge warn">Capacity</span></div>
                 <div class="panel-subgrid">
                     <div class="subcard">
@@ -710,8 +793,8 @@ $laneBodyClass = $researchOnly
                     </div>
                 </div>
             </article>
-            <article class="panel panel-half" data-tab="binance-technical"><div class="panel-header"><h2>Acik Pozisyonlar</h2><span class="badge info">Venue</span></div><div id="open-positions"></div></article>
-            <article class="panel panel-half" data-tab="binance-technical"><div class="panel-header"><h2>Acik Emirler</h2><span class="badge info">Protection</span></div><div id="open-orders"></div></article>
+            <article class="panel panel-half" data-tab="sozluk-aciklamalar"><div class="panel-header"><h2>Acik Pozisyonlar</h2><span class="badge info">Venue</span></div><div id="open-positions"></div></article>
+            <article class="panel panel-half" data-tab="sozluk-aciklamalar"><div class="panel-header"><h2>Acik Emirler</h2><span class="badge info">Protection</span></div><div id="open-orders"></div></article>
         <?php endif; ?>
 
         <div class="section-marker" data-tab="sozluk-aciklamalar"><span class="section-label">Sozluk ve Log</span></div>
@@ -1209,6 +1292,142 @@ function renderMetrics(targetId, items) {
     }).join('');
 }
 
+function renderOperatorKpis(targetId, items) {
+    const target = document.getElementById(targetId);
+    if (!target) { return; }
+    target.innerHTML = items.map((item) => `
+        <div class="operator-kpi">
+            <div class="operator-kpi-label">${escapeHtml(item.label)}</div>
+            <div class="operator-kpi-value">${escapeHtml(item.value)}</div>
+            <div class="operator-kpi-note">${escapeHtml(item.note || '')}</div>
+        </div>
+    `).join('');
+}
+
+function renderProofPills(targetId, items) {
+    const target = document.getElementById(targetId);
+    if (!target) { return; }
+    target.innerHTML = items.map((item) => {
+        const ok = Boolean(item.ok);
+        return `<div class="proof-pill ${ok ? 'good' : 'bad'}">${ok ? 'OK' : 'Bekliyor'} - ${escapeHtml(item.label)}</div>`;
+    }).join('');
+}
+
+function formatWinRate(value, fallback = 'veri bekleniyor') {
+    if (value === null || value === undefined || value === '' || Number.isNaN(Number(value))) {
+        return fallback;
+    }
+    return `${formatNumber(value, 1)}%`;
+}
+
+function renderPolymarketOperatorSummary(payload) {
+    const operator = payload.polymarket_operator_summary || {};
+    const status = operator.wallet_copy_status || {};
+    const performance = operator.paper_copy_performance || {};
+    const proof = operator.work_proof || {};
+    renderOperatorKpis('polymarket-operator-kpis', [
+        { label: 'Ana cuzdan', value: status.main_wallet_name || 'ohanism', note: status.main_wallet_status || 'izleniyor' },
+        { label: 'Copy-ready', value: formatNumber(status.copy_ready_wallets, 0), note: `${formatNumber(status.eligible_copy_wallets_total, 0)} eligible` },
+        { label: 'Biz takip etseydik kar/zarar', value: formatNumber(performance.follower_realized_pnl, 2), note: 'Test kaniti haric' },
+        { label: 'Acik paper copy', value: formatNumber(performance.open_copy_positions, 0), note: performance.runtime_copy_active ? 'gercek paper akisi aktif' : translateReason(status.copy_blocker_reason || proof.reason) },
+    ]);
+    const note = document.getElementById('polymarket-operator-note');
+    if (note) {
+        note.textContent = performance.runtime_copy_active
+            ? 'Paper copy calisiyor: uygun cuzdan var ve gercek paper akisinda pozisyon/action goruldu.'
+            : `Copy motoru beklemede: ${translateReason(status.copy_blocker_reason || proof.reason || 'watch_only_needs_shadow_or_pilot_proof')}.`;
+    }
+    renderMetrics('polymarket-wallet-copy-status', [
+        { label: 'Izlenen cuzdan', value: formatNumber(status.watched_wallets, 0) },
+        { label: 'Linked cuzdan', value: formatNumber(status.linked_wallets, 0) },
+        { label: 'Ana cuzdan', value: status.main_wallet_name || 'ohanism' },
+        { label: 'Cuzdan adresi', value: status.main_wallet_address || 'adres bekleniyor', long: true },
+        { label: 'Gecikmeli takip avantaji', value: formatNumber(status.shadow_edge, 3) },
+        { label: 'Copy durumu', value: translateReason(status.copy_blocker_reason || proof.reason || 'eligible_copy_wallets_available'), long: true },
+    ]);
+    renderMetrics('polymarket-paper-copy-performance', [
+        { label: 'Biz takip etseydik kar/zarar', value: formatNumber(performance.follower_realized_pnl, 2) },
+        { label: 'Kaynak wallet PnL', value: formatNumber(performance.source_realized_pnl, 2) },
+        { label: 'Acik paper copy', value: formatNumber(performance.open_copy_positions, 0) },
+        { label: 'Kapanmis/replay islem', value: formatNumber(performance.closed_or_replay_actions, 0) },
+        { label: 'Basari yuzdesi', value: formatWinRate(performance.win_rate) },
+    ]);
+    renderProofPills('polymarket-work-proof', [
+        { label: 'Test kaniti', ok: proof.test_proof_passed },
+        { label: 'Gercek paper akisi', ok: proof.runtime_proof_passed },
+        { label: 'Open action', ok: proof.runtime_open_action_observed },
+        { label: 'Open position', ok: proof.runtime_open_position_observed },
+    ]);
+    renderTable('polymarket-operator-open-trades', [
+        { key: 'market_id', label: 'Market', mono: true, render: (row) => truncateHtml(row.market_id || '', 30) },
+        { key: 'side', label: 'Yon', render: (row) => escapeHtml(row.side || '') },
+        { key: 'follower_notional_usd', label: 'Notional', render: (row) => escapeHtml(formatNumber(row.follower_notional_usd, 2)) },
+        { key: 'opened_at', label: 'Acilis', mono: true, render: (row) => escapeHtml(row.opened_at || '') },
+        { key: 'wallet_address', label: 'Kaynak cuzdan', mono: true, render: (row) => truncateHtml(row.wallet_address || '', 18) },
+    ], operator.open_paper_trades || [], 'Copy icin izlenen cuzdan var, yeni paper islem bekleniyor.');
+    renderTable('polymarket-operator-closed-trades', [
+        { key: 'executed_at', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.executed_at || '') },
+        { key: 'market_id', label: 'Market', mono: true, render: (row) => truncateHtml(row.market_id || '', 28) },
+        { key: 'source_pnl', label: 'Kaynak PnL', render: (row) => escapeHtml(formatNumber(row.source_pnl, 2)) },
+        { key: 'follower_pnl', label: 'Bizim PnL', render: (row) => escapeHtml(formatNumber(row.follower_pnl, 2)) },
+        { key: 'source_status', label: 'Durum', render: (row) => escapeHtml(row.source_status || 'kapandi') },
+    ], operator.recent_closed_trades || [], 'Henuz kapanan paper copy islemi yok.');
+}
+
+function renderBinanceOperatorSummary(payload) {
+    const operator = payload.binance_operator_summary || {};
+    const pnl = operator.paper_balance_pnl || {};
+    const closed = operator.closed_trade_summary || {};
+    const proof = operator.work_proof || {};
+    renderOperatorKpis('binance-operator-kpis', [
+        { label: 'Fresh 7g PnL', value: formatNumber(pnl.fresh_7d_pnl, 2), note: 'Futures + spot paper' },
+        { label: 'Futures PnL', value: formatNumber(pnl.futures_pnl, 2), note: `${formatNumber(pnl.futures_execute_count, 0)} execute` },
+        { label: 'Spot PnL', value: formatNumber(pnl.spot_pnl, 2), note: `${formatNumber(pnl.spot_execute_count, 0)} execute` },
+        { label: 'Acik notional', value: formatNumber(pnl.open_notional_usd, 2), note: 'paper maruziyet' },
+    ]);
+    const note = document.getElementById('binance-operator-note');
+    if (note) {
+        note.textContent = proof.runtime_proof_passed
+            ? 'Binance paper runtime calisiyor: futures LONG/SHORT, spot LONG ve spot SHORT reject yollari goruldu.'
+            : `Binance paper runtime beklemede: ${proof.reason || 'runtime_paths_incomplete'}.`;
+    }
+    renderMetrics('binance-paper-pnl', [
+        { label: 'Fresh 7g PnL', value: formatNumber(pnl.fresh_7d_pnl, 2) },
+        { label: 'Futures PnL', value: formatNumber(pnl.futures_pnl, 2) },
+        { label: 'Spot PnL', value: formatNumber(pnl.spot_pnl, 2) },
+        { label: 'Toplam acik notional', value: formatNumber(pnl.open_notional_usd, 2) },
+    ]);
+    renderMetrics('binance-closed-summary', [
+        { label: 'Kapanmis islem', value: formatNumber(closed.closed_trades, 0) },
+        { label: 'Win', value: formatNumber(closed.wins, 0) },
+        { label: 'Loss', value: formatNumber(closed.losses, 0) },
+        { label: 'Realized PnL', value: formatNumber(closed.realized_pnl, 2) },
+        { label: 'Basari yuzdesi', value: formatWinRate(closed.win_rate) },
+    ]);
+    renderProofPills('binance-work-proof', [
+        { label: 'Futures LONG', ok: proof.futures_long_execute },
+        { label: 'Futures SHORT', ok: proof.futures_short_execute },
+        { label: 'Spot LONG', ok: proof.spot_long_execute },
+        { label: 'Spot SHORT reject', ok: proof.spot_short_reject },
+    ]);
+    renderTable('binance-operator-open-trades', [
+        { key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || '') },
+        { key: 'symbol_or_market_id', label: 'Sembol', mono: true, render: (row) => truncateHtml(row.symbol_or_market_id || row.market_id || '', 24) },
+        { key: 'side', label: 'Yon', render: (row) => escapeHtml(row.side || '') },
+        { key: 'notional_usd', label: 'Notional', render: (row) => escapeHtml(formatNumber(row.notional_usd ?? row.size, 2)) },
+        { key: 'unrealized_pnl', label: 'Anlik PnL', render: (row) => escapeHtml(formatNumber(row.unrealized_pnl, 2)) },
+        { key: 'opened_at', label: 'Acilis', mono: true, render: (row) => escapeHtml(row.opened_at || row.timestamp || '') },
+    ], operator.open_trades || [], 'Henuz acik Binance paper islemi yok.');
+    renderTable('binance-operator-closed-trades', [
+        { key: 'timestamp', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.closed_at || row.timestamp || '') },
+        { key: 'venue', label: 'Venue', render: (row) => escapeHtml(row.venue || '') },
+        { key: 'market_id', label: 'Sembol', mono: true, render: (row) => truncateHtml(row.symbol_or_market_id || row.market_id || '', 24) },
+        { key: 'side', label: 'Yon', render: (row) => escapeHtml(row.side || '') },
+        { key: 'pnl', label: 'Realized PnL', render: (row) => escapeHtml(formatNumber(row.pnl, 2)) },
+        { key: 'status', label: 'Durum', render: (row) => escapeHtml(row.status || '') },
+    ], operator.closed_trades || [], 'Henuz kapanan Binance paper islemi yok.');
+}
+
 function renderWarnings(warnings) {
     const panel = document.getElementById('warnings-panel');
     const list = document.getElementById('warnings-list');
@@ -1332,6 +1551,9 @@ function updateHeader(payload) {
 }
 
 function updatePanels(payload) {
+    renderPolymarketOperatorSummary(payload);
+    renderBinanceOperatorSummary(payload);
+
     renderTable('recent-decisions', [
         { key: 'occurred_at', label: 'Zaman', mono: true, render: (row) => escapeHtml(row.occurred_at || '') },
         { key: 'source', label: 'Kaynak', render: (row) => `<span class="badge ${badgeClass(row.action || row.raw_source_signal)}" title="${escapeHtml(row.raw_source_signal || row.signal_family || 'unknown')}">${escapeHtml(row.raw_source_signal || row.signal_family || 'unknown')}</span>` },

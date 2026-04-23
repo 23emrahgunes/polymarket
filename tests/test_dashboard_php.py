@@ -514,6 +514,8 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert 'wallet_follower_pnl_summary' in payload
     assert 'shadow_vs_copy_drift_summary' in payload
     assert 'recent_copy_actions' in payload
+    assert 'polymarket_operator_summary' in payload
+    assert 'binance_operator_summary' in payload
     assert payload['service']['name'] == 'ghost-trader'
     assert payload['runtime_summary']['tracked_whales'] == 3
     assert payload['runtime_summary']['total_trades'] == 2
@@ -625,6 +627,12 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['shadow_vs_copy_drift_summary']['copy_realized_pnl'] == 7.5
     assert payload['recent_copy_actions'][0]['reason'] == 'duplicate_market_exposure'
     assert payload['recent_copy_actions'][0]['cohort_source'] == 'shadow_proven'
+    assert payload['polymarket_operator_summary']['wallet_copy_status']['main_wallet_name'] == 'ohanism'
+    assert payload['polymarket_operator_summary']['wallet_copy_status']['copy_ready_wallets'] == 1
+    assert payload['polymarket_operator_summary']['paper_copy_performance']['open_copy_positions'] == 1
+    assert payload['polymarket_operator_summary']['work_proof']['test_proof_passed'] is False
+    assert payload['polymarket_operator_summary']['open_paper_trades'][0]['market_id'] == 'market-copy-1'
+    assert payload['polymarket_operator_summary']['recent_closed_trades'][0]['action_type'] == 'replay_closed'
     assert payload['priority_watchlist_rows'][0]['display_name'] == 'ohanism'
     assert payload['priority_watchlist_rows'][0]['profile_ref'] == 'https://polymarket.com/tr/@ohanism'
     assert payload['priority_watchlist_rows'][0]['identity_resolution_status'] == 'pending_resolution'
@@ -641,6 +649,11 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['fresh_pnl_summary_7d']['net_pnl'] == 0.0
     assert payload['fresh_pnl_summary_7d']['venues']['binance_futures']['execute_count'] == 0
     assert payload['fresh_pnl_summary_7d']['venues']['binance_spot']['execute_count'] == 0
+    assert payload['binance_operator_summary']['paper_balance_pnl']['fresh_7d_pnl'] == 0.0
+    assert payload['binance_operator_summary']['paper_balance_pnl']['open_notional_usd'] == 100.0
+    assert payload['binance_operator_summary']['open_trades'][0]['symbol_or_market_id'] == 'BTC/USDT:USDT'
+    assert payload['binance_operator_summary']['closed_trade_summary']['win_rate_label'] == 'veri bekleniyor'
+    assert payload['binance_operator_summary']['work_proof']['spot_short_reject'] is False
     assert payload['position_pressure_summary']['open_positions'] == 1
     assert 'open_binance_paper_positions' in payload['legacy_position_summary']['legacy_shape']
     assert payload['legacy_position_summary']['legacy_open_positions'] == []
@@ -1328,12 +1341,18 @@ def test_dashboard_prefers_runtime_status_snapshot_when_present(dashboard_server
 def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     response = _request(dashboard_server.base_url + '/index.php', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD))
     html = response.read().decode('utf-8')
-    assert 'Ghost Trader Operasyon Paneli' in html
-    assert 'Polymarket Research' in html
-    assert 'Polymarket Copy' in html
-    assert 'Binance Technical' in html
+    assert 'Ghost Trader Operasyon' in html
+    assert 'Ana Panel' in html
+    assert 'Detay / Teknik Kanit' in html
     assert ('Sözlük / Açıklamalar' in html) or ('SÃ¶zlÃ¼k / AÃ§Ä±klamalar' in html)
     assert 'Bu sekme neyi gosteriyor?' in html
+    assert 'Polymarket Paper Trader Paneli' in html
+    assert 'Binance Paper Trader Paneli' in html
+    assert 'Cuzdan / Copy Durumu' in html
+    assert 'Paper Copy Performansi' in html
+    assert 'Paper Bakiye / PnL' in html
+    assert 'Sistem Calisma Kaniti' in html
+    assert 'Calisma Kaniti' in html
     assert 'Discovery Hunisi' in html
     assert 'Discovery Wallet Ozeti' in html
     assert 'Shadow Cohort Ozeti' in html
@@ -1452,8 +1471,8 @@ def test_dashboard_research_lane_mode_hides_binance_tab_and_skips_report_warning
         html = response.read().decode('utf-8')
         assert 'lane-polymarket-research' in html
         assert 'DASHBOARD_TABS = ["polymarket-research","polymarket-copy","sozluk-aciklamalar"]' in html
-        assert 'Polymarket Copy' in html
-        assert 'Binance Technical' not in html
+        assert 'Detay / Teknik Kanit' in html
+        assert 'Binance Paper Trader Paneli' not in html
     finally:
         if process.poll() is None:
             process.terminate()

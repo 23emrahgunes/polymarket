@@ -3304,6 +3304,129 @@ function dashboard_build_binance_fresh_pnl_summary(PDO $pdo): array
     ];
 }
 
+function dashboard_build_polymarket_operator_summary(array $payload): array
+{
+    $copyExecution = is_array($payload['copy_execution_summary'] ?? null) ? $payload['copy_execution_summary'] : [];
+    $copyDrift = is_array($payload['shadow_vs_copy_drift_summary'] ?? null) ? $payload['shadow_vs_copy_drift_summary'] : [];
+    $copyRuntime = is_array($payload['copy_runtime_acceptance_summary'] ?? null) ? $payload['copy_runtime_acceptance_summary'] : [];
+    $copyAcceptance = is_array($payload['copy_acceptance_summary'] ?? null) ? $payload['copy_acceptance_summary'] : [];
+    $priorityRows = is_array($payload['priority_watchlist_rows'] ?? null) ? $payload['priority_watchlist_rows'] : [];
+    $activePositions = is_array($payload['active_copy_positions'] ?? null) ? $payload['active_copy_positions'] : [];
+    $recentActions = is_array($payload['recent_copy_actions'] ?? null) ? $payload['recent_copy_actions'] : [];
+    $walletPnlRows = is_array($payload['wallet_follower_pnl_summary'] ?? null) ? $payload['wallet_follower_pnl_summary'] : [];
+
+    $mainWallet = [];
+    foreach ($priorityRows as $row) {
+        if ((int) ($row['priority_rank'] ?? 0) === 1) {
+            $mainWallet = $row;
+            break;
+        }
+    }
+    if (empty($mainWallet) && !empty($priorityRows)) {
+        $mainWallet = $priorityRows[0];
+    }
+
+    $closedActions = array_values(array_filter(
+        $recentActions,
+        static fn (array $row): bool => in_array((string) ($row['action_type'] ?? ''), ['close', 'replay_closed'], true)
+    ));
+    $wins = count(array_filter($closedActions, static fn (array $row): bool => (float) ($row['follower_pnl'] ?? 0.0) > 0.0));
+    $winRate = count($closedActions) > 0 ? round(($wins / count($closedActions)) * 100.0, 1) : null;
+    $followerPnl = array_sum(array_map(static fn (array $row): float => (float) ($row['follower_realized_pnl'] ?? 0.0), $walletPnlRows));
+
+    return [
+        'wallet_copy_status' => [
+            'watched_wallets' => count($priorityRows),
+            'linked_wallets' => count(array_filter($priorityRows, static fn (array $row): bool => strtolower((string) ($row['identity_resolution_status'] ?? $row['status'] ?? '')) === 'linked')),
+            'copy_ready_wallets' => (int) ($copyExecution['copy_ready_wallets'] ?? 0),
+            'eligible_copy_wallets_total' => (int) ($copyExecution['eligible_copy_wallets_total'] ?? 0),
+            'main_wallet_name' => (string) ($mainWallet['display_name'] ?? 'ohanism'),
+            'main_wallet_address' => (string) ($mainWallet['wallet_address'] ?? ''),
+            'main_wallet_status' => (string) ($mainWallet['long_horizon_status'] ?? $mainWallet['status'] ?? 'priority_watch'),
+            'shadow_edge' => round((float) ($copyDrift['shadow_net_edge'] ?? ($payload['shadow_edge_summary']['net_shadow_edge'] ?? 0.0)), 4),
+            'copy_blocker_reason' => (string) ($copyExecution['copy_blocker_reason'] ?? 'no_eligible_copy_wallets'),
+        ],
+        'paper_copy_performance' => [
+            'follower_realized_pnl' => round($followerPnl, 4),
+            'source_realized_pnl' => round((float) ($copyDrift['source_realized_pnl'] ?? 0.0), 4),
+            'open_copy_positions' => count($activePositions),
+            'closed_or_replay_actions' => (int) ($copyExecution['replay_closed_actions'] ?? 0) + (int) ($copyExecution['close_actions'] ?? 0),
+            'win_rate' => $winRate,
+            'win_rate_label' => $winRate === null ? 'veri bekleniyor' : ((string) $winRate . '%'),
+            'runtime_copy_active' => (bool) ($copyRuntime['all_checks_passed'] ?? false),
+            'test_proof_active' => (bool) ($copyAcceptance['all_checks_passed'] ?? false),
+        ],
+        'open_paper_trades' => array_slice($activePositions, 0, 6),
+        'recent_closed_trades' => array_slice($closedActions, 0, 6),
+        'work_proof' => [
+            'test_proof_passed' => (bool) ($copyAcceptance['all_checks_passed'] ?? false),
+            'runtime_proof_passed' => (bool) ($copyRuntime['all_checks_passed'] ?? false),
+            'runtime_open_action_observed' => (bool) ($copyRuntime['runtime_open_action_observed'] ?? false),
+            'runtime_open_position_observed' => (bool) ($copyRuntime['runtime_open_position_observed'] ?? false),
+            'reason' => (string) ($copyRuntime['reason'] ?? $copyRuntime['runtime_blocker_reason'] ?? 'runtime_copy_active'),
+            'fixture_note' => 'Test kaniti ana performansa dahil edilmez.',
+        ],
+    ];
+}
+
+function dashboard_build_binance_operator_summary(array $payload): array
+{
+    $freshPnl = is_array($payload['fresh_pnl_summary_7d'] ?? null) ? $payload['fresh_pnl_summary_7d'] : [];
+    $venues = is_array($freshPnl['venues'] ?? null) ? $freshPnl['venues'] : [];
+    $futuresPnl = is_array($venues['binance_futures'] ?? null) ? $venues['binance_futures'] : [];
+    $spotPnl = is_array($venues['binance_spot'] ?? null) ? $venues['binance_spot'] : [];
+    $positionPressure = is_array($payload['position_pressure_summary'] ?? null) ? $payload['position_pressure_summary'] : [];
+    $acceptance = is_array($payload['technical_acceptance_summary'] ?? null) ? $payload['technical_acceptance_summary'] : [];
+    $runtime = is_array($payload['technical_runtime_acceptance_summary'] ?? null) ? $payload['technical_runtime_acceptance_summary'] : [];
+    $openPositions = is_array($payload['open_positions'] ?? null) ? $payload['open_positions'] : [];
+    $recentTrades = is_array($payload['recent_trades'] ?? null) ? $payload['recent_trades'] : [];
+
+    $openTechnical = array_values(array_filter(
+        $openPositions,
+        static fn (array $row): bool => in_array((string) ($row['venue'] ?? ''), ['binance_futures', 'binance_spot'], true)
+    ));
+    $closedTechnical = array_values(array_filter(
+        $recentTrades,
+        static fn (array $row): bool => in_array((string) ($row['venue'] ?? ''), ['binance_futures', 'binance_spot'], true)
+            && str_starts_with(strtoupper((string) ($row['status'] ?? '')), 'CLOSED')
+            && (string) ($row['sample_kind'] ?? '') !== 'acceptance_fixture'
+    ));
+    $wins = count(array_filter($closedTechnical, static fn (array $row): bool => (float) ($row['pnl'] ?? 0.0) > 0.0));
+    $winRate = count($closedTechnical) > 0 ? round(($wins / count($closedTechnical)) * 100.0, 1) : null;
+
+    return [
+        'paper_balance_pnl' => [
+            'fresh_window_days' => (int) ($freshPnl['fresh_window_days'] ?? 7),
+            'fresh_7d_pnl' => round((float) ($freshPnl['net_pnl'] ?? 0.0), 4),
+            'futures_pnl' => round((float) ($futuresPnl['net_pnl'] ?? 0.0), 4),
+            'spot_pnl' => round((float) ($spotPnl['net_pnl'] ?? 0.0), 4),
+            'open_notional_usd' => round((float) ($positionPressure['open_notional_usd'] ?? 0.0), 4),
+            'futures_execute_count' => (int) ($futuresPnl['execute_count'] ?? 0),
+            'spot_execute_count' => (int) ($spotPnl['execute_count'] ?? 0),
+        ],
+        'open_trades' => array_slice($openTechnical, 0, 6),
+        'closed_trades' => array_slice($closedTechnical, 0, 6),
+        'closed_trade_summary' => [
+            'closed_trades' => count($closedTechnical),
+            'wins' => $wins,
+            'losses' => count($closedTechnical) - $wins,
+            'realized_pnl' => round(array_sum(array_map(static fn (array $row): float => (float) ($row['pnl'] ?? 0.0), $closedTechnical)), 4),
+            'win_rate' => $winRate,
+            'win_rate_label' => $winRate === null ? 'veri bekleniyor' : ((string) $winRate . '%'),
+        ],
+        'work_proof' => [
+            'test_proof_passed' => (bool) ($acceptance['all_checks_passed'] ?? false),
+            'runtime_proof_passed' => (bool) ($runtime['all_checks_passed'] ?? false),
+            'futures_long_execute' => (bool) (($runtime['runtime_futures_long_execute'] ?? false) || ($acceptance['futures_long_execute'] ?? false)),
+            'futures_short_execute' => (bool) (($runtime['runtime_futures_short_execute'] ?? false) || ($acceptance['futures_short_execute'] ?? false)),
+            'spot_long_execute' => (bool) (($runtime['runtime_spot_long_execute'] ?? false) || ($acceptance['spot_long_execute'] ?? false)),
+            'spot_short_reject' => (bool) (($runtime['runtime_spot_short_reject'] ?? false) || ($acceptance['spot_short_reject'] ?? false)),
+            'reason' => (string) ($runtime['reason'] ?? 'runtime_paths_incomplete'),
+            'fixture_note' => 'Test kaniti ana fresh PnL hesabina dahil edilmez.',
+        ],
+    ];
+}
+
 function dashboard_build_binance_lane_summary(array $payload): array
 {
     $freshSummary = $payload['binance_technical_fresh_summary'] ?? [];
@@ -3472,6 +3595,8 @@ function dashboard_augment_payload(array $payload): array
         $payload = array_merge($payload, dashboard_build_polymarket_research_summary($pdo));
         $payload = array_merge($payload, dashboard_build_polymarket_copy_summary($pdo));
         $payload = array_merge($payload, dashboard_build_binance_lane_summary($payload));
+        $payload['polymarket_operator_summary'] = dashboard_build_polymarket_operator_summary($payload);
+        $payload['binance_operator_summary'] = dashboard_build_binance_operator_summary($payload);
         $payload['dashboard_tab_help'] = dashboard_build_dashboard_tab_help();
         $payload['dashboard_glossary'] = dashboard_build_dashboard_glossary();
         $payload = dashboard_augment_recent_decisions($pdo, $payload);
@@ -3519,6 +3644,8 @@ function dashboard_augment_payload(array $payload): array
         $payload = array_merge($payload, dashboard_build_polymarket_research_summary(new PDO('sqlite::memory:')));
         $payload = array_merge($payload, dashboard_build_polymarket_copy_summary(new PDO('sqlite::memory:')));
         $payload = array_merge($payload, dashboard_build_binance_lane_summary($payload));
+        $payload['polymarket_operator_summary'] = dashboard_build_polymarket_operator_summary($payload);
+        $payload['binance_operator_summary'] = dashboard_build_binance_operator_summary($payload);
         $payload['dashboard_tab_help'] = dashboard_build_dashboard_tab_help();
         $payload['dashboard_glossary'] = dashboard_build_dashboard_glossary();
         $payload['runtime_summary'] = array_merge(
