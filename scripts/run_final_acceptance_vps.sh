@@ -35,6 +35,7 @@ fi
 
 pushd "$RESEARCH_REPO_DIR" >/dev/null
 POLYMARKET_RUNTIME_SEED_OPEN_TRADE=true bash scripts/ensure_polymarket_runtime_pilot.sh >/tmp/polymarket_runtime_pilot.out
+python scripts/query_polymarket_research.py summary --db-path "$RESEARCH_DB_PATH" --source-db-path "$RESEARCH_SOURCE_DB_PATH" >/tmp/polymarket_research_summary.out
 python scripts/query_polymarket_copy_lane.py acceptance-run --db-path "$RESEARCH_DB_PATH" --source-db-path "$RESEARCH_SOURCE_DB_PATH" >/tmp/polymarket_acceptance_run.out
 python scripts/query_polymarket_copy_lane.py acceptance-summary --db-path "$RESEARCH_DB_PATH" --source-db-path "$RESEARCH_SOURCE_DB_PATH" >/tmp/polymarket_acceptance_summary.out
 python scripts/query_polymarket_copy_lane.py run-once --db-path "$RESEARCH_DB_PATH" --source-db-path "$RESEARCH_SOURCE_DB_PATH" >/tmp/polymarket_run_once.out

@@ -47,6 +47,7 @@ def test_polymarket_runtime_pilot_helper_exists_and_seeds_linked_priority_wallet
 def test_final_acceptance_vps_script_requires_runtime_green() -> None:
     text = _read("scripts/run_final_acceptance_vps.sh")
     assert "ensure_polymarket_runtime_pilot.sh" in text
+    assert "query_polymarket_research.py summary" in text
     assert "query_polymarket_copy_lane.py run-once" in text
     assert 'poly_runtime.get("all_checks_passed")' in text
     assert 'poly_runtime.get("runtime_open_action_observed")' in text
