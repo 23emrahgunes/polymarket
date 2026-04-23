@@ -1344,7 +1344,7 @@ def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     assert 'Ghost Trader Operasyon' in html
     assert 'Ana Panel' in html
     assert 'Detay / Teknik Kanit' in html
-    assert ('Sözlük / Açıklamalar' in html) or ('SÃ¶zlÃ¼k / AÃ§Ä±klamalar' in html)
+    assert ('Sozluk / Aciklamalar' in html) or ('Sözlük / Açıklamalar' in html) or ('SÃ¶zlÃ¼k / AÃ§Ä±klamalar' in html)
     assert 'Bu sekme neyi gosteriyor?' in html
     assert 'Polymarket Paper Trader Paneli' in html
     assert 'Binance Paper Trader Paneli' in html
@@ -1471,8 +1471,68 @@ def test_dashboard_research_lane_mode_hides_binance_tab_and_skips_report_warning
         html = response.read().decode('utf-8')
         assert 'lane-polymarket-research' in html
         assert 'DASHBOARD_TABS = ["polymarket-research","polymarket-copy","sozluk-aciklamalar"]' in html
+        assert "const DEFAULT_TAB = DASHBOARD_TABS[0] || 'polymarket-research';" in html
         assert 'Detay / Teknik Kanit' in html
+        assert 'Polymarket Research paneli: aday cüzdan, shadow takip ve copy-ready kanıtı.' in html
         assert 'Binance Paper Trader Paneli' not in html
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+
+def test_dashboard_binance_lane_mode_uses_binance_default_tab(tmp_path: Path):
+    if PHP_BIN is None:
+        pytest.skip('php is not available in PATH')
+
+    db_path = tmp_path / 'dashboard.db'
+    _create_dashboard_db(db_path)
+    port = _find_free_port()
+    env = os.environ.copy()
+    env.update(
+        {
+            'GHOST_TRADER_REPO_ROOT': str(REPO_ROOT),
+            'GHOST_TRADER_DB_PATH': str(db_path),
+            'DASHBOARD_USER': DASHBOARD_USER,
+            'DASHBOARD_PASSWORD_HASH': DASHBOARD_HASH,
+            'DASHBOARD_REFRESH_SECONDS': '1',
+            'DASHBOARD_LOG_LINES': '5',
+            'DASHBOARD_LANE_MODE': 'binance_technical',
+        }
+    )
+
+    process = subprocess.Popen(
+        [PHP_BIN, '-S', f'127.0.0.1:{port}', '-t', str(REPO_ROOT / 'dashboard' / 'public')],
+        cwd=str(REPO_ROOT),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    base_url = f'http://127.0.0.1:{port}'
+    try:
+        started = False
+        for _ in range(40):
+            try:
+                _request(base_url + '/api.php', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD)).close()
+                started = True
+                break
+            except Exception:
+                time.sleep(0.1)
+        assert started
+
+        response = _request(base_url + '/', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD))
+        html = response.read().decode('utf-8')
+        assert 'lane-binance-technical' in html
+        assert 'DASHBOARD_TABS = ["binance-technical","sozluk-aciklamalar"]' in html
+        assert "const DEFAULT_TAB = DASHBOARD_TABS[0] || 'polymarket-research';" in html
+        assert 'Binance Technical paneli: fresh paper PnL, skor kalitesi ve pozisyon baskisi.' in html
+        assert 'Binance Paper Trader Paneli' in html
+        assert 'Polymarket Paper Trader Paneli' not in html
+        assert 'Detay / Teknik Kanit' in html
     finally:
         if process.poll() is None:
             process.terminate()

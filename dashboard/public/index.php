@@ -10,6 +10,7 @@ $refreshSeconds = max(dashboard_int_env('DASHBOARD_REFRESH_SECONDS', 5), 2);
 $laneMode = dashboard_lane_mode();
 $researchOnly = $laneMode === 'polymarket_research';
 $binanceOnly = $laneMode === 'binance_technical';
+$showGlobalSummary = !$researchOnly && !$binanceOnly;
 $heroTitle = $researchOnly
     ? 'Polymarket Research paneli: aday cüzdan, shadow takip ve copy-ready kanıtı.'
     : 'Canlı çalışma zamanı, mapping sağlığı ve strateji kanıtı tek ekranda.';
@@ -20,16 +21,16 @@ $dashboardTabs = $researchOnly
     ? ['polymarket-research', 'polymarket-copy', 'sozluk-aciklamalar']
     : ['polymarket-research', 'polymarket-copy', 'binance-technical', 'sozluk-aciklamalar'];
 $dashboardTabLabels = $researchOnly
-    ? ['polymarket-research' => 'Polymarket Research', 'polymarket-copy' => 'Polymarket Copy', 'sozluk-aciklamalar' => 'Sozluk / Aciklamalar']
-    : ['polymarket-research' => 'Polymarket Research', 'polymarket-copy' => 'Polymarket Copy', 'binance-technical' => 'Binance Technical', 'sozluk-aciklamalar' => 'Sozluk / Aciklamalar'];
+    ? ['polymarket-research' => 'Ana Panel', 'polymarket-copy' => 'Detay / Teknik Kanit', 'sozluk-aciklamalar' => 'Sozluk / Aciklamalar']
+    : ['polymarket-research' => 'Polymarket Ana Panel', 'polymarket-copy' => 'Polymarket Detay', 'binance-technical' => 'Binance Ana Panel', 'sozluk-aciklamalar' => 'Sozluk / Aciklamalar'];
 
 if ($binanceOnly) {
     $heroTitle = 'Binance Technical paneli: fresh paper PnL, skor kalitesi ve pozisyon baskisi.';
     $heroCopy = 'Bu panel yalnizca Binance technical lane icin taze paper performansini, spread/source-quality teshisini, pozisyon baskisini ve exit akislarini sade bicimde gosterir.';
     $dashboardTabs = ['binance-technical', 'sozluk-aciklamalar'];
     $dashboardTabLabels = [
-        'binance-technical' => 'Binance Technical',
-        'sozluk-aciklamalar' => 'Sozluk / Aciklamalar',
+        'binance-technical' => 'Ana Panel',
+        'sozluk-aciklamalar' => 'Detay / Teknik Kanit',
     ];
 }
 
@@ -153,6 +154,21 @@ $laneBodyClass = $researchOnly
         body.lane-binance-technical [data-tab-trigger="polymarket-copy"],
         body.lane-binance-technical [data-tab="polymarket-copy"] {
             display: none !important;
+        }
+        body.lane-polymarket-research .hero-card,
+        body.lane-binance-technical .hero-card {
+            padding: 18px 20px;
+            margin-bottom: 14px;
+        }
+        body.lane-polymarket-research h1,
+        body.lane-binance-technical h1 {
+            font-size: clamp(1.55rem, 1.8vw, 2rem);
+        }
+        body.lane-polymarket-research .hero-sub,
+        body.lane-binance-technical .hero-sub {
+            margin-top: 8px;
+            max-width: none;
+            font-size: 0.95rem;
         }
         .hero-card {
             background: linear-gradient(180deg, rgba(13, 27, 40, 0.95), rgba(9, 20, 30, 0.9));
@@ -492,26 +508,28 @@ $laneBodyClass = $researchOnly
     <section class="hero-card">
         <div class="hero-top">
             <div>
-                <div class="eyebrow">Ghost Trader Operasyon</div>
-                <h1>Canlı çalışma zamanı, mapping sağlığı ve strateji kanıtı tek ekranda.</h1>
+                <div class="eyebrow"><?= dashboard_html($researchOnly ? 'Polymarket Paper Copy' : ($binanceOnly ? 'Binance Technical Paper' : 'Ghost Trader Operasyon')) ?></div>
+                <h1><?= dashboard_html($heroTitle) ?></h1>
             </div>
             <div class="badge info" id="last-refresh-badge">Her <?= dashboard_html((string) $refreshSeconds) ?> saniyede yenileniyor</div>
         </div>
-        <p class="hero-sub">Çalışma zamanı sağlığı, çoklu venue durumu, karar denetim akışı, market eşleme kapsamı ve temkinli performans verdict’i için salt-okunur operasyon paneli.</p>
+        <p class="hero-sub"><?= dashboard_html($heroCopy) ?></p>
     </section>
 
     <div class="status-banner" id="status-banner"></div>
     <div class="warnings" id="warnings-panel"><strong>Uyarılar</strong><ul id="warnings-list"></ul></div>
 
-    <div class="section-marker" data-tab="genel-bakis"><span class="section-label">Özet</span></div>
-    <section class="stats">
-        <article class="stat-card"><div class="stat-label">Servis</div><div class="stat-value" id="service-status">...</div><div class="stat-note" id="service-name">ghost-trader</div></article>
-        <article class="stat-card"><div class="stat-label">Toplam İşlem</div><div class="stat-value" id="total-trades">0</div><div class="stat-note" id="open-state-note">0 açık pozisyon / 0 açık emir</div></article>
-        <article class="stat-card"><div class="stat-label">İzlenen Balinalar</div><div class="stat-value" id="tracked-whales">0</div><div class="stat-note">Hibrit cache kapsamı</div></article>
-        <article class="stat-card"><div class="stat-label">Eşlenen Orderflow</div><div class="stat-value" id="mapped-orderflow">0 / 0</div><div class="stat-note" id="mapping-note">Alias cache 0, lazy hit 0</div></article>
-        <article class="stat-card"><div class="stat-label">Market Eşleşmedi</div><div class="stat-value" id="market-not-mapped-rate">0%</div><div class="stat-note">Daha düşük daha iyi</div></article>
-        <article class="stat-card"><div class="stat-label">Nihai Karar</div><div class="stat-value" id="final-verdict">...</div><div class="stat-note" id="verdict-reason">Rapor bekleniyor</div></article>
-    </section>
+    <?php if ($showGlobalSummary): ?>
+        <div class="section-marker" data-tab="genel-bakis"><span class="section-label">Operasyon Ozeti</span></div>
+        <section class="stats">
+            <article class="stat-card"><div class="stat-label">Servis</div><div class="stat-value" id="service-status">...</div><div class="stat-note" id="service-name">ghost-trader</div></article>
+            <article class="stat-card"><div class="stat-label">Toplam Islem</div><div class="stat-value" id="total-trades">0</div><div class="stat-note" id="open-state-note">0 acik pozisyon / 0 acik emir</div></article>
+            <article class="stat-card"><div class="stat-label">Izlenen Balinalar</div><div class="stat-value" id="tracked-whales">0</div><div class="stat-note">Hibrit cache kapsami</div></article>
+            <article class="stat-card"><div class="stat-label">Eslenen Orderflow</div><div class="stat-value" id="mapped-orderflow">0 / 0</div><div class="stat-note" id="mapping-note">Alias cache 0, lazy hit 0</div></article>
+            <article class="stat-card"><div class="stat-label">Market Eslesmedi</div><div class="stat-value" id="market-not-mapped-rate">0%</div><div class="stat-note">Daha dusuk daha iyi</div></article>
+            <article class="stat-card"><div class="stat-label">Nihai Karar</div><div class="stat-value" id="final-verdict">...</div><div class="stat-note" id="verdict-reason">Rapor bekleniyor</div></article>
+        </section>
+    <?php endif; ?>
 
     <section class="tabs-shell" id="dashboard-tabs">
         <div class="tabs-bar" role="tablist" aria-label="Dashboard sekmeleri">
@@ -522,7 +540,7 @@ $laneBodyClass = $researchOnly
             <?php if (!$researchOnly): ?>
                 <button class="tab-button" type="button" data-tab-trigger="binance-technical">Ana Panel</button>
             <?php endif; ?>
-            <button class="tab-button" type="button" data-tab-trigger="sozluk-aciklamalar">Sözlük / Açıklamalar</button>
+            <button class="tab-button" type="button" data-tab-trigger="sozluk-aciklamalar"><?= dashboard_html($binanceOnly ? 'Detay / Teknik Kanit' : 'Sozluk / Aciklamalar') ?></button>
         </div>
         <div class="tab-help-card">
             <div class="subcard-header">
@@ -538,6 +556,7 @@ $laneBodyClass = $researchOnly
     </section>
 
     <section class="grid">
+        <?php if (!$binanceOnly): ?>
         <div class="section-marker" data-tab="polymarket-research"><span class="section-label">Polymarket Operator Panel</span></div>
         <article class="panel panel-wide" data-tab="polymarket-research">
             <div class="panel-header"><h2>Polymarket Paper Trader Paneli</h2><span class="badge info">Operator</span></div>
@@ -701,6 +720,7 @@ $laneBodyClass = $researchOnly
             <div class="panel-header"><h2>Son Copy Aksiyonlari</h2><span class="badge info">Recent</span></div>
             <div id="recent-copy-actions"></div>
         </article>
+        <?php endif; ?>
 
         <?php if (!$researchOnly): ?>
             <div class="section-marker" data-tab="binance-technical"><span class="section-label">Binance Operator Panel</span></div>
@@ -981,7 +1001,8 @@ $laneBodyClass = $researchOnly
 <script>
 const refreshSeconds = <?= json_encode($refreshSeconds, JSON_UNESCAPED_SLASHES) ?>;
 const DASHBOARD_TABS = <?= json_encode($dashboardTabs, JSON_UNESCAPED_SLASHES) ?>;
-let activeTab = 'polymarket-research';
+const DEFAULT_TAB = DASHBOARD_TABS[0] || 'polymarket-research';
+let activeTab = DEFAULT_TAB;
 let latestPayload = null;
 
 function parseTabList(value) {
@@ -1043,10 +1064,18 @@ function applyActiveTab() {
     if (latestPayload) {
         renderTabHelp(latestPayload);
     }
+    updateTabHelpVisibility();
+}
+
+function updateTabHelpVisibility() {
+    const helpCard = document.querySelector('.tab-help-card');
+    if (!helpCard) { return; }
+    const showOnTabs = ['polymarket-copy', 'sozluk-aciklamalar'];
+    helpCard.classList.toggle('is-hidden', !showOnTabs.includes(activeTab));
 }
 
 function setActiveTab(tabId, syncHash = true) {
-    activeTab = DASHBOARD_TABS.includes(tabId) ? tabId : 'polymarket-research';
+    activeTab = DASHBOARD_TABS.includes(tabId) ? tabId : DEFAULT_TAB;
     if (syncHash && window.history?.replaceState) {
         window.history.replaceState(null, '', `#${activeTab}`);
     }
@@ -1060,11 +1089,11 @@ function setupTabs() {
 
     window.addEventListener('hashchange', () => {
         const hashTab = window.location.hash.replace(/^#/, '');
-        setActiveTab(hashTab || 'polymarket-research', false);
+        setActiveTab(hashTab || DEFAULT_TAB, false);
     });
 
     const initialTab = window.location.hash.replace(/^#/, '');
-    setActiveTab(initialTab || 'polymarket-research', !initialTab);
+    setActiveTab(initialTab || DEFAULT_TAB, !initialTab);
 }
 
 function escapeHtml(value) {
@@ -1530,13 +1559,20 @@ function updateHeader(payload) {
     const service = payload.service || {};
     const verdictBlock = payload.swot_verdict?.final_verdict || {};
 
-    document.getElementById('service-status').textContent = service.active ? 'ÇALIŞIYOR' : 'DEGRADE';
-    document.getElementById('service-name').textContent = service.name || 'ghost-trader';
-    document.getElementById('total-trades').textContent = formatNumber(runtime.total_trades, 0);
-    document.getElementById('tracked-whales').textContent = formatNumber(runtime.tracked_whales, 0);
-    document.getElementById('mapped-orderflow').textContent = `${formatNumber(runtime.mapped_orderflow_events, 0)} / ${formatNumber(runtime.unmapped_orderflow_events, 0)}`;
-    document.getElementById('mapping-note').textContent = `Alias cache ${formatNumber(runtime.alias_cache_hits, 0)}, lazy ${formatNumber(runtime.lazy_lookup_hits, 0)}, sıcak pencere ${formatNumber(runtime.hot_window_hits, 0)}`;
-    document.getElementById('market-not-mapped-rate').textContent = `${formatNumber(runtime.market_not_mapped_rate, 1)}%`;
+    const setText = (id, value) => {
+        const element = document.getElementById(id);
+        if (element) {
+            element.textContent = value;
+        }
+    };
+
+    setText('service-status', service.active ? 'ÇALIŞIYOR' : 'DEGRADE');
+    setText('service-name', service.name || 'ghost-trader');
+    setText('total-trades', formatNumber(runtime.total_trades, 0));
+    setText('tracked-whales', formatNumber(runtime.tracked_whales, 0));
+    setText('mapped-orderflow', `${formatNumber(runtime.mapped_orderflow_events, 0)} / ${formatNumber(runtime.unmapped_orderflow_events, 0)}`);
+    setText('mapping-note', `Alias cache ${formatNumber(runtime.alias_cache_hits, 0)}, lazy ${formatNumber(runtime.lazy_lookup_hits, 0)}, sıcak pencere ${formatNumber(runtime.hot_window_hits, 0)}`);
+    setText('market-not-mapped-rate', `${formatNumber(runtime.market_not_mapped_rate, 1)}%`);
     const marketRateNote = document.getElementById('market-not-mapped-note') || document.getElementById('market-not-mapped-rate')?.nextElementSibling;
     if (marketRateNote) {
         marketRateNote.id = 'market-not-mapped-note';
@@ -1544,10 +1580,10 @@ function updateHeader(payload) {
             ? 'Canli oran gosteriliyor, 60 dk ve tarihsel detay asagida'
             : 'Canli status yok, son 60 dk orani gosteriliyor';
     }
-    document.getElementById('final-verdict').textContent = translateVerdict(verdictBlock.verdict || 'yok');
-    document.getElementById('verdict-reason').textContent = verdictBlock.reason || 'Henüz SWOT kararı yok.';
-    document.getElementById('open-state-note').textContent = `${formatNumber(runtime.open_positions_count, 0)} açık pozisyon / ${formatNumber(runtime.open_orders_count, 0)} açık emir`;
-    document.getElementById('last-refresh-badge').textContent = `Son yenileme ${new Date(payload.generated_at).toLocaleTimeString('tr-TR')}`;
+    setText('final-verdict', translateVerdict(verdictBlock.verdict || 'yok'));
+    setText('verdict-reason', verdictBlock.reason || 'Henüz SWOT kararı yok.');
+    setText('open-state-note', `${formatNumber(runtime.open_positions_count, 0)} açık pozisyon / ${formatNumber(runtime.open_orders_count, 0)} açık emir`);
+    setText('last-refresh-badge', `Son yenileme ${new Date(payload.generated_at).toLocaleTimeString('tr-TR')}`);
 }
 
 function updatePanels(payload) {
