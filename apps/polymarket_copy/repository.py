@@ -146,10 +146,17 @@ class PolymarketCopyRepository:
             trust_score_expr = _value_expr(wallet_columns, "trust_score", "0")
             specialization_expr = _value_expr(wallet_columns, "specialization", "''")
             pilot_copy_condition = f"COALESCE({pilot_copy_expr}, 'blocked') = 'promoted'"
+            wallet_mirror_condition = f"""
+                COALESCE({operator_approved_expr}, 0) = 1
+                AND COALESCE({identity_status_expr}, '') = 'linked'
+                AND UPPER(COALESCE(NULLIF({target_specialization_expr}, ''), NULLIF({specialization_expr}, ''), '')) = 'CRYPTO'
+                AND COALESCE({evidence_expr}, 'no_historical_evidence') IN ('detailed_trade_history', 'stats_only')
+            """
             sql = f"""
                 SELECT
                     address,
                     COALESCE({specialization_expr}, '') AS specialization,
+                    COALESCE({target_specialization_expr}, '') AS target_specialization,
                     COALESCE({trust_score_expr}, 0) AS trust_score,
                     COALESCE({shadow_edge_expr}, 0) AS shadow_edge,
                     COALESCE({closed_shadow_expr}, 0) AS closed_shadow_trades,
@@ -167,15 +174,19 @@ class PolymarketCopyRepository:
                     CASE
                         WHEN COALESCE({copy_ready_expr}, 'blocked') = 'promoted' THEN 'shadow_proven'
                         WHEN {pilot_copy_condition} THEN 'pilot_copy_ready'
+                        WHEN {wallet_mirror_condition} THEN 'wallet_mirror'
                         ELSE ''
                     END AS cohort_source
                 FROM polymarket_research_wallets
                 WHERE COALESCE({copy_ready_expr}, 'blocked') = 'promoted'
                    OR ({pilot_copy_condition})
+                   OR ({wallet_mirror_condition})
                 ORDER BY
                     CASE
                         WHEN COALESCE({copy_ready_expr}, 'blocked') = 'promoted' THEN 0
-                        ELSE 1
+                        WHEN {pilot_copy_condition} THEN 1
+                        WHEN {wallet_mirror_condition} THEN 2
+                        ELSE 3
                     END ASC,
                     CASE
                         WHEN COALESCE({copy_ready_expr}, 'blocked') = 'promoted' THEN COALESCE({copy_ready_rank_expr}, 999999)
@@ -205,15 +216,27 @@ class PolymarketCopyRepository:
             pilot_copy_expr = _value_expr(wallet_columns, "pilot_copy_gate_status", "'blocked'")
             watchlist_rank_expr = _value_expr(wallet_columns, "watchlist_priority_rank", "0")
             identity_status_expr = _value_expr(wallet_columns, "identity_resolution_status", "''")
+            evidence_expr = _value_expr(wallet_columns, "historical_trade_evidence_status", "'no_historical_evidence'")
+            operator_approved_expr = _value_expr(wallet_columns, "operator_approved_pilot", "0")
+            target_specialization_expr = _value_expr(wallet_columns, "target_specialization", "''")
+            specialization_expr = _value_expr(wallet_columns, "specialization", "''")
+            wallet_mirror_condition = f"""
+                COALESCE({operator_approved_expr}, 0) = 1
+                AND COALESCE({identity_status_expr}, '') = 'linked'
+                AND UPPER(COALESCE(NULLIF({target_specialization_expr}, ''), NULLIF({specialization_expr}, ''), '')) = 'CRYPTO'
+                AND COALESCE({evidence_expr}, 'no_historical_evidence') IN ('detailed_trade_history', 'stats_only')
+            """
             rows = connection.execute(
                 f"""
                 SELECT
                     SUM(CASE WHEN COALESCE({copy_ready_expr}, 'blocked') = 'promoted' THEN 1 ELSE 0 END) AS shadow_proven_wallets,
                     SUM(CASE WHEN COALESCE({pilot_copy_expr}, 'blocked') = 'promoted' THEN 1 ELSE 0 END) AS pilot_copy_wallets,
+                    SUM(CASE WHEN {wallet_mirror_condition} THEN 1 ELSE 0 END) AS wallet_mirror_wallets,
                     SUM(
                         CASE
                             WHEN COALESCE({copy_ready_expr}, 'blocked') != 'promoted'
                              AND COALESCE({pilot_copy_expr}, 'blocked') != 'promoted'
+                             AND NOT ({wallet_mirror_condition})
                              AND (COALESCE({watchlist_rank_expr}, 0) > 0 OR COALESCE({identity_status_expr}, '') = 'linked')
                             THEN 1 ELSE 0
                         END
@@ -223,8 +246,9 @@ class PolymarketCopyRepository:
             ).fetchone()
             shadow_proven = int((rows or {})["shadow_proven_wallets"] or 0)
             pilot_copy = int((rows or {})["pilot_copy_wallets"] or 0)
+            wallet_mirror = int((rows or {})["wallet_mirror_wallets"] or 0)
             watch_only = int((rows or {})["watch_only_wallets"] or 0)
-            if shadow_proven + pilot_copy > 0:
+            if shadow_proven + pilot_copy + wallet_mirror > 0:
                 reason = "eligible_copy_wallets_available"
             elif watch_only > 0:
                 reason = "watch_only_needs_shadow_or_pilot_proof"
@@ -233,6 +257,7 @@ class PolymarketCopyRepository:
             return {
                 "shadow_proven_wallets": shadow_proven,
                 "pilot_copy_wallets": pilot_copy,
+                "wallet_mirror_wallets": wallet_mirror,
                 "watch_only_wallets": watch_only,
                 "copy_blocker_reason": reason,
             }

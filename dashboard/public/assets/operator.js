@@ -334,6 +334,7 @@
                 analysis: `
                     ${renderMetricGrid([
                         ['Copy-ready wallet', formatInteger(payload.copy_ready_wallet_summary?.copy_ready_wallets || 0)],
+                        ['Mirror wallet', formatInteger(payload.copy_execution_summary?.wallet_mirror_wallets || 0)],
                         ['Shadow-ready', payload.shadow_edge_summary?.shadow_ready ? 'evet' : 'hayir'],
                         ['Linked wallet', formatInteger(payload.linked_wallet_evidence_summary?.linked_wallets_total || 0)],
                         ['Ana wallet', escapeHtml(summary.wallet_copy_status?.main_wallet_name || 'ohenism')],

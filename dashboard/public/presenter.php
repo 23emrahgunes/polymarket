@@ -2577,6 +2577,7 @@ function dashboard_empty_polymarket_copy_summary(): array
             'shadow_proven_wallets' => 0,
             'manual_fast_track_wallets' => 0,
             'pilot_copy_wallets' => 0,
+            'wallet_mirror_wallets' => 0,
             'watch_only_wallets' => 0,
             'copy_blocker_reason' => 'no_eligible_copy_wallets',
             'eligible_copy_wallets_total' => 0,
@@ -2589,6 +2590,7 @@ function dashboard_empty_polymarket_copy_summary(): array
             'active_shadow_proven_positions' => 0,
             'active_manual_fast_track_positions' => 0,
             'active_pilot_copy_positions' => 0,
+            'active_wallet_mirror_positions' => 0,
             'wallets_with_realized_pnl' => 0,
         ],
         'copy_acceptance_summary' => [
@@ -2610,6 +2612,7 @@ function dashboard_empty_polymarket_copy_summary(): array
             'shadow_proven_wallets' => 0,
             'manual_fast_track_wallets' => 0,
             'pilot_copy_wallets' => 0,
+            'wallet_mirror_wallets' => 0,
             'watch_only_wallets' => 0,
             'copy_blocker_reason' => 'no_eligible_copy_wallets',
             'eligible_copy_wallets_total' => 0,
@@ -2715,6 +2718,7 @@ function dashboard_build_copy_runtime_acceptance_summary_from_rows(array $action
         'eligible_copy_wallets_total' => $eligibleWallets,
         'shadow_proven_wallets' => (int) ($copyExecutionSummary['shadow_proven_wallets'] ?? 0),
         'manual_fast_track_wallets' => (int) ($copyExecutionSummary['manual_fast_track_wallets'] ?? 0),
+        'wallet_mirror_wallets' => (int) ($copyExecutionSummary['wallet_mirror_wallets'] ?? 0),
         'runtime_blocker_reason' => $reason,
         'runtime_schema_guard_status' => 'ok',
         'reason' => $reason,
@@ -2751,6 +2755,9 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
         $targetSpecializationExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'target_specialization')
             ? 'target_specialization'
             : "''";
+        $operatorApprovedExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'operator_approved_pilot')
+            ? 'operator_approved_pilot'
+            : '0';
         $trustScoreExpr = dashboard_table_has_column($pdo, 'polymarket_research_wallets', 'trust_score')
             ? 'trust_score'
             : '0';
@@ -2767,6 +2774,12 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
             ? 'watchlist_priority_rank'
             : '999999';
         $pilotCopyCondition = "COALESCE({$pilotCopyExpr}, 'blocked') = 'promoted'";
+        $walletMirrorCondition = "
+            COALESCE({$operatorApprovedExpr}, 0) = 1
+            AND COALESCE({$identityStatusExpr}, '') = 'linked'
+            AND UPPER(COALESCE(NULLIF({$targetSpecializationExpr}, ''), NULLIF({$specializationExpr}, ''), '')) = 'CRYPTO'
+            AND COALESCE({$evidenceExpr}, 'no_historical_evidence') IN ('detailed_trade_history', 'stats_only')
+        ";
         $eligibleWalletRows = dashboard_fetch_all(
             $pdo,
             "
@@ -2786,15 +2799,19 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
                 CASE
                     WHEN COALESCE({$copyReadyExpr}, 'blocked') = 'promoted' THEN 'shadow_proven'
                     WHEN ({$pilotCopyCondition}) THEN 'pilot_copy_ready'
+                    WHEN ({$walletMirrorCondition}) THEN 'wallet_mirror'
                     ELSE ''
                 END AS cohort_source
             FROM polymarket_research_wallets
             WHERE COALESCE({$copyReadyExpr}, 'blocked') = 'promoted'
                OR ({$pilotCopyCondition})
+               OR ({$walletMirrorCondition})
             ORDER BY
                 CASE
                     WHEN COALESCE({$copyReadyExpr}, 'blocked') = 'promoted' THEN 0
-                    ELSE 1
+                    WHEN ({$pilotCopyCondition}) THEN 1
+                    WHEN ({$walletMirrorCondition}) THEN 2
+                    ELSE 3
                 END ASC,
                 CASE
                     WHEN COALESCE({$copyReadyExpr}, 'blocked') = 'promoted' THEN COALESCE({$copyReadyRankExpr}, 999999)
@@ -2810,6 +2827,7 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
         }
         $shadowProvenWallets = count(array_filter($eligibleWalletRows, static fn (array $row): bool => (string) ($row['cohort_source'] ?? '') === 'shadow_proven'));
         $pilotCopyWallets = count(array_filter($eligibleWalletRows, static fn (array $row): bool => (string) ($row['cohort_source'] ?? '') === 'pilot_copy_ready'));
+        $walletMirrorWallets = count(array_filter($eligibleWalletRows, static fn (array $row): bool => (string) ($row['cohort_source'] ?? '') === 'wallet_mirror'));
         $manualFastTrackWallets = $pilotCopyWallets;
         $watchOnlyRows = dashboard_fetch_one(
             $pdo,
@@ -2819,6 +2837,7 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
             WHERE COALESCE({$longHorizonExpr}, 'untracked') IN ('priority_watch', 'linked', 'observing', 'shadow_tracking')
               AND COALESCE({$copyReadyExpr}, 'blocked') <> 'promoted'
               AND COALESCE({$pilotCopyExpr}, 'blocked') <> 'promoted'
+              AND NOT ({$walletMirrorCondition})
             "
         );
         $watchOnlyWallets = (int) ($watchOnlyRows['count'] ?? 0);
@@ -2832,6 +2851,7 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
         $summary['copy_execution_summary']['shadow_proven_wallets'] = $shadowProvenWallets;
         $summary['copy_execution_summary']['manual_fast_track_wallets'] = $manualFastTrackWallets;
         $summary['copy_execution_summary']['pilot_copy_wallets'] = $pilotCopyWallets;
+        $summary['copy_execution_summary']['wallet_mirror_wallets'] = $walletMirrorWallets;
         $summary['copy_execution_summary']['watch_only_wallets'] = $watchOnlyWallets;
         $summary['copy_execution_summary']['copy_blocker_reason'] = $copyBlockerReason;
         $summary['copy_execution_summary']['eligible_copy_wallets_total'] = count($eligibleWalletRows);
@@ -2839,6 +2859,7 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
         $summary['shadow_vs_copy_drift_summary']['shadow_proven_wallets'] = $shadowProvenWallets;
         $summary['shadow_vs_copy_drift_summary']['manual_fast_track_wallets'] = $manualFastTrackWallets;
         $summary['shadow_vs_copy_drift_summary']['pilot_copy_wallets'] = $pilotCopyWallets;
+        $summary['shadow_vs_copy_drift_summary']['wallet_mirror_wallets'] = $walletMirrorWallets;
         $summary['shadow_vs_copy_drift_summary']['watch_only_wallets'] = $watchOnlyWallets;
         $summary['shadow_vs_copy_drift_summary']['copy_blocker_reason'] = $copyBlockerReason;
         $summary['shadow_vs_copy_drift_summary']['eligible_copy_wallets_total'] = count($eligibleWalletRows);
@@ -3079,6 +3100,12 @@ function dashboard_build_polymarket_copy_summary(PDO $pdo): array
             array_filter(
                 $summary['active_copy_positions'],
                 static fn (array $row): bool => (string) ($row['cohort_source'] ?? '') === 'pilot_copy_ready'
+            )
+        );
+        $summary['copy_execution_summary']['active_wallet_mirror_positions'] = count(
+            array_filter(
+                $summary['active_copy_positions'],
+                static fn (array $row): bool => (string) ($row['cohort_source'] ?? '') === 'wallet_mirror'
             )
         );
         $summary['copy_acceptance_summary'] = dashboard_build_copy_acceptance_summary_from_rows(

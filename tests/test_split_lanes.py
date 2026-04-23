@@ -23,6 +23,8 @@ from apps.polymarket_research.repository import PolymarketResearchRepository
 from apps.polymarket_research.service import PolymarketResearchService
 from apps.polymarket_copy.cli import main as polymarket_copy_cli_main
 from apps.polymarket_copy.config import PolymarketCopySettings
+from apps.polymarket_copy.service import PolymarketCopyService
+from apps.polymarket_copy.repository import PolymarketCopyRepository
 from apps.polymarket_copy.runtime import PolymarketCopyRuntime
 
 
@@ -1109,6 +1111,171 @@ def test_polymarket_copy_runtime_acceptance_uses_linked_wallet_open_trade(tmp_pa
     assert runtime_acceptance["runtime_open_action_observed"] is True
     assert runtime_acceptance["runtime_open_position_observed"] is True
     assert runtime_acceptance["all_checks_passed"] is True
+
+
+class _FakeWalletActivityClient:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+
+    def fetch_wallet_activity_rows(self, wallet_addresses: list[str]) -> list[dict[str, Any]]:
+        allowed = {address.lower() for address in wallet_addresses}
+        return [row for row in self.rows if str(row.get("wallet_address") or "").lower() in allowed]
+
+
+def _create_minimal_copy_mirror_db(db_path: Path, wallet_address: str) -> None:
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE polymarket_research_wallets (
+            address TEXT PRIMARY KEY,
+            specialization TEXT,
+            target_specialization TEXT,
+            trust_score REAL,
+            shadow_edge REAL,
+            closed_shadow_trades INTEGER,
+            copy_ready_rank INTEGER,
+            watchlist_priority_rank INTEGER,
+            primary_source TEXT,
+            watchlist_mode TEXT,
+            watchlist_status TEXT,
+            identity_resolution_status TEXT,
+            historical_trade_evidence_status TEXT,
+            pilot_copy_gate_status TEXT,
+            pilot_copy_gate_reason TEXT,
+            long_horizon_status TEXT,
+            operator_approved_pilot INTEGER
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO polymarket_research_wallets (
+            address, specialization, target_specialization, trust_score, shadow_edge,
+            closed_shadow_trades, copy_ready_rank, watchlist_priority_rank, primary_source,
+            watchlist_mode, watchlist_status, identity_resolution_status,
+            historical_trade_evidence_status, pilot_copy_gate_status, pilot_copy_gate_reason,
+            long_horizon_status, operator_approved_pilot
+        ) VALUES (?, 'CRYPTO', 'CRYPTO', 0.82, 0, 0, 999999, 1, 'manual_persisted',
+                  'fast_track_shadow', 'linked', 'linked', 'stats_only', 'blocked',
+                  'wallet_mirror_operator_approved', 'observing', 1)
+        """,
+        (wallet_address.lower(),),
+    )
+    connection.commit()
+    connection.close()
+
+
+def _activity_row(
+    *,
+    key: str,
+    wallet_address: str,
+    market_id: str,
+    side: str,
+    notional: float,
+    occurred_at: str = "2026-04-23 10:00:00",
+) -> dict[str, Any]:
+    return {
+        "source_trade_key": key,
+        "wallet_address": wallet_address.lower(),
+        "venue": "polymarket",
+        "market_id": market_id,
+        "status": "OPEN",
+        "source_pnl": 0.0,
+        "source_notional_usd": notional,
+        "category": "CRYPTO",
+        "side": side,
+        "occurred_at": occurred_at,
+        "source_opened_at": occurred_at,
+        "source_closed_at": "",
+        "source_signal": "polymarket_wallet_activity",
+    }
+
+
+def test_polymarket_copy_mirrors_operator_approved_live_wallet_activity(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket_wallet_mirror.db"
+    wallet_address = "0x89b5cdaaa4866c1e738406712012a630b4078beb"
+    _create_minimal_copy_mirror_db(db_path, wallet_address)
+    settings = PolymarketCopySettings(
+        db_path=str(db_path),
+        source_db_path=str(db_path),
+        follower_delay_seconds=0,
+        min_trade_size_usd=1.0,
+        max_trade_size_usd=50.0,
+        wallet_risk_limit_usd=500.0,
+        market_risk_limit_usd=500.0,
+        max_concurrent_positions_per_wallet=10,
+        live_activity_enabled=True,
+    )
+    repository = PolymarketCopyRepository(str(db_path), str(db_path))
+    service = PolymarketCopyService(
+        settings,
+        repository,
+        _FakeWalletActivityClient(
+            [
+                _activity_row(key="activity:one", wallet_address=wallet_address, market_id="btc-up-10am", side="BUY", notional=140.0),
+                _activity_row(key="activity:two", wallet_address=wallet_address, market_id="eth-up-10am", side="BUY", notional=90.0),
+            ]
+        ),
+    )
+
+    service.sync_copy_actions()
+    summary = service.build_summary()
+
+    assert summary["copy_execution_summary"]["eligible_copy_wallets_total"] == 1
+    assert summary["copy_execution_summary"]["wallet_mirror_wallets"] == 1
+    assert summary["copy_execution_summary"]["active_wallet_mirror_positions"] == 2
+    assert summary["copy_execution_summary"]["open_actions"] == 2
+    assert summary["copy_runtime_acceptance_summary"]["runtime_open_action_observed"] is True
+    assert summary["copy_runtime_acceptance_summary"]["runtime_open_position_observed"] is True
+    assert {row["cohort_source"] for row in summary["active_copy_positions"]} == {"wallet_mirror"}
+
+
+def test_polymarket_copy_mirrors_source_sell_as_paper_close(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket_wallet_mirror_sell.db"
+    wallet_address = "0x89b5cdaaa4866c1e738406712012a630b4078beb"
+    _create_minimal_copy_mirror_db(db_path, wallet_address)
+    settings = PolymarketCopySettings(
+        db_path=str(db_path),
+        source_db_path=str(db_path),
+        follower_delay_seconds=0,
+        min_trade_size_usd=1.0,
+        max_trade_size_usd=50.0,
+        wallet_risk_limit_usd=500.0,
+        market_risk_limit_usd=500.0,
+        max_concurrent_positions_per_wallet=10,
+        live_activity_enabled=True,
+    )
+    repository = PolymarketCopyRepository(str(db_path), str(db_path))
+    service = PolymarketCopyService(
+        settings,
+        repository,
+        _FakeWalletActivityClient(
+            [
+                _activity_row(key="activity:open", wallet_address=wallet_address, market_id="btc-up-10am", side="BUY", notional=140.0),
+            ]
+        ),
+    )
+    service.sync_copy_actions()
+    service.activity_client = _FakeWalletActivityClient(
+        [
+            _activity_row(
+                key="activity:close",
+                wallet_address=wallet_address,
+                market_id="btc-up-10am",
+                side="SELL",
+                notional=140.0,
+                occurred_at="2026-04-23 10:05:00",
+            ),
+        ]
+    )
+
+    service.sync_copy_actions()
+    summary = service.build_summary()
+
+    assert summary["copy_execution_summary"]["close_actions"] == 1
+    assert summary["copy_execution_summary"]["active_copy_positions"] == 0
+    assert summary["copy_runtime_acceptance_summary"]["runtime_close_action_observed"] is True
+    assert any(row["reason"] == "source_sell" for row in summary["recent_copy_actions"])
 
 
 def test_polymarket_research_wrapper_script_runs_via_subprocess(tmp_path: Path) -> None:

@@ -24,6 +24,13 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _default_db_path() -> str:
     return (
         os.getenv("POLYMARKET_COPY_DB_PATH")
@@ -50,6 +57,18 @@ class PolymarketCopySettings:
     follower_delay_seconds: int = field(default_factory=lambda: _env_int("POLYMARKET_COPY_DELAY_SECONDS", 90))
     min_trade_size_usd: float = field(default_factory=lambda: _env_float("POLYMARKET_COPY_MIN_TRADE_SIZE_USD", 25.0))
     max_trade_size_usd: float = field(default_factory=lambda: _env_float("POLYMARKET_COPY_MAX_TRADE_SIZE_USD", 50.0))
-    wallet_risk_limit_usd: float = field(default_factory=lambda: _env_float("POLYMARKET_COPY_WALLET_RISK_LIMIT_USD", 100.0))
+    wallet_risk_limit_usd: float = field(default_factory=lambda: _env_float("POLYMARKET_COPY_WALLET_RISK_LIMIT_USD", 500.0))
     market_risk_limit_usd: float = field(default_factory=lambda: _env_float("POLYMARKET_COPY_MARKET_RISK_LIMIT_USD", 150.0))
     copy_ready_limit: int = field(default_factory=lambda: _env_int("POLYMARKET_COPY_READY_LIMIT", 5))
+    max_concurrent_positions_per_wallet: int = field(
+        default_factory=lambda: _env_int("POLYMARKET_COPY_MAX_CONCURRENT_POSITIONS_PER_WALLET", 10)
+    )
+    live_activity_enabled: bool = field(default_factory=lambda: _env_bool("POLYMARKET_COPY_LIVE_ACTIVITY_ENABLED", False))
+    live_activity_limit: int = field(default_factory=lambda: _env_int("POLYMARKET_COPY_LIVE_ACTIVITY_LIMIT", 25))
+    data_api_base: str = field(default_factory=lambda: os.getenv("POLYMARKET_DATA_API_BASE", "https://data-api.polymarket.com"))
+    activity_connect_timeout_sec: float = field(
+        default_factory=lambda: _env_float("POLYMARKET_COPY_ACTIVITY_CONNECT_TIMEOUT_SEC", 3.0)
+    )
+    activity_read_timeout_sec: float = field(
+        default_factory=lambda: _env_float("POLYMARKET_COPY_ACTIVITY_READ_TIMEOUT_SEC", 6.0)
+    )
