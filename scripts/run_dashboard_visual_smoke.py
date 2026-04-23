@@ -221,12 +221,25 @@ def main() -> int:
             {
                 "name": "polymarket",
                 "lane_mode": "polymarket_research",
-                "required": ["Polymarket Copy Trade", "Takipteki Balinalar", "Canli Balina Islem Akisi", "Bizim Copy Trade Ozeti"],
+                "required": [
+                    "Polymarket Copy Trade",
+                    "Takipteki Balinalar",
+                    "Portfolio Equity",
+                    "Daily PnL",
+                    "Bizim Copy Trade Ozeti",
+                ],
             },
             {
                 "name": "binance",
                 "lane_mode": "binance_technical",
-                "required": ["Binance Trading Operations", "Acik Pozisyonlar", "Acik Emirler", "Fresh PnL Ozeti"],
+                "required": [
+                    "Binance Trading Operations",
+                    "Acik Pozisyonlar",
+                    "Acik Emirler",
+                    "Fresh PnL Ozeti",
+                    "7g PnL Trend",
+                    "Spot / Futures / Risk",
+                ],
             },
         ]
 

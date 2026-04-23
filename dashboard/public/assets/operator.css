@@ -16,7 +16,8 @@
     --ws-warn-soft: rgba(244, 190, 98, 0.16);
     --ws-info: #4dc7df;
     --ws-info-soft: rgba(77, 199, 223, 0.16);
-    --ws-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+    --ws-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+    --ws-shadow-strong: 0 22px 70px rgba(0, 0, 0, 0.46);
     --ws-radius: 20px;
     --ws-radius-sm: 14px;
     --ws-sidebar-width: 248px;
@@ -35,9 +36,9 @@ body {
 body {
     font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
     background:
-        radial-gradient(circle at top left, rgba(77, 199, 223, 0.14), transparent 28%),
-        radial-gradient(circle at top right, rgba(55, 212, 140, 0.10), transparent 24%),
-        linear-gradient(180deg, #07111a 0%, #08131c 100%);
+        radial-gradient(circle at 14% 0%, rgba(77, 199, 223, 0.17), transparent 26%),
+        radial-gradient(circle at 86% 4%, rgba(55, 212, 140, 0.12), transparent 24%),
+        linear-gradient(180deg, #061019 0%, #07121b 52%, #050c13 100%);
     color: var(--ws-text);
 }
 
@@ -58,9 +59,11 @@ select {
 
 .ws-sidebar {
     width: var(--ws-sidebar-width);
-    background: rgba(6, 14, 21, 0.96);
+    background:
+        linear-gradient(180deg, rgba(9, 20, 31, 0.98), rgba(4, 10, 16, 0.98)),
+        radial-gradient(circle at top, rgba(77, 199, 223, 0.12), transparent 42%);
     border-right: 1px solid var(--ws-border);
-    padding: 24px 18px;
+    padding: 22px 18px;
     display: flex;
     flex-direction: column;
     gap: 22px;
@@ -76,6 +79,8 @@ select {
     gap: 10px;
     font-weight: 700;
     letter-spacing: 0.04em;
+    padding-bottom: 18px;
+    border-bottom: 1px solid rgba(103, 149, 178, 0.14);
 }
 
 .ws-brand-mark {
@@ -85,7 +90,7 @@ select {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, rgba(77, 199, 223, 0.25), rgba(55, 212, 140, 0.2));
+    background: linear-gradient(135deg, rgba(77, 199, 223, 0.34), rgba(55, 212, 140, 0.24));
     border: 1px solid rgba(77, 199, 223, 0.26);
     color: #b8f5ff;
 }
@@ -126,9 +131,10 @@ select {
 }
 
 .ws-nav-link.is-active {
-    background: linear-gradient(180deg, rgba(23, 44, 63, 0.96), rgba(14, 29, 42, 0.96));
-    border-color: rgba(77, 199, 223, 0.22);
+    background: linear-gradient(135deg, rgba(23, 62, 84, 0.82), rgba(10, 29, 43, 0.96));
+    border-color: rgba(77, 199, 223, 0.34);
     color: var(--ws-text);
+    box-shadow: inset 3px 0 0 rgba(55, 212, 140, 0.72);
 }
 
 .ws-sidebar-footer {
@@ -136,7 +142,7 @@ select {
     padding: 14px;
     border: 1px solid var(--ws-border);
     border-radius: 14px;
-    background: rgba(255, 255, 255, 0.02);
+    background: linear-gradient(180deg, rgba(16, 35, 50, 0.74), rgba(9, 20, 31, 0.74));
     color: var(--ws-muted);
     font-size: 0.9rem;
 }
@@ -144,7 +150,7 @@ select {
 .ws-main-wrap {
     flex: 1;
     min-width: 0;
-    padding: 26px 26px 38px;
+    padding: 24px 28px 40px;
 }
 
 .ws-topbar {
@@ -319,13 +325,30 @@ select {
 .ws-detail-panel {
     border-radius: var(--ws-radius);
     border: 1px solid var(--ws-border);
-    background: linear-gradient(180deg, rgba(11, 23, 34, 0.96), rgba(8, 18, 27, 0.98));
+    background:
+        linear-gradient(180deg, rgba(12, 27, 40, 0.96), rgba(7, 17, 26, 0.98)),
+        radial-gradient(circle at top right, rgba(77, 199, 223, 0.06), transparent 46%);
     box-shadow: var(--ws-shadow);
 }
 
 .ws-stat-card {
-    padding: 16px;
-    min-height: 130px;
+    padding: 14px 16px;
+    min-height: 108px;
+    transition: border-color 140ms ease, transform 140ms ease, background 140ms ease;
+}
+
+.ws-stat-card:hover,
+.ws-section-card:hover,
+.ws-chart-card:hover {
+    border-color: var(--ws-border-strong);
+}
+
+.ws-kpi-grid.is-compact {
+    gap: 10px;
+}
+
+.ws-kpi-grid.is-compact > * {
+    grid-column: span 3;
 }
 
 .ws-lane-card {
@@ -340,8 +363,8 @@ select {
 }
 
 .ws-stat-value {
-    margin-top: 12px;
-    font-size: clamp(1.5rem, 1.8vw, 2rem);
+    margin-top: 10px;
+    font-size: clamp(1.35rem, 1.55vw, 1.9rem);
     font-weight: 700;
     line-height: 1;
 }
@@ -371,6 +394,14 @@ select {
 
 .ws-section-card {
     padding: 18px;
+}
+
+.ws-priority-card {
+    box-shadow: var(--ws-shadow-strong);
+}
+
+.ws-accent-card {
+    border-color: rgba(55, 212, 140, 0.22);
 }
 
 .ws-section-head {
@@ -444,6 +475,18 @@ select {
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.ws-hero-grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: minmax(0, 2.25fr) minmax(340px, 0.85fr);
+    align-items: start;
+}
+
+.ws-side-stack {
+    display: grid;
+    gap: 14px;
+}
+
 .ws-table-wrap {
     overflow-x: auto;
 }
@@ -456,7 +499,7 @@ select {
 
 .ws-table th,
 .ws-table td {
-    padding: 12px 10px;
+    padding: 13px 11px;
     border-bottom: 1px solid rgba(103, 149, 178, 0.10);
     text-align: left;
     vertical-align: top;
@@ -476,6 +519,14 @@ select {
 
 .ws-table tr:last-child td {
     border-bottom: none;
+}
+
+.ws-table tbody tr {
+    transition: background 140ms ease;
+}
+
+.ws-table tbody tr:hover {
+    background: rgba(77, 199, 223, 0.035);
 }
 
 .ws-table .is-tight {
@@ -593,6 +644,36 @@ select {
 
 .ws-chart-card {
     padding: 16px;
+    overflow: hidden;
+}
+
+.ws-performance-band {
+    border-color: rgba(55, 212, 140, 0.18);
+    background:
+        linear-gradient(180deg, rgba(12, 28, 40, 0.98), rgba(7, 17, 26, 0.99)),
+        radial-gradient(circle at top left, rgba(55, 212, 140, 0.09), transparent 34%);
+}
+
+.ws-chart-grid.is-featured {
+    grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr) minmax(260px, 0.78fr);
+    align-items: stretch;
+}
+
+.ws-chart-grid.is-featured.is-binance {
+    margin-top: 14px;
+}
+
+.ws-chart-card.is-hero {
+    min-height: 210px;
+    border-color: rgba(77, 199, 223, 0.24);
+    background:
+        linear-gradient(180deg, rgba(14, 32, 47, 0.98), rgba(7, 17, 26, 0.99)),
+        radial-gradient(circle at 20% 8%, rgba(55, 212, 140, 0.10), transparent 36%);
+}
+
+.ws-chart-card.is-mini {
+    min-height: 210px;
+}
 }
 
 .ws-chart-meta {
@@ -605,13 +686,21 @@ select {
 
 .ws-chart-meta h3 {
     margin: 0;
-    font-size: 0.98rem;
+    font-size: 1.02rem;
 }
 
 .ws-chart-svg {
     width: 100%;
-    height: 96px;
+    height: 136px;
     display: block;
+}
+
+.ws-chart-card.is-hero .ws-chart-svg {
+    height: 150px;
+}
+
+.ws-chart-card.is-mini .ws-chart-svg {
+    height: 130px;
 }
 
 .ws-chart-footer {
@@ -620,6 +709,16 @@ select {
     justify-content: space-between;
     color: var(--ws-muted);
     font-size: 0.82rem;
+}
+
+.ws-proof-inline {
+    margin-top: 14px;
+}
+
+.is-chart-empty {
+    min-height: 134px;
+    display: grid;
+    align-content: center;
 }
 
 .ws-filter-bar {
@@ -720,6 +819,33 @@ select {
     gap: 10px;
 }
 
+.ws-compact-metric-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.ws-compact-metric {
+    min-height: 82px;
+    padding: 14px;
+    border-radius: 16px;
+    border: 1px solid rgba(103, 149, 178, 0.15);
+    background: rgba(4, 13, 20, 0.42);
+    display: grid;
+    align-content: center;
+    gap: 8px;
+}
+
+.ws-compact-metric strong {
+    font-size: clamp(1.1rem, 1.35vw, 1.55rem);
+    line-height: 1;
+}
+
+.ws-performance-band .ws-compact-metric-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin-bottom: 14px;
+}
+
 .ws-key-value-row {
     display: flex;
     justify-content: space-between;
@@ -758,6 +884,10 @@ select {
         grid-column: span 4;
     }
 
+    .ws-kpi-grid.is-compact > * {
+        grid-column: span 3;
+    }
+
     .ws-segment-grid {
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
@@ -768,6 +898,9 @@ select {
     .ws-layout-row.is-2-equal,
     .ws-layout-row.is-3,
     .ws-chart-grid,
+    .ws-chart-grid.is-featured,
+    .ws-hero-grid,
+    .ws-performance-band .ws-compact-metric-grid,
     .ws-card-grid.is-2,
     .ws-card-grid.is-3,
     .ws-card-grid.is-4,
@@ -777,6 +910,10 @@ select {
     }
 
     .ws-kpi-grid > * {
+        grid-column: span 6;
+    }
+
+    .ws-kpi-grid.is-compact > * {
         grid-column: span 6;
     }
 }
@@ -819,6 +956,10 @@ select {
         grid-column: span 12;
     }
 
+    .ws-kpi-grid.is-compact > * {
+        grid-column: span 12;
+    }
+
     .ws-main-wrap {
         padding: 14px;
     }
@@ -827,5 +968,20 @@ select {
     .ws-section-card,
     .ws-chart-card {
         padding: 14px;
+    }
+
+    .ws-chart-card.is-hero,
+    .ws-chart-card.is-mini {
+        min-height: auto;
+    }
+
+    .ws-chart-svg,
+    .ws-chart-card.is-hero .ws-chart-svg,
+    .ws-chart-card.is-mini .ws-chart-svg {
+        height: 118px;
+    }
+
+    .ws-compact-metric-grid {
+        grid-template-columns: 1fr;
     }
 }

@@ -256,7 +256,7 @@
             }
         );
 
-        const portfolioMetrics = renderMetricGrid([
+        const portfolioMetrics = renderCompactMetricGrid([
             ['Ayrilan sermaye', formatCurrency(copyPortfolio.allocated_capital || 0)],
             ['Kullanilabilir bakiye', formatCurrency(copyPortfolio.available_balance || 0)],
             ['Gerceklesmis PnL', formatCurrency(copyPortfolio.realized_pnl || 0)],
@@ -392,18 +392,49 @@
 
         return `
             <section id="overview" class="ws-root-section">
-                <div class="ws-kpi-grid">${kpiCards}</div>
+                <div class="ws-kpi-grid is-compact">${kpiCards}</div>
             </section>
-            <section id="tracked-wallets" class="ws-section-card">
+            <div class="ws-hero-grid is-polymarket">
+                <section id="tracked-wallets" class="ws-section-card ws-priority-card">
+                    <div class="ws-section-head">
+                        <div>
+                            <div class="ws-section-kicker">Ana tablo</div>
+                            <h2 class="ws-section-title">Takipteki Balinalar</h2>
+                            <p class="ws-section-note">Hangi wallet daha guvenilir, en son ne yapti ve copy durumu ne hemen gorunur.</p>
+                        </div>
+                        <div class="ws-section-actions">
+                            ${renderStatusBadge('Aktif uzman: ' + (summary.wallet_copy_status?.main_wallet_name || 'Ana wallet yok'), 'info')}
+                        </div>
+                    </div>
+                    ${trackedWalletTable}
+                </section>
+                <aside class="ws-side-stack">
+                    <section class="ws-section-card ws-accent-card">
+                        <div class="ws-section-head">
+                            <div>
+                                <div class="ws-section-kicker">Portfoy ozeti</div>
+                                <h2 class="ws-section-title">Bizim Copy Trade Ozeti</h2>
+                                <p class="ws-section-note">Sermaye, follower sonuc ve gunluk hareketler tek kartta.</p>
+                            </div>
+                        </div>
+                        ${portfolioMetrics}
+                    </section>
+                    ${workProofCard}
+                </aside>
+            </div>
+            <section class="ws-section-card ws-performance-band" aria-label="Polymarket kazanc grafikleri">
                 <div class="ws-section-head">
                     <div>
-                        <div class="ws-section-kicker">Ana tablo</div>
-                        <h2 class="ws-section-title">Takipteki Balinalar</h2>
-                        <p class="ws-section-note">Operatorun ilk bakista bakacagi ana tablo. Hangi wallet daha guvenilir, en son ne yapti ve copy durumu ne hemen gorunur.</p>
+                        <div class="ws-section-kicker">Performans</div>
+                        <h2 class="ws-section-title">Portfolio Equity ve PnL Grafikleri</h2>
+                        <p class="ws-section-note">Kazanc trendi, gunluk PnL ve copy hizi ilk ekranda net gorunsun.</p>
                     </div>
-                    <div class="ws-section-actions">${renderStatusBadge(summary.wallet_copy_status?.main_wallet_name || 'Ana wallet yok', 'info')}</div>
                 </div>
-                ${trackedWalletTable}
+                <div class="ws-chart-grid is-featured">
+                    ${renderChartCard('Portfolio Equity', charts.equity_trend || [], 'line', 'Toplam follower realize etkisi', { variant: 'hero', tone: 'ok' })}
+                    ${renderChartCard('Daily PnL', charts.daily_pnl_trend || [], 'bar', 'Son 7 gun follower sonuc', { variant: 'hero' })}
+                    ${renderChartCard('Copy Trade Count', charts.copied_trade_count_trend || [], 'bar', 'Gunluk aksiyon adedi', { variant: 'mini', tone: 'info', valueMode: 'integer' })}
+                </div>
             </section>
             <div class="ws-layout-row is-2">
                 <section id="whale-feed" class="ws-section-card">
@@ -416,19 +447,6 @@
                     </div>
                     ${liveFeedTable}
                 </section>
-                <section class="ws-section-card">
-                    <div class="ws-section-head">
-                        <div>
-                            <div class="ws-section-kicker">Portfoy ozeti</div>
-                            <h2 class="ws-section-title">Bizim Copy Trade Ozeti</h2>
-                            <p class="ws-section-note">Ayrilan sermaye, follower sonuc ve gunluk hareketler tek kartta.</p>
-                        </div>
-                    </div>
-                    ${portfolioMetrics}
-                    <div style="margin-top:14px;">${workProofCard}</div>
-                </section>
-            </div>
-            <div class="ws-layout-row is-2-equal">
                 <section id="copy-positions" class="ws-section-card">
                     <div class="ws-section-head">
                         <div>
@@ -438,6 +456,8 @@
                     </div>
                     ${openPositionsTable}
                 </section>
+            </div>
+            <div class="ws-layout-row is-2-equal">
                 <section class="ws-section-card">
                     <div class="ws-section-head">
                         <div>
@@ -454,7 +474,7 @@
                         <div>
                             <div class="ws-section-kicker">Explainability</div>
                             <h2 class="ws-section-title">Karar Motoru / Neden Kopyalandi?</h2>
-                            <p class="ws-section-note">Teknik duvara donmeden son kararlarin nedenlerini operatör diliyle anlatir.</p>
+                            <p class="ws-section-note">Teknik duvara donmeden son kararlarin nedenlerini operator diliyle anlatir.</p>
                         </div>
                     </div>
                     ${decisionTimeline}
@@ -469,20 +489,6 @@
                     ${segmentCards}
                 </section>
             </div>
-            <section class="ws-section-card">
-                <div class="ws-section-head">
-                    <div>
-                        <div class="ws-section-kicker">Performans</div>
-                        <h2 class="ws-section-title">Portfoy ve Takip Trendleri</h2>
-                        <p class="ws-section-note">Asiri detay olmadan equity, gunluk pnl ve copied trade hizi ozetlenir.</p>
-                    </div>
-                </div>
-                <div class="ws-chart-grid">
-                    ${renderChartCard('Portfoy degeri trendi', charts.equity_trend || [], 'line', 'Toplam follower realize etkisi')}
-                    ${renderChartCard('Gunluk PnL trendi', charts.daily_pnl_trend || [], 'bar', 'Son 7 gun follower sonuc')}
-                    ${renderChartCard('Copy trade sayisi', charts.copied_trade_count_trend || [], 'bar', 'Gunluk aksiyon adedi')}
-                </div>
-            </section>
             <section id="detail-tabs" class="ws-section-card">
                 <div class="ws-section-head">
                     <div>
@@ -597,7 +603,7 @@
             }
         );
 
-        const freshSummary = renderMetricGrid([
+        const freshSummary = renderCompactMetricGrid([
             ['Bugun', renderPnlBadge(fresh.today || 0)],
             ['7 gun', renderPnlBadge(fresh.seven_days || 0)],
             ['Futures PnL', renderPnlBadge(fresh.futures_pnl || 0)],
@@ -701,7 +707,7 @@
 
         return `
             <section id="overview" class="ws-root-section">
-                <div class="ws-kpi-grid">${kpiCards}</div>
+                <div class="ws-kpi-grid is-compact">${kpiCards}</div>
             </section>
             <section id="filters" class="ws-section-card">
                 <div class="ws-section-head">
@@ -754,15 +760,21 @@
                 </section>
             </div>
             <div class="ws-layout-row is-2">
-                <section class="ws-section-card">
+                <section class="ws-section-card ws-performance-band">
                     <div class="ws-section-head">
                         <div>
                             <div class="ws-section-kicker">Fresh PnL</div>
                             <h2 class="ws-section-title">Fresh PnL Ozeti</h2>
+                            <p class="ws-section-note">Kazanc grafigi, kapanan trade hizi ve spot/futures dagilimi ilk operasyon alaninda gorunur.</p>
                         </div>
                     </div>
                     ${freshSummary}
-                    <div style="margin-top:14px;">${workProofCard}</div>
+                    <div class="ws-chart-grid is-featured is-binance">
+                        ${renderChartCard('7g PnL Trend', charts.pnl_trend || [], 'line', 'Kapanan fresh paper islemler', { variant: 'hero' })}
+                        ${renderChartCard('Trade Count', charts.trade_count_trend || [], 'bar', 'Gunluk kapanan trade adedi', { variant: 'mini', tone: 'info', valueMode: 'integer' })}
+                        ${renderBreakdownChartCard('Spot / Futures / Risk', charts.equity_breakdown || [])}
+                    </div>
+                    <div class="ws-proof-inline">${workProofCard}</div>
                 </section>
                 <section id="runtime-feed" class="ws-section-card">
                     <div class="ws-section-head">
@@ -774,30 +786,15 @@
                     ${runtimeTimeline}
                 </section>
             </div>
-            <div class="ws-layout-row is-2">
-                <section id="trade-history" class="ws-section-card">
-                    <div class="ws-section-head">
-                        <div>
-                            <div class="ws-section-kicker">Trade history</div>
-                            <h2 class="ws-section-title">Trade Gecmisi</h2>
-                        </div>
+            <section id="trade-history" class="ws-section-card">
+                <div class="ws-section-head">
+                    <div>
+                        <div class="ws-section-kicker">Trade history</div>
+                        <h2 class="ws-section-title">Trade Gecmisi</h2>
                     </div>
-                    ${tradeHistoryTable}
-                </section>
-                <section class="ws-section-card">
-                    <div class="ws-section-head">
-                        <div>
-                            <div class="ws-section-kicker">Performans</div>
-                            <h2 class="ws-section-title">Performans Grafikleri</h2>
-                        </div>
-                    </div>
-                    <div class="ws-chart-grid">
-                        ${renderChartCard('Toplam PnL', charts.pnl_trend || [], 'line', 'Kapanan trade katkisi')}
-                        ${renderChartCard('Trade count', charts.trade_count_trend || [], 'bar', 'Gunluk kapanan trade adedi')}
-                        ${renderBreakdownChartCard('Equity dagilimi', charts.equity_breakdown || [])}
-                    </div>
-                </section>
-            </div>
+                </div>
+                ${tradeHistoryTable}
+            </section>
             <section id="detail-tabs" class="ws-section-card">
                 <div class="ws-section-head">
                     <div>
@@ -1118,17 +1115,22 @@
         `;
     }
 
-    function renderChartCard(title, series, type, note) {
+    function renderChartCard(title, series, type, note, options = {}) {
         const normalized = Array.isArray(series) ? series : [];
+        const lastValue = normalized.length > 0 ? Number(normalized[normalized.length - 1].value || 0) : 0;
+        const tone = options.tone || toneFromPnl(lastValue);
+        const valueBadge = options.valueMode === 'integer'
+            ? renderStatusBadge(formatInteger(lastValue), tone || 'info')
+            : renderPnlBadge(lastValue);
         const chart = normalized.length > 0
-            ? renderSvgChart(normalized, type)
-            : `<div class="ws-empty-state"><h3>Veri bekleniyor</h3><p>Grafik serisi henuz dolmadi.</p></div>`;
-        const lastValue = normalized.length > 0 ? normalized[normalized.length - 1].value : 0;
+            ? renderSvgChart(normalized, type, { tone })
+            : `<div class="ws-empty-state is-chart-empty"><h3>Grafik verisi bekleniyor</h3><p>Henuz grafik icin yeterli kapanmis islem yok.</p></div>`;
+        const variantClass = options.variant ? ` is-${escapeAttribute(options.variant)}` : '';
         return `
-            <div class="ws-chart-card">
+            <div class="ws-chart-card${variantClass}">
                 <div class="ws-chart-meta">
                     <h3>${escapeHtml(title)}</h3>
-                    ${renderPnlBadge(lastValue)}
+                    ${valueBadge}
                 </div>
                 ${chart}
                 <div class="ws-chart-footer">
@@ -1266,14 +1268,31 @@
         `;
     }
 
-    function renderSvgChart(series, type) {
+    function renderCompactMetricGrid(items) {
+        return `
+            <div class="ws-compact-metric-grid">
+                ${items.map(([key, value]) => `
+                    <div class="ws-compact-metric">
+                        <span class="ws-key">${escapeHtml(key)}</span>
+                        <strong>${typeof value === 'string' ? value : escapeHtml(String(value))}</strong>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    function renderSvgChart(series, type, options = {}) {
         const values = series.map((point) => Number(point.value || 0));
         const labels = series.map((point) => String(point.label || ''));
         const min = Math.min(...values, 0);
         const max = Math.max(...values, 1);
         const width = 320;
-        const height = 96;
+        const height = 120;
         const step = values.length > 1 ? width / (values.length - 1) : width;
+        const tone = options.tone || toneFromPnl(values[values.length - 1] || 0);
+        const stroke = tone === 'danger' ? '#ff6d6d' : tone === 'warn' ? '#f4be62' : tone === 'info' ? '#4dc7df' : '#37d48c';
+        const soft = tone === 'danger' ? 'rgba(255, 109, 109, 0.14)' : tone === 'warn' ? 'rgba(244, 190, 98, 0.14)' : tone === 'info' ? 'rgba(77, 199, 223, 0.16)' : 'rgba(55, 212, 140, 0.16)';
+        const gradientId = `ws-chart-gradient-${Math.abs(series.map((point) => String(point.label || '') + String(point.value || '')).join('').split('').reduce((hash, char) => ((hash << 5) - hash + char.charCodeAt(0)) | 0, 0))}`;
         const points = values.map((value, index) => {
             const normalized = max === min ? 0.5 : (value - min) / (max - min);
             const x = index * step;
@@ -1285,25 +1304,33 @@
             const barWidth = Math.max(8, Math.floor(width / Math.max(values.length, 1)) - 6);
             return `
                 <svg class="ws-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="chart">
+                    <line x1="0" y1="${(height - 18).toFixed(2)}" x2="${width}" y2="${(height - 18).toFixed(2)}" stroke="rgba(143, 168, 184, 0.18)" stroke-width="1"></line>
                     ${points.map((point) => {
-                        const barHeight = height - point.y - 6;
+                        const barHeight = height - point.y - 10;
                         const x = Math.max(0, point.x - barWidth / 2);
-                        return `<rect x="${x.toFixed(2)}" y="${point.y.toFixed(2)}" width="${barWidth}" height="${Math.max(barHeight, 4).toFixed(2)}" rx="6" fill="rgba(77, 199, 223, 0.72)"></rect>`;
+                        const fill = point.value < 0 ? '#ff6d6d' : stroke;
+                        return `<rect x="${x.toFixed(2)}" y="${point.y.toFixed(2)}" width="${barWidth}" height="${Math.max(barHeight, 4).toFixed(2)}" rx="6" fill="${fill}" opacity="0.78"></rect>`;
                     }).join('')}
                 </svg>
             `;
         }
 
         const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ');
+        const areaPath = `${path} L ${width.toFixed(2)} ${height.toFixed(2)} L 0 ${height.toFixed(2)} Z`;
+        const lastPoint = points[points.length - 1];
         return `
             <svg class="ws-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="chart">
                 <defs>
-                    <linearGradient id="ws-chart-gradient" x1="0" x2="0" y1="0" y2="1">
-                        <stop offset="0%" stop-color="rgba(55, 212, 140, 0.62)"></stop>
-                        <stop offset="100%" stop-color="rgba(55, 212, 140, 0.04)"></stop>
+                    <linearGradient id="${gradientId}" x1="0" x2="0" y1="0" y2="1">
+                        <stop offset="0%" stop-color="${soft}"></stop>
+                        <stop offset="100%" stop-color="rgba(7, 17, 26, 0)"></stop>
                     </linearGradient>
                 </defs>
-                <path d="${path}" fill="none" stroke="#37d48c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
+                <line x1="0" y1="22" x2="${width}" y2="22" stroke="rgba(143, 168, 184, 0.12)" stroke-width="1"></line>
+                <line x1="0" y1="${(height - 18).toFixed(2)}" x2="${width}" y2="${(height - 18).toFixed(2)}" stroke="rgba(143, 168, 184, 0.18)" stroke-width="1"></line>
+                <path d="${areaPath}" fill="url(#${gradientId})"></path>
+                <path d="${path}" fill="none" stroke="${stroke}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"></path>
+                <circle cx="${lastPoint.x.toFixed(2)}" cy="${lastPoint.y.toFixed(2)}" r="4" fill="${stroke}" stroke="#07111a" stroke-width="2"></circle>
             </svg>
         `;
     }
