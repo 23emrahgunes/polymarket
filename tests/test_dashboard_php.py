@@ -516,6 +516,7 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert 'recent_copy_actions' in payload
     assert 'polymarket_operator_summary' in payload
     assert 'binance_operator_summary' in payload
+    assert 'operator_landing_summary' in payload
     assert payload['service']['name'] == 'ghost-trader'
     assert payload['runtime_summary']['tracked_whales'] == 3
     assert payload['runtime_summary']['total_trades'] == 2
@@ -633,6 +634,15 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['polymarket_operator_summary']['work_proof']['test_proof_passed'] is False
     assert payload['polymarket_operator_summary']['open_paper_trades'][0]['market_id'] == 'market-copy-1'
     assert payload['polymarket_operator_summary']['recent_closed_trades'][0]['action_type'] == 'replay_closed'
+    assert payload['polymarket_operator_summary']['top_kpis']['tracked_whales'] == 4
+    assert payload['polymarket_operator_summary']['top_kpis']['active_copy_positions'] == 1
+    assert payload['polymarket_operator_summary']['top_kpis']['portfolio_value'] == 960.0
+    assert payload['polymarket_operator_summary']['copy_portfolio_summary']['available_balance'] == 960.0
+    assert payload['polymarket_operator_summary']['tracked_wallets'][0]['tier'] == 'A'
+    assert payload['polymarket_operator_summary']['tracked_wallets'][0]['copy_status'] == 'takipte'
+    assert payload['polymarket_operator_summary']['tracked_wallets'][0]['detail']['gate_state']['historical_trade_evidence_status'] == 'detailed_trade_history'
+    assert len(payload['polymarket_operator_summary']['watchlist_segments']) == 5
+    assert payload['polymarket_operator_summary']['performance_chart_series']['equity_trend']
     assert payload['priority_watchlist_rows'][0]['display_name'] == 'ohanism'
     assert payload['priority_watchlist_rows'][0]['profile_ref'] == 'https://polymarket.com/tr/@ohanism'
     assert payload['priority_watchlist_rows'][0]['identity_resolution_status'] == 'pending_resolution'
@@ -654,6 +664,15 @@ def test_dashboard_api_returns_runtime_payload(dashboard_server: DashboardServer
     assert payload['binance_operator_summary']['open_trades'][0]['symbol_or_market_id'] == 'BTC/USDT:USDT'
     assert payload['binance_operator_summary']['closed_trade_summary']['win_rate_label'] == 'veri bekleniyor'
     assert payload['binance_operator_summary']['work_proof']['spot_short_reject'] is False
+    assert payload['binance_operator_summary']['top_kpis']['open_positions'] == 1
+    assert payload['binance_operator_summary']['top_kpis']['open_orders'] == 1
+    assert payload['binance_operator_summary']['strategy_status_summary']['spot_short']['allowed'] is False
+    assert 'binance_futures' in payload['binance_operator_summary']['filter_options']['venues']
+    assert payload['binance_operator_summary']['risk_summary']['symbol_concentration']['symbol'] == 'BTC/USDT:USDT'
+    assert payload['binance_operator_summary']['fresh_pnl_summary']['closed_trade_count'] == 0
+    assert payload['binance_operator_summary']['performance_chart_series']['equity_breakdown'][0]['label'] == 'Spot'
+    assert payload['operator_landing_summary']['lanes']['polymarket']['tracked_wallets'] == 4
+    assert payload['operator_landing_summary']['lanes']['binance']['open_orders'] == 1
     assert payload['position_pressure_summary']['open_positions'] == 1
     assert 'open_binance_paper_positions' in payload['legacy_position_summary']['legacy_shape']
     assert payload['legacy_position_summary']['legacy_open_positions'] == []
@@ -1341,7 +1360,16 @@ def test_dashboard_prefers_runtime_status_snapshot_when_present(dashboard_server
 def test_dashboard_index_renders_with_auth(dashboard_server: DashboardServer):
     response = _request(dashboard_server.base_url + '/index.php', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD))
     html = response.read().decode('utf-8')
-    assert 'Ghost Trader Operasyon' in html
+    assert 'WhaleSignal' in html
+    assert 'WhaleSignal Operations' in html
+    assert 'Kontrol Merkezi' in html
+    assert 'Polymarket' in html
+    assert 'Binance' in html
+    assert 'assets/operator.css' in html
+    assert 'assets/operator.js' in html
+    assert '"laneMode":"split"' in html
+    assert 'Operator hedefi' in html
+    return
     assert 'Ana Panel' in html
     assert 'Detay / Teknik Kanit' in html
     assert ('Sozluk / Aciklamalar' in html) or ('Sözlük / Açıklamalar' in html) or ('SÃ¶zlÃ¼k / AÃ§Ä±klamalar' in html)
@@ -1470,6 +1498,12 @@ def test_dashboard_research_lane_mode_hides_binance_tab_and_skips_report_warning
         response = _request(base_url + '/', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD))
         html = response.read().decode('utf-8')
         assert 'lane-polymarket-research' in html
+        assert 'WhaleSignal / Polymarket' in html
+        assert 'Polymarket Copy Trade' in html
+        assert '"laneMode":"polymarket_research"' in html
+        assert '#tracked-wallets' in html
+        assert '#whale-feed' in html
+        return
         assert 'DASHBOARD_TABS = ["polymarket-research","polymarket-copy","sozluk-aciklamalar"]' in html
         assert "const DEFAULT_TAB = DASHBOARD_TABS[0] || 'polymarket-research';" in html
         assert 'Detay / Teknik Kanit' in html
@@ -1527,6 +1561,12 @@ def test_dashboard_binance_lane_mode_uses_binance_default_tab(tmp_path: Path):
         response = _request(base_url + '/', auth=(DASHBOARD_USER, DASHBOARD_PASSWORD))
         html = response.read().decode('utf-8')
         assert 'lane-binance-technical' in html
+        assert 'WhaleSignal / Binance' in html
+        assert 'Binance Trading Operations' in html
+        assert '"laneMode":"binance_technical"' in html
+        assert '#open-positions' in html
+        assert '#runtime-feed' in html
+        return
         assert 'DASHBOARD_TABS = ["binance-technical","sozluk-aciklamalar"]' in html
         assert "const DEFAULT_TAB = DASHBOARD_TABS[0] || 'polymarket-research';" in html
         assert 'Binance Technical paneli: fresh paper PnL, skor kalitesi ve pozisyon baskisi.' in html

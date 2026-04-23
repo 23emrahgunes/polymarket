@@ -37,6 +37,10 @@ function dashboard_unauthorized(string $message = 'Unauthorized'): never
 
 function dashboard_require_auth(): void
 {
+    if (dashboard_bool_env('DASHBOARD_DISABLE_AUTH', false)) {
+        return;
+    }
+
     $expectedUser = dashboard_env('DASHBOARD_USER', 'admin') ?? 'admin';
     $passwordHash = dashboard_env('DASHBOARD_PASSWORD_HASH', '') ?? '';
 

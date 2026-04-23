@@ -68,6 +68,7 @@ function dashboard_config(): array
         'DASHBOARD_PORT' => '8081',
         'DASHBOARD_USER' => 'admin',
         'DASHBOARD_PASSWORD_HASH' => '',
+        'DASHBOARD_DISABLE_AUTH' => 'false',
         'DASHBOARD_REFRESH_SECONDS' => '5',
         'DASHBOARD_API_CACHE_SECONDS' => '8',
         'DASHBOARD_DECISION_SCAN_LIMIT' => '50000',

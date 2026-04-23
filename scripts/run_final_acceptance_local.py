@@ -194,10 +194,16 @@ def main() -> int:
     code_gate: dict[str, Any] = {}
     lane_gate: dict[str, Any] = {}
     schema_profile_results: list[dict[str, Any]] = []
+    visual_smoke_summary: dict[str, Any] | None = None
 
     code_gate["pytest"] = _run_command([sys.executable, "-m", "pytest", "-q"]).returncode == 0
     code_gate["php_index_lint"] = _run_command(["php", "-l", str(REPO_ROOT / "dashboard" / "public" / "index.php")]).returncode == 0
     code_gate["php_presenter_lint"] = _run_command(["php", "-l", str(REPO_ROOT / "dashboard" / "public" / "presenter.php")]).returncode == 0
+    visual_smoke_raw = _run_command(
+        [sys.executable, str(REPO_ROOT / "scripts" / "run_dashboard_visual_smoke.py")]
+    )
+    visual_smoke_summary = _extract_json_after_header(visual_smoke_raw.stdout, "DASHBOARD_VISUAL_SMOKE_SUMMARY")
+    code_gate["dashboard_visual_smoke"] = bool(visual_smoke_summary.get("all_checks_passed"))
 
     with tempfile.TemporaryDirectory(prefix="final-local-acceptance-", ignore_cleanup_errors=True) as tmp_dir_name:
         tmp_dir = Path(tmp_dir_name)
@@ -645,6 +651,7 @@ def main() -> int:
         "polymarket_copy_runtime_acceptance_summary": copy_runtime_acceptance,
         "binance_technical_acceptance_summary": binance_acceptance,
         "binance_technical_runtime_acceptance_summary": binance_runtime_acceptance,
+        "dashboard_visual_smoke_summary": visual_smoke_summary,
     }
     print("FINAL_LOCAL_ACCEPTANCE_SUMMARY")
     print(json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True))

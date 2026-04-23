@@ -3228,6 +3228,179 @@ function dashboard_build_binance_technical_runtime_acceptance_summary(array $dec
     ];
 }
 
+function dashboard_operator_short_address(string $address): string
+{
+    $address = trim($address);
+    if ($address === '' || strlen($address) <= 14) {
+        return $address;
+    }
+    return substr($address, 0, 6) . '...' . substr($address, -4);
+}
+
+function dashboard_operator_service_status(array $payload): array
+{
+    $service = is_array($payload['service'] ?? null) ? $payload['service'] : [];
+    $warnings = is_array($payload['warnings'] ?? null) ? $payload['warnings'] : [];
+    $active = !empty($service['active']);
+    $warningCount = count($warnings);
+
+    if (!$active) {
+        $state = 'STOPPED';
+        $tone = 'danger';
+    } elseif ($warningCount > 0) {
+        $state = 'DEGRADED';
+        $tone = 'warn';
+    } else {
+        $state = 'RUNNING';
+        $tone = 'ok';
+    }
+
+    return [
+        'label' => $state,
+        'tone' => $tone,
+        'service_name' => (string) ($service['name'] ?? 'ghost-trader'),
+        'status_text' => (string) ($service['status_text'] ?? ''),
+        'warning_count' => $warningCount,
+        'last_sync_at' => (string) ($payload['generated_at'] ?? ''),
+    ];
+}
+
+function dashboard_operator_find_venue_account(array $payload, string $venue): array
+{
+    $rows = is_array($payload['venue_accounts'] ?? null) ? $payload['venue_accounts'] : [];
+    foreach ($rows as $row) {
+        if ((string) ($row['venue'] ?? '') !== $venue) {
+            continue;
+        }
+        return [
+            'venue' => $venue,
+            'cash_balance' => round((float) ($row['cash_balance'] ?? 0.0), 4),
+            'equity' => round((float) ($row['equity'] ?? 0.0), 4),
+            'available_balance' => round((float) ($row['available_balance'] ?? 0.0), 4),
+            'updated_at' => (string) ($row['updated_at'] ?? ''),
+        ];
+    }
+
+    return [
+        'venue' => $venue,
+        'cash_balance' => 0.0,
+        'equity' => 0.0,
+        'available_balance' => 0.0,
+        'updated_at' => '',
+    ];
+}
+
+function dashboard_operator_sum_recent_rows(array $rows, string $timestampKey, string $valueKey, int $hours): float
+{
+    $cutoff = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->sub(new DateInterval(sprintf('PT%dH', max(1, $hours))));
+    $total = 0.0;
+    foreach ($rows as $row) {
+        $occurredAt = dashboard_parse_utc_datetime((string) ($row[$timestampKey] ?? ''));
+        if ($occurredAt === null || $occurredAt < $cutoff) {
+            continue;
+        }
+        $total += (float) ($row[$valueKey] ?? 0.0);
+    }
+    return round($total, 4);
+}
+
+function dashboard_operator_timeseries(array $rows, string $timestampKey, string $valueKey, int $days = 7): array
+{
+    $days = max(1, $days);
+    $buckets = [];
+    $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+    for ($offset = $days - 1; $offset >= 0; $offset--) {
+        $date = $now->sub(new DateInterval(sprintf('P%dD', $offset)));
+        $key = $date->format('Y-m-d');
+        $buckets[$key] = [
+            'label' => $date->format('d M'),
+            'value' => 0.0,
+        ];
+    }
+
+    foreach ($rows as $row) {
+        $occurredAt = dashboard_parse_utc_datetime((string) ($row[$timestampKey] ?? ''));
+        if ($occurredAt === null) {
+            continue;
+        }
+        $key = $occurredAt->format('Y-m-d');
+        if (!array_key_exists($key, $buckets)) {
+            continue;
+        }
+        if ($valueKey === '__count') {
+            $buckets[$key]['value'] += 1.0;
+            continue;
+        }
+        $buckets[$key]['value'] += (float) ($row[$valueKey] ?? 0.0);
+    }
+
+    return array_values(
+        array_map(
+            static fn (array $bucket): array => [
+                'label' => $bucket['label'],
+                'value' => round((float) ($bucket['value'] ?? 0.0), 4),
+            ],
+            $buckets
+        )
+    );
+}
+
+function dashboard_operator_wallet_tier(array $row): string
+{
+    $score = max(
+        (float) ($row['long_horizon_score'] ?? 0.0),
+        (float) ($row['consistency_score'] ?? 0.0),
+        (float) ($row['discovery_score'] ?? 0.0)
+    );
+    if ($score >= 0.8) {
+        return 'A';
+    }
+    if ($score >= 0.6) {
+        return 'B';
+    }
+    return 'C';
+}
+
+function dashboard_operator_copy_status(array $row): array
+{
+    $shadowStatus = (string) ($row['shadow_gate_status'] ?? '');
+    $pilotStatus = (string) ($row['pilot_copy_gate_status'] ?? '');
+    $copyReady = !empty($row['copy_ready_eligible']) || (string) ($row['cohort'] ?? '') === 'copy_ready';
+    $linked = strtolower((string) ($row['identity_resolution_status'] ?? $row['watchlist_status'] ?? '')) === 'linked';
+
+    if ($copyReady || $pilotStatus === 'promoted' || $pilotStatus === 'shadow_proven' || $shadowStatus === 'promoted') {
+        return ['label' => 'takipte', 'tone' => 'ok'];
+    }
+    if ($linked || (int) ($row['watchlist_priority_rank'] ?? 0) > 0) {
+        return ['label' => 'probation', 'tone' => 'warn'];
+    }
+    return ['label' => 'pasif', 'tone' => 'info'];
+}
+
+function dashboard_operator_human_reason(string $reason): string
+{
+    $reason = trim($reason);
+    if ($reason === '') {
+        return 'Net bir engel yok';
+    }
+
+    $map = [
+        'duplicate_market_exposure' => 'Ayni markette acik pozisyon zaten var',
+        'watch_only_needs_shadow_or_pilot_proof' => 'Cuzdan izleniyor ama henuz copy proof yeterli degil',
+        'no_eligible_copy_wallets' => 'Copy icin uygun cüzdan havuzu henuz bos',
+        'runtime_copy_active' => 'Gercek paper copy akisinda islem gozleniyor',
+        'spot_short_not_supported' => 'Spot short desteklenmiyor',
+        'technical_alignment_weak' => 'Teknik hizalanma zayif',
+        'score_below_threshold' => 'Skor esigin altinda kaldi',
+        'max_open_positions_exceeded' => 'Ayni anda acik pozisyon limiti dolu',
+        'duplicate_open_trade' => 'Ayni sembolde acik islem oldugu icin engellendi',
+        'shadow_replay_seed' => 'Shadow replay seed ile takip kaniti olustu',
+        'copy_entry' => 'Kaynak islem copy kapisini gecti',
+    ];
+
+    return $map[$reason] ?? str_replace('_', ' ', $reason);
+}
+
 function dashboard_build_binance_fresh_pnl_summary(PDO $pdo): array
 {
     $tradeOpenedAtExpr = dashboard_table_has_column($pdo, 'trades', 'opened_at')
@@ -3314,6 +3487,12 @@ function dashboard_build_polymarket_operator_summary(array $payload): array
     $activePositions = is_array($payload['active_copy_positions'] ?? null) ? $payload['active_copy_positions'] : [];
     $recentActions = is_array($payload['recent_copy_actions'] ?? null) ? $payload['recent_copy_actions'] : [];
     $walletPnlRows = is_array($payload['wallet_follower_pnl_summary'] ?? null) ? $payload['wallet_follower_pnl_summary'] : [];
+    $walletRows = is_array($payload['wallet_consistency_table'] ?? null) ? $payload['wallet_consistency_table'] : [];
+    $recentShadowActions = is_array($payload['recent_shadow_actions'] ?? null) ? $payload['recent_shadow_actions'] : [];
+    $trustedWhales = is_array($payload['trusted_whale_summary'] ?? null) ? $payload['trusted_whale_summary'] : [];
+    $longHorizon = is_array($payload['long_horizon_watchlist_summary'] ?? null) ? $payload['long_horizon_watchlist_summary'] : [];
+    $serviceStatus = dashboard_operator_service_status($payload);
+    $polymarketAccount = dashboard_operator_find_venue_account($payload, 'polymarket');
 
     $mainWallet = [];
     foreach ($priorityRows as $row) {
@@ -3333,8 +3512,269 @@ function dashboard_build_polymarket_operator_summary(array $payload): array
     $wins = count(array_filter($closedActions, static fn (array $row): bool => (float) ($row['follower_pnl'] ?? 0.0) > 0.0));
     $winRate = count($closedActions) > 0 ? round(($wins / count($closedActions)) * 100.0, 1) : null;
     $followerPnl = array_sum(array_map(static fn (array $row): float => (float) ($row['follower_realized_pnl'] ?? 0.0), $walletPnlRows));
+    $todayFollowerPnl = dashboard_operator_sum_recent_rows($closedActions, 'executed_at', 'follower_pnl', 24);
+    $sevenDayFollowerPnl = dashboard_operator_sum_recent_rows($closedActions, 'executed_at', 'follower_pnl', 24 * 7);
+    $sevenDayOpenedCapital = array_sum(array_map(static fn (array $row): float => (float) ($row['opened_notional_usd'] ?? 0.0), $walletPnlRows));
+    $sevenDayRoi = $sevenDayOpenedCapital > 0.0 ? round(($sevenDayFollowerPnl / $sevenDayOpenedCapital) * 100.0, 2) : null;
+
+    $trustedWhaleByAddress = [];
+    foreach ($trustedWhales as $row) {
+        $trustedWhaleByAddress[strtolower((string) ($row['address'] ?? ''))] = $row;
+    }
+
+    $recentShadowByAddress = [];
+    foreach ($recentShadowActions as $row) {
+        $address = strtolower((string) ($row['wallet_address'] ?? ''));
+        if ($address === '' || isset($recentShadowByAddress[$address])) {
+            continue;
+        }
+        $recentShadowByAddress[$address] = $row;
+    }
+
+    $bestClosedAction = $closedActions === []
+        ? null
+        : array_reduce(
+            $closedActions,
+            static function (?array $carry, array $row): array {
+                if ($carry === null || (float) ($row['follower_pnl'] ?? 0.0) > (float) ($carry['follower_pnl'] ?? 0.0)) {
+                    return $row;
+                }
+                return $carry;
+            }
+        );
+    $worstClosedAction = $closedActions === []
+        ? null
+        : array_reduce(
+            $closedActions,
+            static function (?array $carry, array $row): array {
+                if ($carry === null || (float) ($row['follower_pnl'] ?? 0.0) < (float) ($carry['follower_pnl'] ?? 0.0)) {
+                    return $row;
+                }
+                return $carry;
+            }
+        );
+
+    $trackedWallets = [];
+    foreach (array_slice($walletRows, 0, 8) as $row) {
+        $address = strtolower((string) ($row['address'] ?? $row['wallet_address'] ?? ''));
+        $shortAddress = dashboard_operator_short_address((string) ($row['address'] ?? $row['wallet_address'] ?? ''));
+        $tier = dashboard_operator_wallet_tier($row);
+        $finalScore = round(max(
+            (float) ($row['long_horizon_score'] ?? 0.0),
+            (float) ($row['consistency_score'] ?? 0.0),
+            (float) ($row['discovery_score'] ?? 0.0)
+        ) * 100.0, 1);
+        $followabilityScore = round(min(1.0, max(0.0,
+            ((float) ($row['trust_score'] ?? 0.5) * 0.55)
+            + ((float) ($row['consistency_score'] ?? 0.0) * 0.25)
+            + ((float) ($row['crypto_participation_ratio'] ?? 0.0) * 0.20)
+        )) * 100.0, 1);
+        $winRateValue = $trustedWhaleByAddress[$address]['win_rate'] ?? null;
+        $copyStatus = dashboard_operator_copy_status($row);
+        $lastShadow = $recentShadowByAddress[$address] ?? [];
+        $recentWalletClosed = array_values(array_filter(
+            $closedActions,
+            static fn (array $action): bool => strtolower((string) ($action['wallet_address'] ?? '')) === $address
+        ));
+
+        $reliableReasons = [];
+        if ((int) ($row['historical_trade_rows'] ?? 0) > 0) {
+            $reliableReasons[] = 'Gecmis islem kaniti mevcut';
+        }
+        if ((float) ($row['crypto_participation_ratio'] ?? 0.0) >= 0.60) {
+            $reliableReasons[] = 'Crypto market uzmanligi yuksek';
+        }
+        if ((float) ($row['long_horizon_score'] ?? 0.0) >= 0.70) {
+            $reliableReasons[] = 'Uzun vade tutarlilik skoru guclu';
+        }
+
+        $riskReasons = [];
+        if ((string) ($row['historical_trade_evidence_status'] ?? '') === 'no_historical_evidence') {
+            $riskReasons[] = 'Gecmis kanit henuz zayif';
+        }
+        if ((float) ($row['drawdown_estimate_pct'] ?? 0.0) < -10.0 || (float) ($row['worst_drawdown_pct'] ?? 0.0) < -10.0) {
+            $riskReasons[] = 'Drawdown dikkati gerekiyor';
+        }
+        if ((string) ($row['pilot_copy_gate_reason'] ?? '') !== '' && (string) ($row['pilot_copy_gate_status'] ?? '') !== 'promoted') {
+            $riskReasons[] = dashboard_operator_human_reason((string) ($row['pilot_copy_gate_reason'] ?? ''));
+        }
+
+        $trackedWallets[] = [
+            'address' => (string) ($row['address'] ?? $row['wallet_address'] ?? ''),
+            'address_short' => $shortAddress,
+            'wallet_label' => (string) ($row['display_name'] ?? $shortAddress),
+            'tier' => $tier,
+            'final_score' => $finalScore,
+            'followability_score' => $followabilityScore,
+            'pnl_7d' => round((float) ($row['shadow_pnl'] ?? 0.0), 4),
+            'pnl_30d' => round((float) ($row['realized_pnl'] ?? 0.0), 4),
+            'win_rate' => $winRateValue === null ? null : round((float) $winRateValue, 1),
+            'last_trade_at' => (string) ($row['evidence_last_trade_at'] ?? $row['last_seen_at'] ?? ''),
+            'last_action' => (string) ($lastShadow['action_type'] ?? $row['long_horizon_status'] ?? 'watch_only'),
+            'copy_status' => $copyStatus['label'],
+            'copy_status_tone' => $copyStatus['tone'],
+            'detail' => [
+                'score_breakdown' => [
+                    'long_horizon_score' => round((float) ($row['long_horizon_score'] ?? 0.0), 4),
+                    'consistency_score' => round((float) ($row['consistency_score'] ?? 0.0), 4),
+                    'trust_score' => round((float) ($row['trust_score'] ?? 0.0), 4),
+                    'profit_consistency_score' => round((float) ($row['profit_consistency_score'] ?? 0.0), 4),
+                ],
+                'specialization' => (string) ($row['specialization'] ?? 'UNKNOWN'),
+                'crypto_participation_ratio' => round((float) ($row['crypto_participation_ratio'] ?? 0.0) * 100.0, 1),
+                'stability' => [
+                    'active_days' => (int) ($row['active_days'] ?? 0),
+                    'closed_trade_count' => (int) ($row['closed_trade_count'] ?? 0),
+                    'observation_days' => (int) ($row['observation_days'] ?? 0),
+                    'observed_action_count' => (int) ($row['observed_action_count'] ?? 0),
+                    'worst_drawdown_pct' => round((float) ($row['worst_drawdown_pct'] ?? 0.0), 4),
+                ],
+                'gate_state' => [
+                    'shadow_gate_status' => (string) ($row['shadow_gate_status'] ?? 'blocked'),
+                    'shadow_gate_reason' => (string) ($row['shadow_gate_reason'] ?? ''),
+                    'pilot_copy_gate_status' => (string) ($row['pilot_copy_gate_status'] ?? 'blocked'),
+                    'pilot_copy_gate_reason' => (string) ($row['pilot_copy_gate_reason'] ?? ''),
+                    'copy_ready_gate_status' => (string) ($row['copy_ready_gate_status'] ?? 'blocked'),
+                    'copy_ready_gate_reason' => (string) ($row['copy_ready_gate_reason'] ?? ''),
+                    'historical_trade_evidence_status' => (string) ($row['historical_trade_evidence_status'] ?? 'no_historical_evidence'),
+                ],
+                'recent_closed_positions' => array_slice($recentWalletClosed, 0, 3),
+                'reliable_reasons' => $reliableReasons,
+                'risk_reasons' => $riskReasons,
+            ],
+        ];
+    }
+
+    $recentWhaleActions = array_map(
+        static function (array $row): array {
+            $actionType = (string) ($row['action_type'] ?? '');
+            return [
+                'timestamp' => (string) ($row['executed_at'] ?? ''),
+                'wallet_address' => (string) ($row['wallet_address'] ?? ''),
+                'wallet_short' => dashboard_operator_short_address((string) ($row['wallet_address'] ?? '')),
+                'market' => (string) ($row['market_id'] ?? ''),
+                'action' => strtoupper((string) ($row['side'] ?? $actionType)),
+                'entry_price' => null,
+                'size' => round((float) ($row['source_notional_usd'] ?? 0.0), 4),
+                'confidence' => null,
+                'bot_decision' => $actionType === 'reject' ? 'rejected' : 'copied',
+                'reject_reason' => $actionType === 'reject' ? dashboard_operator_human_reason((string) ($row['reason'] ?? '')) : '',
+                'reason' => dashboard_operator_human_reason((string) ($row['reason'] ?? '')),
+            ];
+        },
+        array_slice($recentActions, 0, 8)
+    );
+
+    $openCopyPositions = array_map(
+        static function (array $row): array {
+            return [
+                'market' => (string) ($row['market_id'] ?? ''),
+                'side' => (string) ($row['side'] ?? ''),
+                'source_wallet' => dashboard_operator_short_address((string) ($row['wallet_address'] ?? '')),
+                'entry' => (string) ($row['source_opened_at'] ?? ''),
+                'current' => (string) ($row['status'] ?? 'OPEN'),
+                'size' => round((float) ($row['follower_notional_usd'] ?? 0.0), 4),
+                'notional' => round((float) ($row['source_notional_usd'] ?? 0.0), 4),
+                'pnl' => 0.0,
+                'opened_at' => (string) ($row['opened_at'] ?? ''),
+                'age' => (string) ($row['opened_at'] ?? ''),
+                'status' => (string) ($row['status'] ?? 'OPEN'),
+                'cohort_source' => (string) ($row['cohort_source'] ?? 'shadow_proven'),
+            ];
+        },
+        array_slice($activePositions, 0, 6)
+    );
+
+    $recentClosedCopyPositions = array_map(
+        static function (array $row): array {
+            return [
+                'market' => (string) ($row['market_id'] ?? ''),
+                'source_wallet' => dashboard_operator_short_address((string) ($row['wallet_address'] ?? '')),
+                'status' => (string) ($row['source_status'] ?? ''),
+                'follower_pnl' => round((float) ($row['follower_pnl'] ?? 0.0), 4),
+                'source_pnl' => round((float) ($row['source_pnl'] ?? 0.0), 4),
+                'action_type' => (string) ($row['action_type'] ?? ''),
+                'closed_at' => (string) ($row['executed_at'] ?? ''),
+            ];
+        },
+        array_slice($closedActions, 0, 6)
+    );
+
+    $decisionRows = array_map(
+        static function (array $row) use ($trackedWallets): array {
+            $wallet = strtolower((string) ($row['wallet_address'] ?? ''));
+            $matched = null;
+            foreach ($trackedWallets as $walletRow) {
+                if (strtolower((string) ($walletRow['address'] ?? '')) === $wallet) {
+                    $matched = $walletRow;
+                    break;
+                }
+            }
+            $reason = (string) ($row['reason'] ?? '');
+            $actionType = (string) ($row['action_type'] ?? '');
+            return [
+                'timestamp' => (string) ($row['executed_at'] ?? ''),
+                'source_wallet' => dashboard_operator_short_address((string) ($row['wallet_address'] ?? '')),
+                'score' => (float) ($matched['final_score'] ?? 0.0),
+                'threshold' => 75.0,
+                'liquidity_check' => !str_contains($reason, 'liquidity') ? 'geçti' : 'takildi',
+                'stale_check' => !str_contains($reason, 'stale') ? 'geçti' : 'takildi',
+                'concentration_check' => !str_contains($reason, 'duplicate') ? 'geçti' : 'takildi',
+                'final_verdict' => $actionType === 'reject' ? 'rejected' : ($actionType === 'open' ? 'copied' : 'closed'),
+                'reason_summary' => dashboard_operator_human_reason($reason),
+            ];
+        },
+        array_slice($recentActions, 0, 8)
+    );
+
+    $watchlistSegments = [
+        ['key' => 'core', 'label' => 'Core wallets', 'count' => (int) (($longHorizon['copy_ready'] ?? 0) + ($longHorizon['shadow_tracking'] ?? 0)), 'tone' => 'ok'],
+        ['key' => 'emerging', 'label' => 'Emerging wallets', 'count' => (int) ($longHorizon['observing'] ?? 0), 'tone' => 'info'],
+        ['key' => 'probation', 'label' => 'Probation wallets', 'count' => (int) (($longHorizon['linked'] ?? 0) + ($longHorizon['priority_watch'] ?? 0)), 'tone' => 'warn'],
+        ['key' => 'rising', 'label' => 'Rising wallets', 'count' => (int) ($longHorizon['pilot_copy_ready'] ?? 0), 'tone' => 'ok'],
+        ['key' => 'dropped', 'label' => 'Dropped wallets', 'count' => count(array_filter($walletRows, static fn (array $row): bool => (string) ($row['shadow_gate_status'] ?? '') === 'blocked' && (int) ($row['watchlist_priority_rank'] ?? 0) > 0)), 'tone' => 'danger'],
+    ];
+
+    $topKpis = [
+        'service_status' => $serviceStatus,
+        'tracked_whales' => count($trackedWallets),
+        'active_copy_positions' => count($activePositions),
+        'portfolio_value' => round((float) ($polymarketAccount['equity'] ?? 0.0), 4),
+        'daily_pnl' => $todayFollowerPnl,
+        'seven_day_pnl' => $sevenDayFollowerPnl,
+        'seven_day_roi' => $sevenDayRoi,
+        'copy_success_rate' => $winRate,
+        'last_sync_at' => (string) ($serviceStatus['last_sync_at'] ?? ''),
+    ];
+
+    $copyPortfolioSummary = [
+        'allocated_capital' => round((float) ($polymarketAccount['equity'] ?? 0.0), 4),
+        'available_balance' => round((float) ($polymarketAccount['available_balance'] ?? 0.0), 4),
+        'realized_pnl' => round($followerPnl, 4),
+        'unrealized_pnl' => 0.0,
+        'opened_today' => count(array_filter($recentActions, static fn (array $row): bool => (string) ($row['action_type'] ?? '') === 'open')),
+        'closed_today' => count($closedActions),
+        'best_position' => $bestClosedAction,
+        'worst_position' => $worstClosedAction,
+    ];
+
+    $performanceChartSeries = [
+        'equity_trend' => dashboard_operator_timeseries($walletPnlRows, 'last_action_at', 'follower_realized_pnl', 7),
+        'daily_pnl_trend' => dashboard_operator_timeseries($closedActions, 'executed_at', 'follower_pnl', 7),
+        'copied_trade_count_trend' => dashboard_operator_timeseries($recentActions, 'executed_at', '__count', 7),
+    ];
 
     return [
+        'service_status' => $serviceStatus,
+        'top_kpis' => $topKpis,
+        'tracked_wallets' => $trackedWallets,
+        'recent_whale_actions' => $recentWhaleActions,
+        'copy_portfolio_summary' => $copyPortfolioSummary,
+        'open_copy_positions' => $openCopyPositions,
+        'recent_closed_copy_positions' => $recentClosedCopyPositions,
+        'decision_explainability_rows' => $decisionRows,
+        'watchlist_segments' => $watchlistSegments,
+        'performance_chart_series' => $performanceChartSeries,
         'wallet_copy_status' => [
             'watched_wallets' => count($priorityRows),
             'linked_wallets' => count(array_filter($priorityRows, static fn (array $row): bool => strtolower((string) ($row['identity_resolution_status'] ?? $row['status'] ?? '')) === 'linked')),
@@ -3379,11 +3819,25 @@ function dashboard_build_binance_operator_summary(array $payload): array
     $acceptance = is_array($payload['technical_acceptance_summary'] ?? null) ? $payload['technical_acceptance_summary'] : [];
     $runtime = is_array($payload['technical_runtime_acceptance_summary'] ?? null) ? $payload['technical_runtime_acceptance_summary'] : [];
     $openPositions = is_array($payload['open_positions'] ?? null) ? $payload['open_positions'] : [];
+    $openOrders = is_array($payload['open_orders'] ?? null) ? $payload['open_orders'] : [];
     $recentTrades = is_array($payload['recent_trades'] ?? null) ? $payload['recent_trades'] : [];
+    $recentDecisions = is_array($payload['recent_decisions'] ?? null) ? $payload['recent_decisions'] : [];
+    $serviceStatus = dashboard_operator_service_status($payload);
+    $futuresAccount = dashboard_operator_find_venue_account($payload, 'binance_futures');
+    $spotAccount = dashboard_operator_find_venue_account($payload, 'binance_spot');
+    $scoreComponentSummary = is_array($payload['binance_technical_score_component_summary'] ?? null) ? $payload['binance_technical_score_component_summary'] : [];
+    $gapSummary = is_array($payload['binance_technical_fresh_score_gap_summary'] ?? null) ? $payload['binance_technical_fresh_score_gap_summary'] : [];
+    $blockerBreakdown = is_array($payload['binance_technical_score_blocker_breakdown'] ?? null) ? $payload['binance_technical_score_blocker_breakdown'] : [];
+    $rejectBreakdown = is_array($payload['binance_technical_fresh_reject_breakdown'] ?? null) ? $payload['binance_technical_fresh_reject_breakdown'] : [];
 
     $openTechnical = array_values(array_filter(
         $openPositions,
         static fn (array $row): bool => in_array((string) ($row['venue'] ?? ''), ['binance_futures', 'binance_spot'], true)
+    ));
+    $openTechnicalOrders = array_values(array_filter(
+        $openOrders,
+        static fn (array $row): bool => in_array((string) ($row['venue'] ?? ''), ['binance_futures', 'binance_spot'], true)
+            && strtoupper((string) ($row['status'] ?? '')) === 'OPEN'
     ));
     $closedTechnical = array_values(array_filter(
         $recentTrades,
@@ -3391,10 +3845,139 @@ function dashboard_build_binance_operator_summary(array $payload): array
             && str_starts_with(strtoupper((string) ($row['status'] ?? '')), 'CLOSED')
             && (string) ($row['sample_kind'] ?? '') !== 'acceptance_fixture'
     ));
+    $runtimeDecisionFeed = array_values(array_filter(
+        $recentDecisions,
+        static fn (array $row): bool => in_array((string) ($row['venue'] ?? ''), ['binance_futures', 'binance_spot'], true)
+    ));
     $wins = count(array_filter($closedTechnical, static fn (array $row): bool => (float) ($row['pnl'] ?? 0.0) > 0.0));
     $winRate = count($closedTechnical) > 0 ? round(($wins / count($closedTechnical)) * 100.0, 1) : null;
+    $dailyPnl = dashboard_operator_sum_recent_rows($closedTechnical, 'timestamp', 'pnl', 24);
+    $totalEquity = round((float) ($futuresAccount['equity'] ?? 0.0) + (float) ($spotAccount['equity'] ?? 0.0), 4);
+    $currentExposurePct = $totalEquity > 0.0
+        ? round((((float) ($positionPressure['open_notional_usd'] ?? 0.0)) / $totalEquity) * 100.0, 2)
+        : 0.0;
+    $positionBySymbol = [];
+    foreach ($openTechnical as $row) {
+        $symbol = (string) ($row['symbol_or_market_id'] ?? $row['market_id'] ?? '');
+        $positionBySymbol[$symbol] = ($positionBySymbol[$symbol] ?? 0.0) + abs((float) ($row['notional_usd'] ?? 0.0));
+    }
+    arsort($positionBySymbol);
+    $topSymbol = array_key_first($positionBySymbol);
+    $topSymbolNotional = $topSymbol !== null ? (float) ($positionBySymbol[$topSymbol] ?? 0.0) : 0.0;
+    $symbolConcentrationPct = ((float) ($positionPressure['open_notional_usd'] ?? 0.0)) > 0.0
+        ? round(($topSymbolNotional / (float) ($positionPressure['open_notional_usd'] ?? 1.0)) * 100.0, 2)
+        : 0.0;
+    $lossCount = count($closedTechnical) - $wins;
+    $avgWinner = $wins > 0 ? round(array_sum(array_map(static fn (array $row): float => max((float) ($row['pnl'] ?? 0.0), 0.0), $closedTechnical)) / $wins, 4) : null;
+    $avgLoser = $lossCount > 0 ? round(array_sum(array_map(static fn (array $row): float => min((float) ($row['pnl'] ?? 0.0), 0.0), $closedTechnical)) / $lossCount, 4) : null;
+
+    $topKpis = [
+        'service_status' => $serviceStatus,
+        'total_account_value' => $totalEquity,
+        'spot_equity' => round((float) ($spotAccount['equity'] ?? 0.0), 4),
+        'futures_equity' => round((float) ($futuresAccount['equity'] ?? 0.0), 4),
+        'daily_total_pnl' => $dailyPnl,
+        'pnl_7d' => round((float) ($freshPnl['net_pnl'] ?? 0.0), 4),
+        'open_positions' => count($openTechnical),
+        'open_orders' => count($openTechnicalOrders),
+        'total_risk_exposure' => $currentExposurePct,
+        'last_runtime_at' => (string) ($runtime['last_runtime_at'] ?? $serviceStatus['last_sync_at'] ?? ''),
+    ];
+
+    $filterOptions = [
+        'symbols' => array_values(array_unique(array_filter(array_map(static fn (array $row): string => (string) ($row['symbol_or_market_id'] ?? $row['market_id'] ?? ''), array_merge($openTechnical, $openTechnicalOrders, $closedTechnical))))),
+        'venues' => ['all', 'binance_futures', 'binance_spot'],
+        'sides' => ['all', 'long', 'short'],
+        'statuses' => ['all', 'open', 'closed', 'rejected'],
+    ];
+
+    $strategyStatusSummary = [
+        'futures_long' => ['label' => 'Futures LONG', 'allowed' => true],
+        'futures_short' => ['label' => 'Futures SHORT', 'allowed' => true],
+        'spot_long' => ['label' => 'Spot LONG', 'allowed' => true],
+        'spot_short' => ['label' => 'Spot SHORT', 'allowed' => false],
+        'score_threshold' => round((float) ($scoreComponentSummary['avg_effective_min_score'] ?? 0.54), 4),
+        'acceptance_gate' => !empty($runtime['all_checks_passed']) || !empty($acceptance['all_checks_passed']),
+        'runtime_decision_rows' => (int) ($runtime['runtime_decision_rows'] ?? 0),
+    ];
+
+    $riskSummary = [
+        'max_trade_risk_pct' => 1.5,
+        'current_exposure_pct' => $currentExposurePct,
+        'symbol_concentration' => [
+            'symbol' => $topSymbol ?? '',
+            'pct' => $symbolConcentrationPct,
+        ],
+        'daily_drawdown_pct' => $totalEquity > 0.0 && $dailyPnl < 0.0 ? round((abs($dailyPnl) / $totalEquity) * 100.0, 2) : 0.0,
+        'kill_switch_status' => 'KAPALI',
+        'blocked_reasons' => array_slice($rejectBreakdown, 0, 3),
+        'rejected_trades_today' => count(array_filter(
+            $runtimeDecisionFeed,
+            static fn (array $row): bool => (string) ($row['action'] ?? '') === 'reject'
+        )),
+    ];
+
+    $decisionFeed = array_map(
+        static function (array $row): array {
+            return [
+                'timestamp' => (string) ($row['occurred_at'] ?? ''),
+                'symbol' => (string) ($row['market_id'] ?? ''),
+                'venue' => (string) ($row['venue'] ?? ''),
+                'score' => round((float) ($row['decision_score'] ?? 0.0), 4),
+                'threshold' => round((float) ($row['threshold'] ?? 0.0), 4),
+                'action' => (string) ($row['action'] ?? ''),
+                'reason' => dashboard_operator_human_reason((string) ($row['reason'] ?? '')),
+                'final_verdict' => (string) ($row['action'] ?? ''),
+            ];
+        },
+        array_slice($runtimeDecisionFeed, 0, 10)
+    );
+
+    $freshPnlSummary = [
+        'today' => $dailyPnl,
+        'seven_days' => round((float) ($freshPnl['net_pnl'] ?? 0.0), 4),
+        'futures_pnl' => round((float) ($futuresPnl['net_pnl'] ?? 0.0), 4),
+        'spot_pnl' => round((float) ($spotPnl['net_pnl'] ?? 0.0), 4),
+        'win_rate' => $winRate,
+        'closed_trade_count' => count($closedTechnical),
+        'average_winner' => $avgWinner,
+        'average_loser' => $avgLoser,
+    ];
+
+    $technicalQualitySummary = [
+        'avg_score' => round((float) ($scoreComponentSummary['avg_final_score'] ?? 0.0), 4),
+        'avg_threshold' => round((float) ($scoreComponentSummary['avg_effective_min_score'] ?? 0.54), 4),
+        'avg_rsi' => round((float) ($scoreComponentSummary['avg_rsi_component'] ?? 0.0), 4),
+        'avg_macd' => round((float) ($scoreComponentSummary['avg_macd_component'] ?? 0.0), 4),
+        'avg_momentum' => round((float) ($scoreComponentSummary['avg_momentum_component'] ?? 0.0), 4),
+        'avg_spread' => 0.0,
+        'near_threshold_count' => (int) ($gapSummary['near_threshold_count'] ?? 0),
+        'blocker_distribution' => $blockerBreakdown,
+    ];
+
+    $performanceChartSeries = [
+        'pnl_trend' => dashboard_operator_timeseries($closedTechnical, 'timestamp', 'pnl', 7),
+        'trade_count_trend' => dashboard_operator_timeseries($closedTechnical, 'timestamp', '__count', 7),
+        'equity_breakdown' => [
+            ['label' => 'Spot', 'value' => round((float) ($spotAccount['equity'] ?? 0.0), 4)],
+            ['label' => 'Futures', 'value' => round((float) ($futuresAccount['equity'] ?? 0.0), 4)],
+            ['label' => 'Risk', 'value' => round((float) ($positionPressure['open_notional_usd'] ?? 0.0), 4)],
+        ],
+    ];
 
     return [
+        'service_status' => $serviceStatus,
+        'top_kpis' => $topKpis,
+        'filter_options' => $filterOptions,
+        'strategy_status_summary' => $strategyStatusSummary,
+        'open_positions' => array_slice($openTechnical, 0, 8),
+        'open_orders' => array_slice($openTechnicalOrders, 0, 8),
+        'fresh_pnl_summary' => $freshPnlSummary,
+        'runtime_decision_feed' => $decisionFeed,
+        'risk_summary' => $riskSummary,
+        'recent_closed_trades' => array_slice($closedTechnical, 0, 8),
+        'technical_quality_summary' => $technicalQualitySummary,
+        'performance_chart_series' => $performanceChartSeries,
         'paper_balance_pnl' => [
             'fresh_window_days' => (int) ($freshPnl['fresh_window_days'] ?? 7),
             'fresh_7d_pnl' => round((float) ($freshPnl['net_pnl'] ?? 0.0), 4),
@@ -3423,6 +4006,38 @@ function dashboard_build_binance_operator_summary(array $payload): array
             'spot_short_reject' => (bool) (($runtime['runtime_spot_short_reject'] ?? false) || ($acceptance['spot_short_reject'] ?? false)),
             'reason' => (string) ($runtime['reason'] ?? 'runtime_paths_incomplete'),
             'fixture_note' => 'Test kaniti ana fresh PnL hesabina dahil edilmez.',
+        ],
+    ];
+}
+
+function dashboard_build_operator_landing_summary(array $payload): array
+{
+    $serviceStatus = dashboard_operator_service_status($payload);
+    $polymarket = is_array($payload['polymarket_operator_summary'] ?? null) ? $payload['polymarket_operator_summary'] : [];
+    $binance = is_array($payload['binance_operator_summary'] ?? null) ? $payload['binance_operator_summary'] : [];
+
+    return [
+        'service_status' => $serviceStatus,
+        'all_running' => (string) ($serviceStatus['label'] ?? '') === 'RUNNING',
+        'last_sync_at' => (string) ($serviceStatus['last_sync_at'] ?? ''),
+        'total_alerts' => (int) ($serviceStatus['warning_count'] ?? 0),
+        'lanes' => [
+            'polymarket' => [
+                'title' => 'Polymarket Copy Trade',
+                'description' => 'Takip edilen cüzdanlar, whale akis ve paper copy operasyonu',
+                'status' => $polymarket['service_status'] ?? $serviceStatus,
+                'today_pnl' => (float) ($polymarket['top_kpis']['daily_pnl'] ?? 0.0),
+                'active_positions' => (int) ($polymarket['top_kpis']['active_copy_positions'] ?? 0),
+                'tracked_wallets' => (int) ($polymarket['top_kpis']['tracked_whales'] ?? 0),
+            ],
+            'binance' => [
+                'title' => 'Binance Trading Operations',
+                'description' => 'Spot + futures paper trading operasyon paneli',
+                'status' => $binance['service_status'] ?? $serviceStatus,
+                'today_pnl' => (float) ($binance['top_kpis']['daily_total_pnl'] ?? 0.0),
+                'active_positions' => (int) ($binance['top_kpis']['open_positions'] ?? 0),
+                'open_orders' => (int) ($binance['top_kpis']['open_orders'] ?? 0),
+            ],
         ],
     ];
 }
@@ -3597,6 +4212,7 @@ function dashboard_augment_payload(array $payload): array
         $payload = array_merge($payload, dashboard_build_binance_lane_summary($payload));
         $payload['polymarket_operator_summary'] = dashboard_build_polymarket_operator_summary($payload);
         $payload['binance_operator_summary'] = dashboard_build_binance_operator_summary($payload);
+        $payload['operator_landing_summary'] = dashboard_build_operator_landing_summary($payload);
         $payload['dashboard_tab_help'] = dashboard_build_dashboard_tab_help();
         $payload['dashboard_glossary'] = dashboard_build_dashboard_glossary();
         $payload = dashboard_augment_recent_decisions($pdo, $payload);
@@ -3646,6 +4262,7 @@ function dashboard_augment_payload(array $payload): array
         $payload = array_merge($payload, dashboard_build_binance_lane_summary($payload));
         $payload['polymarket_operator_summary'] = dashboard_build_polymarket_operator_summary($payload);
         $payload['binance_operator_summary'] = dashboard_build_binance_operator_summary($payload);
+        $payload['operator_landing_summary'] = dashboard_build_operator_landing_summary($payload);
         $payload['dashboard_tab_help'] = dashboard_build_dashboard_tab_help();
         $payload['dashboard_glossary'] = dashboard_build_dashboard_glossary();
         $payload['runtime_summary'] = array_merge(
