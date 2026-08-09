@@ -1,0 +1,2 @@
+event_slug,anchor_utc,anchor_source,station,timezone,notes
+highest-temperature-in-example-city-on-july-12-2026,2026-07-12T00:00:00Z,station_local_day_start,EXAMPLE,Etc/UTC,Replace with exact ex-ante station anchor
