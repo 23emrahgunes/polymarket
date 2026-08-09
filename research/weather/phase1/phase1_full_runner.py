@@ -52,7 +52,7 @@ def iso(t: int) -> str:
 class Http:
     def __init__(self):
         self.s = requests.Session()
-        self.s.headers.update({"User-Agent": "weather-edge-lab-phase1/1.0", "Accept": "application/json"})
+        self.s.headers.update({"User-Agent": "weather-edge-lab-phase1/1.1", "Accept": "application/json"})
 
     def get(self, url: str, params=None, retries=6):
         last = None
@@ -75,13 +75,21 @@ class Http:
 
 
 def discover_events(http: Http, start: str, end: str, max_events: int = 0):
+    """Discover resolved temperature events using Gamma keyset pagination.
+
+    Gamma's cursor-based endpoint is required for large historical scans.  The
+    legacy /events offset route can fail with HTTP 422 once the offset grows
+    large enough.  Keyset pagination returns {events, next_cursor} and accepts
+    tag/date filters while including nested markets.
+    """
     out = []
-    offset = 0
+    after_cursor = None
+    page = 0
+
     while True:
         params = {
             "closed": "true",
-            "limit": 100,
-            "offset": offset,
+            "limit": 500,
             "ascending": "true",
             "order": "endDate",
             "end_date_min": f"{start}T00:00:00Z",
@@ -89,19 +97,36 @@ def discover_events(http: Http, start: str, end: str, max_events: int = 0):
             "tag_slug": "weather",
             "related_tags": "true",
         }
-        batch = http.get(f"{GAMMA}/events", params=params)
+        if after_cursor:
+            params["after_cursor"] = after_cursor
+
+        data = http.get(f"{GAMMA}/events/keyset", params=params)
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Unexpected Gamma keyset response: {type(data)}")
+
+        batch = data.get("events", [])
         if not isinstance(batch, list):
-            raise RuntimeError(f"Unexpected Gamma response: {type(batch)}")
+            raise RuntimeError(f"Unexpected Gamma events payload: {type(batch)}")
+
+        page += 1
         for e in batch:
             title = (e.get("title") or "").strip()
             if TEMP_RE.match(title):
                 out.append(e)
                 if max_events and len(out) >= max_events:
                     return out
-        print(f"Gamma offset={offset}: {len(batch)} rows, temp matches={len(out)}", file=sys.stderr)
-        if len(batch) < 100:
+
+        next_cursor = data.get("next_cursor")
+        print(
+            f"Gamma keyset page={page}: {len(batch)} rows, temp matches={len(out)}, "
+            f"next_cursor={'yes' if next_cursor else 'no'}",
+            file=sys.stderr,
+        )
+
+        if not batch or not next_cursor or next_cursor == after_cursor:
             break
-        offset += 100
+        after_cursor = next_cursor
+
     return out
 
 
@@ -320,6 +345,7 @@ def main():
                     "event_id": ev.event_id,
                     "city": ev.city,
                     "kind": ev.kind,
+                    "anchor_ts": int(ev.anchor_ts),
                     "bucket": mk.bucket,
                     "market_slug": mk.market_slug,
                     "yes_token": mk.yes_token,
@@ -339,7 +365,7 @@ def main():
     if odf.empty:
         raise SystemExit("No historical observations returned")
     odf["price_bin"] = pd.cut(odf.price, PRICE_BINS, labels=PRICE_LABELS, include_lowest=True, right=False)
-    odf["event_day"] = pd.to_datetime(odf.anchor_ts if "anchor_ts" in odf else odf.target_ts, unit="s", utc=True).dt.date.astype(str)
+    odf["event_day"] = pd.to_datetime(odf.anchor_ts, unit="s", utc=True).dt.date.astype(str)
     odf["cluster_id"] = odf.city.astype(str) + "|" + odf.event_day
     odf["brier"] = (odf.price - odf.result) ** 2
     odf.to_csv(outdir / "observations.csv", index=False)
