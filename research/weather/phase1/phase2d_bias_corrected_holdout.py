@@ -102,7 +102,7 @@ def main() -> int:
     v = manifest.merge(bias[["date_hkt", "hko_actual_max_c"]], on="date_hkt", how="left")
     v["semantic_result"] = [bucket_hit_range(t, b) for t, b in zip(v["hko_actual_max_c"], v["bucket"])]
     v["semantic_result"] = v["semantic_result"].astype("boolean")
-    valid = v["semantic_result"].notna().copy()
+    valid = v.loc[v["semantic_result"].notna()].copy()
     valid["semantic_result_int"] = valid["semantic_result"].astype(int)
     valid["result_int"] = pd.to_numeric(valid["result"], errors="coerce").astype(int)
     mism = valid[valid["semantic_result_int"] != valid["result_int"]].copy()
