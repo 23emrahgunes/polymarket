@@ -31,6 +31,14 @@ PRAGMA synchronous=NORMAL;
 CREATE TABLE IF NOT EXISTS runs(
   id INTEGER PRIMARY KEY, ts TEXT NOT NULL, status TEXT NOT NULL, note TEXT
 );
+CREATE TABLE IF NOT EXISTS source_cache(
+  city TEXT PRIMARY KEY,
+  station TEXT NOT NULL,
+  lat REAL,
+  lon REAL,
+  forecast_hourly_url TEXT,
+  checked_at TEXT
+);
 CREATE TABLE IF NOT EXISTS predictions(
   id INTEGER PRIMARY KEY,
   detected_at TEXT NOT NULL,
